@@ -8,7 +8,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 
 # --- 網頁全局設定 ---
-st.set_page_config(page_title="台股量化分析終端", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股分析終端", page_icon="📈", layout="wide")
 
 # ==========================================
 # ⚙️ 系統核心設定區
