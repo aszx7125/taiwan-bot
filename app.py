@@ -23,19 +23,17 @@ yf_session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
-# 🌟 已擴充：新增金融股與傳統產業的完整分類清單
 stock_clusters = {
-    "半導體": ["2330.TW", "3711.TW", "2454.TW", "2303.TW", "5347.TWO", "3034.TW"],
+    "低軌衛星": ["3491.TWO", "3138.TW", "6285.TW", "2383.TW", "2314.TW"],
     "矽光子": ["3363.TWO", "3450.TW", "6451.TW", "3081.TWO", "4979.TWO", "3163.TWO"],
+    "面板": ["2409.TW", "3481.TW", "6116.TW"],
+    "半導體": ["2330.TW", "3711.TW", "2454.TW", "2303.TW", "5347.TWO", "3034.TW"],
     "伺服器": ["2382.TW", "3231.TW", "6669.TW", "2376.TW", "3017.TW", "5274.TWO"],
     "金融股": ["2881.TW", "2882.TW", "2886.TW", "2891.TW", "2884.TW"],
     "傳統產業": ["1101.TW", "2002.TW", "2603.TW", "2609.TW", "2618.TW"],
-    "低軌衛星": ["3491.TWO", "3138.TW", "6285.TW", "2383.TW", "2314.TW"],
-    "面板": ["2409.TW", "3481.TW", "6116.TW"],
     "ETF": ["0050.TW", "0056.TW", "00878.TW", "00919.TW", "00929.TW"]
 }
 
-# 🌟 已擴充：補齊所有新增群組的公司名稱對照表
 stock_names = {
     "3491": "昇達科", "3138": "耀登", "6285": "啟碁", "2383": "華通", "2314": "台揚",
     "3363": "上詮", "3450": "聯鈞", "6451": "訊芯-KY", "3081": "聯亞", "4979": "華星光", "3163": "波若威",
@@ -164,12 +162,12 @@ with st.sidebar:
 
 
 # ==========================================
-# 🖥️ 主畫面：功能深度整合版
+# 🖥️ 主畫面
 # ==========================================
 st.title("⚡ 台股分析終端")
 
 # 搜尋區塊
-st.markdown("##### 🔍 搜尋不在清單內的標的")
+st.markdown("##### 🔍 搜尋個股詳細診斷報告")
 col1, col2 = st.columns([3, 1])
 with col1:
     manual_ticker = st.text_input("輸入股票代號 (如: 3105, 2317)", "", label_visibility="collapsed")
@@ -178,7 +176,7 @@ with col2:
 
 st.markdown("---")
 
-# 🎯 邏輯修復核心：正確初始化目標代號
+# 🎯 路由核心：正確初始化與補捉目標代號
 target_ticker = None
 
 if 'analyze_trigger' in st.session_state and st.session_state.analyze_trigger:
@@ -190,10 +188,10 @@ elif analyze_manual_btn and manual_ticker:
 
 
 # ==========================================
-# ⚡ 模式切換：詳細診斷模式 vs 主頁板塊監控看板
+# ⚡ 模式分流：深度診斷模式 vs 主頁基本資訊看板
 # ==========================================
 if target_ticker:
-    # ─── 進入您最喜歡的深度診斷畫面 ───
+    # ─── 進入您指定的詳細分析視圖 ───
     with st.spinner(f"正在擷取 {target_ticker} 的量價數據與基本面資料..."):
         try:
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
@@ -236,7 +234,7 @@ if target_ticker:
                 res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
                 sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
                 
-                # 精細缺口判斷邏輯
+                # 在點入後的詳細診斷中，才進行精細缺口與突圍型態判定
                 breakout_status = "區間震盪 (未突破)"
                 target_proj = "無明確突破方向，等待表態"
                 breakout_prob = "中立"
@@ -300,6 +298,7 @@ if target_ticker:
                 
                 with tab1:
                     d_col1, d_col2 = st.columns(2)
+                    
                     with d_col1:
                         st.markdown("### 🧱 型態與支撐壓力分析")
                         st.write(f"- **前高壓力 (近20日):** {round(res_level, 1)} | **已測試:** {res_tests} 次")
@@ -330,7 +329,7 @@ if target_ticker:
                         else:
                             st.write("**🟡 區間操作:** 目前處於箱體中央，肉不多且容易被洗。建議耐心等待股價靠近上軌或下軌時再動作。")
                             
-                    with st.expander("查看近期 K線 歷史原始數據"):
+                    with st.expander("查看近期 K 線歷史原始數據"):
                         st.dataframe(df.tail(25).sort_index(ascending=False))
 
                 with tab2:
@@ -362,92 +361,51 @@ if target_ticker:
                         else:
                             st.info("目前無最新總經新聞。")
                             
-            if st.button("⬅️ 返回監控主網頁", use_container_width=True):
-                st.session_state.target_ticker = None
+            if st.button("⬅️ 返回分組監控主頁", use_container_width=True):
+                st.session_state.analyze_trigger = None
                 st.rerun()
 
         except Exception as e:
             st.error(f"分析運算時發生錯誤: {e}")
-            if st.button("返回首頁"):
-                st.session_state.target_ticker = None
-                st.rerun()
 
 else:
-    # ─── 🌟 核心升級：主畫面實時群組監控綜合看板 ───
-    st.markdown(f"### 📋 【{selected_cluster}】板塊實時監控看板")
-    st.markdown("下方自動同步當前分組所有標的之量價、細緻型態缺口、以及法人外資持股比例。")
+    # ─── 📋 主畫面狀態：展示當前分組的基本量價資訊 ───
+    st.markdown(f"### 📊 【{selected_cluster}】產業成份股即時監控")
+    st.caption("主畫面僅呈現基礎量價指標，欲查看型態測幅與籌碼細節，請點選左側或利用上方搜尋框進入詳細診斷。")
     
-    cluster_data = []
-    with st.spinner(f"正在同步 【{selected_cluster}】 全板塊數據與籌碼結構..."):
-        for t in cluster_stocks:
-            code = t.split('.')[0]
-            name = stock_names.get(code, "未知公司")
+    dashboard_rows = []
+    with st.spinner(f"正在同步 【{selected_cluster}】 板塊數據..."):
+        for stock_ticker in cluster_stocks:
+            ticker_code = stock_ticker.split('.')[0]
+            company_name = stock_names.get(ticker_code, "未知個股")
             
             try:
-                # 呼叫您原本最穩定的快取數據引擎
-                stock_df, _ = get_kline_with_fugle(code)
-                if not stock_df.empty and len(stock_df) >= 3:
-                    t_today = stock_df.iloc[-1]
-                    t_yesterday = stock_df.iloc[-2]
-                    t_prev2 = stock_df.iloc[-3]
+                # 調用底層高穩定性快取引擎
+                kline_df, _ = get_kline_with_fugle(ticker_code)
+                if not kline_df.empty and len(kline_df) >= 2:
+                    current_day = kline_df.iloc[-1]
+                    prev_day = kline_df.iloc[-2]
                     
-                    t_close = t_today['Close']
-                    t_prev_close = t_yesterday['Close']
-                    t_change = ((t_close - t_prev_close) / t_prev_close) * 100
+                    price_now = current_day['Close']
+                    price_prev = prev_day['Close']
+                    daily_change = ((price_now - price_prev) / price_prev) * 100
+                    volume_now = current_day['Volume']
                     
-                    # 🔍 判斷精細缺口邏輯 (向上、向下、回補)
-                    t_gap = "無缺口"
-                    if t_today['Low'] > t_yesterday['High']:
-                        t_gap = "🔥 向上跳空"
-                    elif t_today['High'] < t_yesterday['Low']:
-                        t_gap = "❄️ 向下跳空"
-                    # 判斷近期有缺口且今日完成回補
-                    elif t_yesterday['Low'] > t_prev2['High'] and t_today['Low'] <= t_prev2['High']:
-                        t_gap = "✅ 缺口已補"
-                    elif t_yesterday['High'] < t_prev2['Low'] and t_today['High'] >= t_prev2['Low']:
-                        t_gap = "✅ 缺口已補"
-                    
-                    # 🛡️ 模擬外資法人大數據持股動態與比例 (串接權重與每日量能加權估算)
-                    base_ratio = 42.5 if code=="2330" else (28.4 if code=="2454" else 18.2)
-                    if code not in ["2330", "2454"]:
-                        base_ratio = round((abs(hash(code)) % 280) / 10 + 8.5, 1)
-                    
-                    # 法人當日動向估算 (量比搭配收盤價)
-                    inst_action = "中性觀察"
-                    if t_today['Volume'] > stock_df['Volume'].tail(5).mean() * 1.3:
-                        inst_action = "🔥 主力放量進攻" if t_close > t_today['Open'] else "⚠️ 主力高檔出貨"
-                    elif t_change > 2.5:
-                        inst_action = "外資買盤加碼"
-                    
-                    cluster_data.append({
-                        "股票代號": code,
-                        "公司名稱": name,
-                        "當前現價": round(t_close, 1),
-                        "今日漲跌": f"{t_change:+.2f}%",
-                        "型態缺口狀態": t_gap,
-                        "外資持股比例 (估)": f"{base_ratio}%",
-                        "三大法人動態": inst_action
+                    dashboard_rows.append({
+                        "股票代號": ticker_code,
+                        "公司名稱": company_name,
+                        "當前現價": round(price_now, 2),
+                        "今日漲跌幅": f"{daily_change:+.2f}%",
+                        "本日成交量 (張)": int(volume_now)
                     })
             except:
                 pass
                 
-    if cluster_data:
-        monitor_df = pd.DataFrame(cluster_data)
-        
-        # 條件式樣式高亮設定：將「缺口已補」上淡綠色背景，「向上跳空」上淡紅色背景
-        def style_gap_rows(val):
-            if "缺口已補" in str(val):
-                return "background-color: rgba(46, 204, 113, 0.25); color: #2ecc71; font-weight: bold;"
-            elif "向上跳空" in str(val):
-                return "background-color: rgba(231, 76, 60, 0.15); color: #e74c3c; font-weight: bold;"
-            elif "向下跳空" in str(val):
-                return "background-color: rgba(52, 152, 219, 0.15); color: #3498db; font-weight: bold;"
-            return ""
-            
+    if dashboard_rows:
         st.dataframe(
-            monitor_df.style.applymap(style_gap_rows, subset=["型態缺口狀態"]),
+            pd.DataFrame(dashboard_rows),
             use_container_width=True,
             hide_index=True
         )
     else:
-        st.info("📡 尚無該板塊即時數據，請點選左側自選清單進行深度診斷。")
+        st.info("📡 暫時無法取得該板塊的快取數據，請於左側選單點選個股直接發動實時診斷。")
