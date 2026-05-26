@@ -11,7 +11,21 @@ st.set_page_config(page_title="台股量化分析終端", page_icon="📈", layo
 # ==========================================
 # ⚙️ 系統核心設定區
 # ==========================================
-FUGLE_API_KEY = "YWJkM2I2ZTgtMjg0ZC00MzRjLThhODItZDAwZjc4ZTRmZTRhIDY1YTA0OTU4LWIxMGItNDYyMC1iNjMzLTJhNGUxOWE1ZmU4NQ==" # 🌟 貼上您的富果 API Key
+# 🛡️ 支援本機端與 Streamlit Cloud 的雙重設定
+try:
+    # 優先嘗試從 Streamlit 雲端保險箱讀取密碼
+    FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
+except:
+    # 若在本機端測試，請將密碼填入下方引號內 (⚠️ 上傳 GitHub 前請務必清空！)
+    FUGLE_API_KEY = ""
+
+# ==========================================
+# 🛡️ 建立全局的偽裝 Session，對抗 Yahoo 封鎖
+# ==========================================
+yf_session = requests.Session()
+yf_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
 
 stock_clusters = {
     "低軌衛星": ["3491.TWO", "3138.TW", "6285.TW", "2383.TW", "2314.TW"],
@@ -36,20 +50,35 @@ TICKER_MAP = {t.split('.')[0]: t for tickers in stock_clusters.values() for t in
 @st.cache_data(ttl=60) 
 def get_kline_with_fugle(ticker_code):
     stock_symbol = TICKER_MAP.get(ticker_code, f"{ticker_code}.TW")
+    df = pd.DataFrame()
+    
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        df = yf.Ticker(stock_symbol).history(period="6mo")
-        if df.empty and stock_symbol.endswith('.TW'):
-            stock_symbol = f"{ticker_code}.TWO"
-            df = yf.Ticker(stock_symbol).history(period="6mo")
+        
+        # 🛡️ 加入 3 次重試機制，對抗 Yahoo 的 Rate Limit
+        for attempt in range(3):
+            try:
+                # 傳入偽裝的 session
+                df = yf.Ticker(stock_symbol, session=yf_session).history(period="6mo")
+                if df.empty and stock_symbol.endswith('.TW'):
+                    stock_symbol = f"{ticker_code}.TWO"
+                    df = yf.Ticker(stock_symbol, session=yf_session).history(period="6mo")
+                
+                if not df.empty:
+                    break 
+            except Exception as e:
+                if "Too Many Requests" in str(e):
+                    time.sleep(2 * (attempt + 1)) 
+                else:
+                    break 
             
     if df.empty or len(df) < 20:
         return df
 
-    if FUGLE_API_KEY and FUGLE_API_KEY != "請在這裡貼上您的_FUGLE_API_KEY":
+    if FUGLE_API_KEY and FUGLE_API_KEY != "":
         try:
-            time.sleep(0.5) 
+            time.sleep(1.2) # 🛡️ 富果降速防護網
             url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{ticker_code}"
             headers = {"X-API-KEY": FUGLE_API_KEY}
             res = requests.get(url, headers=headers, timeout=5)
@@ -97,7 +126,11 @@ with st.sidebar:
     st.write("") 
     analyze_watchlist_btn = st.button("📊 診斷此自選股", use_container_width=True, type="primary")
     st.markdown("---")
-    st.info("💡 系統已啟動零延遲即時運算與自動型態測幅。")
+    
+    if FUGLE_API_KEY:
+        st.success("🟢 零延遲即時引擎已啟動")
+    else:
+        st.warning("🟡 目前使用 Yahoo 延遲報價")
 
 # ==========================================
 # 🖥️ 主畫面
@@ -139,7 +172,7 @@ if target_ticker:
                 df['TR'] = df[['High', 'Low', 'Close']].apply(lambda x: max(x['High'] - x['Low'], abs(x['High'] - df['Close'].shift(1).loc[x.name]), abs(x['Low'] - df['Close'].shift(1).loc[x.name])), axis=1)
                 df['ATR_14'] = df['TR'].rolling(window=14).mean()
 
-                # 🌟 新增：支撐壓力與型態辨識 (近20個交易日，排除今日)
+                # 支撐壓力與型態辨識
                 df['Res_20'] = df['High'].shift(1).rolling(window=20).max()
                 df['Sup_20'] = df['Low'].shift(1).rolling(window=20).min()
 
@@ -155,17 +188,16 @@ if target_ticker:
                 vol_ratio = (vol_today / vol_sma5) if vol_sma5 > 0 else 1.0
                 p_change = ((close_today - yesterday_close) / yesterday_close) * 100
                 
-                # 🌟 新增：計算測試次數與測幅
+                # 計算測試次數與測幅
                 res_level = today['Res_20']
                 sup_level = today['Sup_20']
                 box_height = res_level - sup_level
                 
-                # 取過去20天 (不含今日) 計算觸碰次數 (1.5% 容錯區間)
                 recent_20_df = df.iloc[-21:-1]
                 res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
                 sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
                 
-                # 🌟 新增：突破狀態判定邏輯
+                # 突破狀態判定邏輯
                 breakout_status = "區間震盪 (未突破)"
                 target_proj = "無明確突破方向，等待表態"
                 breakout_prob = "中立"
@@ -178,7 +210,7 @@ if target_ticker:
                     breakout_status = "⚠️ 向下摜破前低"
                     target_proj = f"破底危機！下看 **{round(sup_level - box_height, 1)}** (1:1等距測幅)"
                     breakout_prob = "弱勢探底"
-                elif close_today >= res_level * 0.98: # 距離壓力不到 2%
+                elif close_today >= res_level * 0.98:
                     breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
                     if vol_ratio > 1.3 and close_today > open_today:
                         breakout_prob = "高機率突破 (帶量收紅，具備攻擊契機)"
@@ -186,7 +218,7 @@ if target_ticker:
                     else:
                         breakout_prob = "機率中等 (量能不足，仍需補量)"
                         target_proj = f"壓力位 {round(res_level, 1)} 附近震盪"
-                elif close_today <= sup_level * 1.02: # 距離支撐不到 2%
+                elif close_today <= sup_level * 1.02: 
                     breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
                     if vol_ratio > 1.3 and close_today < open_today:
                         breakout_prob = "高機率破底 (放量下殺，賣壓沉重)"
@@ -195,11 +227,14 @@ if target_ticker:
                         breakout_prob = "機率中等 (量縮測試，觀察買盤承接)"
                         target_proj = f"支撐位 {round(sup_level, 1)} 防守戰"
 
-                # 取得名稱與基本面
+                # 基本面
                 c_name = stock_names.get(target_ticker, "")
-                info_tw = yf.Ticker(TICKER_MAP.get(target_ticker, f"{target_ticker}.TW")).info
-                if not c_name: c_name = info_tw.get('shortName', '')
-                pe_ratio = info_tw.get('trailingPE', 'N/A')
+                try:
+                    info_tw = yf.Ticker(TICKER_MAP.get(target_ticker, f"{target_ticker}.TW"), session=yf_session).info
+                    if not c_name: c_name = info_tw.get('shortName', '')
+                    pe_ratio = info_tw.get('trailingPE', 'N/A')
+                except:
+                    pe_ratio = 'N/A'
                 
                 # 判斷趨勢
                 trend_status = "震盪整理"
@@ -222,7 +257,6 @@ if target_ticker:
 
                 st.markdown("---")
                 
-                # 兩欄式詳細數據
                 d_col1, d_col2 = st.columns(2)
                 
                 with d_col1:
