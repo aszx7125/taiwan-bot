@@ -4,6 +4,8 @@ import requests
 import pandas as pd
 import datetime
 import time
+import urllib.parse
+import xml.etree.ElementTree as ET
 
 # --- 網頁全局設定 ---
 st.set_page_config(page_title="台股量化分析終端", page_icon="📈", layout="wide")
@@ -14,7 +16,7 @@ st.set_page_config(page_title="台股量化分析終端", page_icon="📈", layo
 try:
     FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
 except:
-    FUGLE_API_KEY = "" # ⚠️ 本機測試若要用富果，貼在此處；上傳 GitHub 前請清空
+    FUGLE_API_KEY = "" # ⚠️ 本機測試若要用富果，請貼在此處；上傳 GitHub 前請清空
 
 yf_session = requests.Session()
 yf_session.headers.update({
@@ -40,10 +42,9 @@ stock_names = {
 
 TICKER_MAP = {t.split('.')[0]: t for tickers in stock_clusters.values() for t in tickers}
 
-# --- 核心數據引擎 (修復 404 崩潰蟲) ---
+# --- 核心數據引擎 ---
 @st.cache_data(ttl=60) 
 def get_kline_with_fugle(ticker_code):
-    # 🛡️ 雙重彈匣準備：決定要測試哪些後綴
     symbols_to_try = []
     if ticker_code in TICKER_MAP:
         symbols_to_try.append(TICKER_MAP[ticker_code])
@@ -56,8 +57,6 @@ def get_kline_with_fugle(ticker_code):
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        
-        # 逐一測試上市與上櫃代號
         for symbol in symbols_to_try:
             for attempt in range(3):
                 try:
@@ -65,18 +64,17 @@ def get_kline_with_fugle(ticker_code):
                     if not temp_df.empty:
                         df = temp_df
                         actual_symbol = symbol
-                        break # 成功抓到資料，跳出重試迴圈
+                        break 
                 except Exception as e:
                     if "Too Many Requests" in str(e) or "429" in str(e):
                         time.sleep(2 * (attempt + 1)) 
                     else:
-                        break # 遇到 404 等錯誤，直接跳出當前符號的重試，換下一個後綴 (.TWO)
-            
+                        break 
             if not df.empty:
-                break # 已經找到資料了，就不需要再測下一個後綴
+                break 
 
     if df.empty or len(df) < 20:
-        return df, actual_symbol # 同步回傳正確的代號，給後方財報引擎使用
+        return df, actual_symbol 
 
     if FUGLE_API_KEY and FUGLE_API_KEY != "":
         try:
@@ -108,6 +106,24 @@ def get_kline_with_fugle(ticker_code):
             pass
             
     return df, actual_symbol
+
+# --- 總經新聞獲取引擎 ---
+@st.cache_data(ttl=300)
+def get_macro_news():
+    try:
+        url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台股 OR 聯準會 OR 財報')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        root = ET.fromstring(response.text)
+        news_list = []
+        for item in root.findall('./channel/item')[:6]:
+            news_list.append({
+                "title": item.find('title').text,
+                "link": item.find('link').text,
+                "date": item.find('pubDate').text
+            })
+        return news_list
+    except:
+        return []
 
 # ==========================================
 # 📱 側邊欄
@@ -163,7 +179,6 @@ if target_ticker:
             is_market_open = now.weekday() < 5 and datetime.time(9, 0) <= now.time() <= datetime.time(13, 30)
             time_label = "今日盤中" if is_market_open else "明日"
 
-            # 接收回傳的 dataframe 與 正確的 Yahoo 代號
             df, actual_symbol = get_kline_with_fugle(target_ticker)
             
             if df.empty or len(df) < 40:
@@ -205,11 +220,11 @@ if target_ticker:
                 
                 if close_today > res_level:
                     breakout_status = "🚀 向上突破前高"
-                    target_proj = f"突破確認！目標上看 **{round(res_level + box_height, 1)}** (1:1等距測幅)"
+                    target_proj = f"突破確認！目標上看 **{round(res_level + box_height, 1)}**"
                     breakout_prob = "強勢發動"
                 elif close_today < sup_level:
                     breakout_status = "⚠️ 向下摜破前低"
-                    target_proj = f"破底危機！下看 **{round(sup_level - box_height, 1)}** (1:1等距測幅)"
+                    target_proj = f"破底危機！下看 **{round(sup_level - box_height, 1)}**"
                     breakout_prob = "弱勢探底"
                 elif close_today >= res_level * 0.98:
                     breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
@@ -228,12 +243,15 @@ if target_ticker:
                         breakout_prob = "機率中等 (量縮測試，觀察買盤承接)"
                         target_proj = f"支撐位 {round(sup_level, 1)} 防守戰"
 
-                # 🛡️ 基本面獲取 (使用正確判斷出來的上市櫃代號)
+                # 🛡️ 獲取個股財報、基本面與專屬新聞
                 c_name = stock_names.get(target_ticker, "")
+                stock_news = []
                 try:
-                    info_tw = yf.Ticker(actual_symbol, session=yf_session).info
+                    yf_ticker_obj = yf.Ticker(actual_symbol, session=yf_session)
+                    info_tw = yf_ticker_obj.info
                     if not c_name: c_name = info_tw.get('shortName', '')
                     pe_ratio = info_tw.get('trailingPE', 'N/A')
+                    stock_news = yf_ticker_obj.news # 獲取個股新聞
                 except:
                     pe_ratio = 'N/A'
                 
@@ -245,9 +263,9 @@ if target_ticker:
                 limit_up = round(yesterday_close * 1.10, 1)
                 limit_down = round(yesterday_close * 0.90, 1)
 
-                # --- 渲染分析報告 ---
                 st.subheader(f"🧬 {target_ticker} {c_name} 診斷報告")
                 
+                # 頂層指標看板
                 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
                 m_col1.metric("當前現價", f"{close_today:.1f}", f"{p_change:+.2f}%")
                 m_col2.metric("今日成交量 (量比)", f"{int(vol_today):,}", f"{vol_ratio:.1f}x", delta_color="off")
@@ -256,42 +274,78 @@ if target_ticker:
                 m_col4.metric("型態狀態", breakout_status.split(' ')[0])
 
                 st.markdown("---")
-                
-                d_col1, d_col2 = st.columns(2)
-                
-                with d_col1:
-                    st.markdown("### 🧱 型態與支撐壓力分析")
-                    st.write(f"- **前高壓力 (近20日):** {round(res_level, 1)} | **已測試:** {res_tests} 次")
-                    st.write(f"- **前低支撐 (近20日):** {round(sup_level, 1)} | **已測試:** {sup_tests} 次")
-                    st.write(f"- **目前盤勢型態:** {breakout_status}")
-                    st.write(f"- **突破機率評估:** {breakout_prob}")
-                    st.write(f"- **等距測幅 (目標):** {target_proj}")
-                    
-                    st.markdown("### 📊 均線與波動度參數")
-                    st.write(f"- **5日均線 (短):** {today['SMA_5']:.1f}")
-                    st.write(f"- **20日均線 (月):** {today['SMA_20']:.1f}")
-                    st.write(f"- **每日平均波動 (ATR):** {atr14:.1f} 元")
 
-                with d_col2:
-                    st.markdown(f"### 🎯 {time_label}操作推演與防守極限")
+                # 🌟 使用 Tabs 將「技術面」與「消息面」分開，保持版面清爽
+                tab1, tab2 = st.tabs(["📊 量化診斷與策略推演", "📰 財報新聞與總經動態"])
+                
+                with tab1:
+                    d_col1, d_col2 = st.columns(2)
                     
-                    st.markdown(f"**🔴 漲停板極限:** {limit_up} *(昨日收盤 +10%)*")
-                    st.markdown(f"**🟢 跌停板極限:** {limit_down} *(昨日收盤 -10%)*")
-                    
-                    st.markdown("##### 💡 策略規劃")
-                    if "突破前高" in breakout_status:
-                        st.write("**🟢 順勢做多:** 型態已正式突破，上方無壓，可順勢切入。防守點設於前高壓力轉支撐處。")
-                    elif "挑戰前高" in breakout_status:
-                        st.write("**🟡 提前卡位 / 觀望:** 即將挑戰關鍵頸線，若量比持續大於 1.3 可小部位試單，否則建議等待確認突破後再追。")
-                    elif "回測前低" in breakout_status:
-                        st.write("**🟡 低接防守:** 正在測試底部支撐，測試次數越多支撐越強。可嘗試低接，但跌破前低必須果斷停損。")
-                    elif "摜破前低" in breakout_status:
-                        st.write("**🔴 嚴格停損:** 型態破底，空頭成形。多單請嚴格執行停損紀律，不建議進場攤平。")
-                    else:
-                        st.write("**🟡 區間操作:** 目前處於箱體中央，肉不多且容易被洗。建議耐心等待股價靠近上軌或下軌時再動作。")
+                    with d_col1:
+                        st.markdown("### 🧱 型態與支撐壓力分析")
+                        st.write(f"- **前高壓力 (近20日):** {round(res_level, 1)} | **已測試:** {res_tests} 次")
+                        st.write(f"- **前低支撐 (近20日):** {round(sup_level, 1)} | **已測試:** {sup_tests} 次")
+                        st.write(f"- **目前盤勢型態:** {breakout_status}")
+                        st.write(f"- **突破機率評估:** {breakout_prob}")
+                        st.write(f"- **等距測幅 (目標):** {target_proj}")
                         
-                with st.expander("查看近期 K 線歷史原始數據"):
-                    st.dataframe(df.tail(25).sort_index(ascending=False))
+                        st.markdown("### 📊 均線與波動度參數")
+                        st.write(f"- **5日均線 (短):** {today['SMA_5']:.1f}")
+                        st.write(f"- **20日均線 (月):** {today['SMA_20']:.1f}")
+                        st.write(f"- **每日平均波動 (ATR):** {atr14:.1f} 元")
+
+                    with d_col2:
+                        st.markdown(f"### 🎯 {time_label}操作推演與防守極限")
+                        st.markdown(f"**🔴 漲停板極限:** {limit_up} *(昨日收盤 +10%)*")
+                        st.markdown(f"**🟢 跌停板極限:** {limit_down} *(昨日收盤 -10%)*")
+                        
+                        st.markdown("##### 💡 策略規劃")
+                        if "突破前高" in breakout_status:
+                            st.write("**🟢 順勢做多:** 型態已正式突破，上方無壓，可順勢切入。防守點設於前高壓力轉支撐處。")
+                        elif "挑戰前高" in breakout_status:
+                            st.write("**🟡 提前卡位 / 觀望:** 即將挑戰關鍵頸線，若量比持續大於 1.3 可小部位試單，否則建議等待確認突破後再追。")
+                        elif "回測前低" in breakout_status:
+                            st.write("**🟡 低接防守:** 正在測試底部支撐，測試次數越多支撐越強。可嘗試低接，但跌破前低必須果斷停損。")
+                        elif "摜破前低" in breakout_status:
+                            st.write("**🔴 嚴格停損:** 型態破底，空頭成形。多單請嚴格執行停損紀律，不建議進場攤平。")
+                        else:
+                            st.write("**🟡 區間操作:** 目前處於箱體中央，肉不多且容易被洗。建議耐心等待股價靠近上軌或下軌時再動作。")
+                            
+                    with st.expander("查看近期 K 線歷史原始數據"):
+                        st.dataframe(df.tail(25).sort_index(ascending=False))
+
+                with tab2:
+                    n_col1, n_col2 = st.columns(2)
                     
+                    with n_col1:
+                        st.markdown(f"### 🎯 {c_name} 最新專屬新聞與公告")
+                        if stock_news:
+                            for news_item in stock_news[:5]: # 取最新 5 則
+                                title = news_item.get('title', '無標題')
+                                link = news_item.get('link', '#')
+                                publisher = news_item.get('publisher', '未知來源')
+                                # 將 Unix timestamp 轉換為可讀時間
+                                dt = datetime.datetime.fromtimestamp(news_item.get('providerPublishTime', 0), tz=datetime.timezone(datetime.timedelta(hours=8)))
+                                time_str = dt.strftime('%Y-%m-%d %H:%M')
+                                
+                                st.markdown(f"**[{title}]({link})**")
+                                st.caption(f"📝 {publisher} | 🕒 {time_str}")
+                                st.markdown("---")
+                        else:
+                            st.info("目前無最新個股專屬新聞。")
+
+                    with n_col2:
+                        st.markdown("### 🌍 全球大盤與總經焦點")
+                        macro_news = get_macro_news()
+                        if macro_news:
+                            for news_item in macro_news:
+                                st.markdown(f"**[{news_item['title']}]({news_item['link']})**")
+                                # Google RSS 的時間字串較長，稍微清理一下
+                                clean_date = news_item['date'].replace(" GMT", "")
+                                st.caption(f"🕒 {clean_date}")
+                                st.markdown("---")
+                        else:
+                            st.info("目前無最新總經新聞。")
+                            
         except Exception as e:
             st.error(f"發生未預期的錯誤: {e}")
