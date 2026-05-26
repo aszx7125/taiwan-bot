@@ -414,7 +414,7 @@ else:
 
         # 透過 set_properties 放大整體字體，並透過 map 套用針對性顏色
         styled_df = monitor_df.style.set_properties(**{
-            'font-size': '18px',     # ✨ 在這裡調整整張表格的文字大小
+            'font-size': '24px',     # ✨ 在這裡調整整張表格的文字大小
             'padding': '8px'         # 讓儲存格的空間寬敞一點
         }).map(style_returns, subset=['今日漲跌幅'])
 
