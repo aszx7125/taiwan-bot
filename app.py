@@ -159,11 +159,13 @@ with st.sidebar:
     else:
         st.warning("🟡 目前使用 Yahoo 延遲報價")
 
+
 # ==========================================
-# 🖥️ 主畫面
+# 🖥️ 主畫面：邏輯修復版
 # ==========================================
 st.title("⚡ 台股分析終端")
 
+# 搜尋區塊
 st.markdown("##### 🔍 搜尋不在清單內的標的")
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -173,11 +175,18 @@ with col2:
 
 st.markdown("---")
 
+# 🎯 邏輯修復核心：正確初始化目標代號
 target_ticker = None
-if analyze_watchlist_btn:
-    target_ticker = sidebar_ticker
+
+# 如果側邊欄按鈕被按了 (儲存在 session_state)
+if 'analyze_trigger' in st.session_state and st.session_state.analyze_trigger:
+    target_ticker = st.session_state.analyze_trigger
+    st.session_state.analyze_trigger = None # 使用完畢後清除，避免重複觸發
+
+# 如果主畫面手動搜尋按鈕被按了
 elif analyze_manual_btn and manual_ticker:
     target_ticker = manual_ticker.strip().upper()
+
 
 if target_ticker:
     with st.spinner(f"正在擷取 {target_ticker} 的量價數據與基本面資料..."):
