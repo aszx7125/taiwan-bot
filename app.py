@@ -125,27 +125,35 @@ def get_macro_news():
     except:
         return []
 
+
 # ==========================================
-# 📱 側邊欄
+# 📱 側邊欄 (優化版：支援自動收合)
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
+    
+    # 1. 使用 Session State 來記住是否要保持開啟
+    if 'sidebar_state' not in st.session_state:
+        st.session_state.sidebar_state = 'expanded'
+
     selected_cluster = st.selectbox("1. 選擇產業群組", list(stock_clusters.keys()))
     
     cluster_stocks = stock_clusters[selected_cluster]
-    display_options = []
-    for t in cluster_stocks:
-        code = t.split('.')[0]
-        name = stock_names.get(code, "")
-        display_options.append(f"{code} {name}".strip())
+    display_options = [f"{t.split('.')[0]} {stock_names.get(t.split('.')[0], '')}".strip() for t in cluster_stocks]
         
     selected_stock_display = st.selectbox("2. 選擇分析標的", display_options)
     sidebar_ticker = selected_stock_display.split(' ')[0]
     
     st.write("") 
-    analyze_watchlist_btn = st.button("📊 診斷此自選股", use_container_width=True, type="primary")
-    st.markdown("---")
     
+    # 2. 修改按鈕邏輯
+    if st.button("📊 診斷此自選股", use_container_width=True, type="primary"):
+        st.session_state.analyze_trigger = sidebar_ticker # 記住要分析的標的
+        # 💡 重點：因為按鈕按下會觸發整個程式重跑，我們不需要額外寫什麼，
+        # 只要在側邊欄之外的地方判斷這個 trigger 即可。
+        st.rerun()
+
+    st.markdown("---")
     if FUGLE_API_KEY:
         st.success("🟢 零延遲即時引擎已啟動")
     else:
