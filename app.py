@@ -11,17 +11,11 @@ st.set_page_config(page_title="台股量化分析終端", page_icon="📈", layo
 # ==========================================
 # ⚙️ 系統核心設定區
 # ==========================================
-# 🛡️ 支援本機端與 Streamlit Cloud 的雙重設定
 try:
-    # 優先嘗試從 Streamlit 雲端保險箱讀取密碼
     FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
 except:
-    # 若在本機端測試，請將密碼填入下方引號內 (⚠️ 上傳 GitHub 前請務必清空！)
-    FUGLE_API_KEY = ""
+    FUGLE_API_KEY = "" # ⚠️ 本機測試若要用富果，貼在此處；上傳 GitHub 前請清空
 
-# ==========================================
-# 🛡️ 建立全局的偽裝 Session，對抗 Yahoo 封鎖
-# ==========================================
 yf_session = requests.Session()
 yf_session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -46,39 +40,47 @@ stock_names = {
 
 TICKER_MAP = {t.split('.')[0]: t for tickers in stock_clusters.values() for t in tickers}
 
-# --- 核心數據引擎 ---
+# --- 核心數據引擎 (修復 404 崩潰蟲) ---
 @st.cache_data(ttl=60) 
 def get_kline_with_fugle(ticker_code):
-    stock_symbol = TICKER_MAP.get(ticker_code, f"{ticker_code}.TW")
+    # 🛡️ 雙重彈匣準備：決定要測試哪些後綴
+    symbols_to_try = []
+    if ticker_code in TICKER_MAP:
+        symbols_to_try.append(TICKER_MAP[ticker_code])
+    else:
+        symbols_to_try.extend([f"{ticker_code}.TW", f"{ticker_code}.TWO"])
+
     df = pd.DataFrame()
+    actual_symbol = ""
     
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         
-        # 🛡️ 加入 3 次重試機制，對抗 Yahoo 的 Rate Limit
-        for attempt in range(3):
-            try:
-                # 傳入偽裝的 session
-                df = yf.Ticker(stock_symbol, session=yf_session).history(period="6mo")
-                if df.empty and stock_symbol.endswith('.TW'):
-                    stock_symbol = f"{ticker_code}.TWO"
-                    df = yf.Ticker(stock_symbol, session=yf_session).history(period="6mo")
-                
-                if not df.empty:
-                    break 
-            except Exception as e:
-                if "Too Many Requests" in str(e):
-                    time.sleep(2 * (attempt + 1)) 
-                else:
-                    break 
+        # 逐一測試上市與上櫃代號
+        for symbol in symbols_to_try:
+            for attempt in range(3):
+                try:
+                    temp_df = yf.Ticker(symbol, session=yf_session).history(period="6mo")
+                    if not temp_df.empty:
+                        df = temp_df
+                        actual_symbol = symbol
+                        break # 成功抓到資料，跳出重試迴圈
+                except Exception as e:
+                    if "Too Many Requests" in str(e) or "429" in str(e):
+                        time.sleep(2 * (attempt + 1)) 
+                    else:
+                        break # 遇到 404 等錯誤，直接跳出當前符號的重試，換下一個後綴 (.TWO)
             
+            if not df.empty:
+                break # 已經找到資料了，就不需要再測下一個後綴
+
     if df.empty or len(df) < 20:
-        return df
+        return df, actual_symbol # 同步回傳正確的代號，給後方財報引擎使用
 
     if FUGLE_API_KEY and FUGLE_API_KEY != "":
         try:
-            time.sleep(1.2) # 🛡️ 富果降速防護網
+            time.sleep(1.2) 
             url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{ticker_code}"
             headers = {"X-API-KEY": FUGLE_API_KEY}
             res = requests.get(url, headers=headers, timeout=5)
@@ -104,7 +106,8 @@ def get_kline_with_fugle(ticker_code):
                     df.iloc[-1, df.columns.get_loc('Volume')] = rt_vol
         except:
             pass
-    return df
+            
+    return df, actual_symbol
 
 # ==========================================
 # 📱 側邊欄
@@ -140,7 +143,7 @@ st.title("⚡ 台股專業量化終端")
 st.markdown("##### 🔍 搜尋不在清單內的標的")
 col1, col2 = st.columns([3, 1])
 with col1:
-    manual_ticker = st.text_input("輸入股票代號 (如: 2317)", "", label_visibility="collapsed")
+    manual_ticker = st.text_input("輸入股票代號 (如: 3105, 2317)", "", label_visibility="collapsed")
 with col2:
     analyze_manual_btn = st.button("執行搜尋", use_container_width=True)
 
@@ -160,11 +163,12 @@ if target_ticker:
             is_market_open = now.weekday() < 5 and datetime.time(9, 0) <= now.time() <= datetime.time(13, 30)
             time_label = "今日盤中" if is_market_open else "明日"
 
-            df = get_kline_with_fugle(target_ticker)
+            # 接收回傳的 dataframe 與 正確的 Yahoo 代號
+            df, actual_symbol = get_kline_with_fugle(target_ticker)
+            
             if df.empty or len(df) < 40:
-                st.error(f"❌ 找不到代號 {target_ticker} 的有效資料。")
+                st.error(f"❌ 找不到代號 {target_ticker} 的有效資料。請確認該標的已經上市櫃。")
             else:
-                # 基礎運算
                 df['SMA_5'] = df['Close'].rolling(window=5).mean()
                 df['SMA_20'] = df['Close'].rolling(window=20).mean()
                 df['SMA_60'] = df['Close'].rolling(window=60).mean()
@@ -172,7 +176,6 @@ if target_ticker:
                 df['TR'] = df[['High', 'Low', 'Close']].apply(lambda x: max(x['High'] - x['Low'], abs(x['High'] - df['Close'].shift(1).loc[x.name]), abs(x['Low'] - df['Close'].shift(1).loc[x.name])), axis=1)
                 df['ATR_14'] = df['TR'].rolling(window=14).mean()
 
-                # 支撐壓力與型態辨識
                 df['Res_20'] = df['High'].shift(1).rolling(window=20).max()
                 df['Sup_20'] = df['Low'].shift(1).rolling(window=20).min()
 
@@ -188,7 +191,6 @@ if target_ticker:
                 vol_ratio = (vol_today / vol_sma5) if vol_sma5 > 0 else 1.0
                 p_change = ((close_today - yesterday_close) / yesterday_close) * 100
                 
-                # 計算測試次數與測幅
                 res_level = today['Res_20']
                 sup_level = today['Sup_20']
                 box_height = res_level - sup_level
@@ -197,7 +199,6 @@ if target_ticker:
                 res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
                 sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
                 
-                # 突破狀態判定邏輯
                 breakout_status = "區間震盪 (未突破)"
                 target_proj = "無明確突破方向，等待表態"
                 breakout_prob = "中立"
@@ -227,16 +228,15 @@ if target_ticker:
                         breakout_prob = "機率中等 (量縮測試，觀察買盤承接)"
                         target_proj = f"支撐位 {round(sup_level, 1)} 防守戰"
 
-                # 基本面
+                # 🛡️ 基本面獲取 (使用正確判斷出來的上市櫃代號)
                 c_name = stock_names.get(target_ticker, "")
                 try:
-                    info_tw = yf.Ticker(TICKER_MAP.get(target_ticker, f"{target_ticker}.TW"), session=yf_session).info
+                    info_tw = yf.Ticker(actual_symbol, session=yf_session).info
                     if not c_name: c_name = info_tw.get('shortName', '')
                     pe_ratio = info_tw.get('trailingPE', 'N/A')
                 except:
                     pe_ratio = 'N/A'
                 
-                # 判斷趨勢
                 trend_status = "震盪整理"
                 if pd.notna(today['SMA_60']):
                     if close_today > today['SMA_20'] and close_today > today['SMA_60']: trend_status = "多頭排列 📈"
