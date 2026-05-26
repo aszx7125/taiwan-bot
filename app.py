@@ -234,7 +234,6 @@ if target_ticker:
                 res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
                 sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
                 
-                # 在點入後的詳細診斷中，才進行精細缺口與突圍型態判定
                 breakout_status = "區間震盪 (未突破)"
                 target_proj = "無明確突破方向，等待表態"
                 breakout_prob = "中立"
@@ -380,7 +379,6 @@ else:
             company_name = stock_names.get(ticker_code, "未知個股")
             
             try:
-                # 調用底層高穩定性快取引擎
                 kline_df, _ = get_kline_with_fugle(ticker_code)
                 if not kline_df.empty and len(kline_df) >= 2:
                     current_day = kline_df.iloc[-1]
@@ -402,8 +400,26 @@ else:
                 pass
                 
     if dashboard_rows:
+        monitor_df = pd.DataFrame(dashboard_rows)
+        
+        # 🌟 新增：表格樣式自訂義 (文字大小與台股紅綠漲跌)
+        def style_returns(val):
+            # 判斷是否為字串型態的漲跌幅
+            if isinstance(val, str):
+                if val.startswith('+'):
+                    return 'color: #ff4b4b; font-weight: bold;' # 漲幅顯示為紅色
+                elif val.startswith('-'):
+                    return 'color: #00cc96; font-weight: bold;' # 跌幅顯示為綠色
+            return 'color: gray;'
+
+        # 透過 set_properties 放大整體字體，並透過 map 套用針對性顏色
+        styled_df = monitor_df.style.set_properties(**{
+            'font-size': '18px',     # ✨ 在這裡調整整張表格的文字大小
+            'padding': '8px'         # 讓儲存格的空間寬敞一點
+        }).map(style_returns, subset=['今日漲跌幅'])
+
         st.dataframe(
-            pd.DataFrame(dashboard_rows),
+            styled_df,
             use_container_width=True,
             hide_index=True
         )
