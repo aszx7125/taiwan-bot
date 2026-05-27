@@ -190,7 +190,7 @@ elif analyze_manual_btn and manual_ticker:
 # ⚡ 模式分流：深度診斷模式 vs 主頁基本資訊看板
 # ==========================================
 if target_ticker:
-    # ─── 進入詳細分析視圖 ───
+    # ─── 詳細診斷模式 ───
     with st.spinner(f"正在擷取 {target_ticker} 的量價數據與基本面資料..."):
         try:
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
@@ -368,17 +368,16 @@ if target_ticker:
             st.error(f"分析運算時發生錯誤: {e}")
 
 else:
-    # ─── 🌟 無感刷新黑科技：極致量價實時看板 ───
+    # ─── 🌟 無感刷新黑科技：極致量價實時看板 (HTML 突破版) ───
     st.markdown(f"### 📊 【{selected_cluster}】實時監控看板")
     st.caption("點選左側或利用上方搜尋框，進入個股深度診斷。")
     
-    # 🎯 這裡新增：讓使用者動態調整字體大小的拉桿 (放入折疊面板保持整潔)
     with st.expander("⚙️ 看板顯示設定", expanded=False):
         user_font_size = st.slider(
             "🔍 調整看板文字大小 (px)", 
             min_value=12, 
-            max_value=36, 
-            value=20, # 預設值為我們前一版的 20px
+            max_value=40, 
+            value=22, 
             step=2,
             help="向右拖曳可將看板數字放大，適合用手機看盤時使用。"
         )
@@ -403,29 +402,29 @@ else:
                     change_amt = price_now - price_prev
                     change_pct = (change_amt / price_prev) * 100
                     
-                    # 縫合 1：價格與成交量 (上方價格，下方成交量)
-                    price_vol_str = f"{price_now:.2f}\n({volume_now:,} 張)"
+                    # 💡 直接寫入 HTML 標籤 (<br> 與 <span>)
+                    price_vol_str = f"<b>{price_now:.2f}</b><br><span style='font-size: 0.7em; color: gray;'>({volume_now:,} 張)</span>"
+                    name_str = f"<b>{company_name}</b><br><span style='font-size: 0.8em; color: gray;'>{ticker_code}</span>"
                     
-                    # 縫合 2：缺口狀態隱藏在漲跌幅文字中
                     gap_emoji = ""
                     if current_day['Low'] > prev_day['High']:
-                        gap_emoji = " 🔥(跳空)"
+                        gap_emoji = " <span style='font-size: 0.8em;'>🔥(跳空)</span>"
                     elif current_day['High'] < prev_day['Low']:
-                        gap_emoji = " ❄️(跳空)"
+                        gap_emoji = " <span style='font-size: 0.8em;'>❄️(跳空)</span>"
                     elif (prev_day['Low'] > prev2_day['High'] and current_day['Low'] <= prev2_day['High']) or \
                          (prev_day['High'] < prev2_day['Low'] and current_day['High'] >= prev2_day['Low']):
-                        gap_emoji = " ✅(缺口補)"
+                        gap_emoji = " <span style='font-size: 0.8em;'>✅(缺口補)</span>"
 
+                    # 💡 直接套用顏色色碼
                     if change_amt > 0:
-                        change_str = f"+{change_amt:.2f}\n(+{change_pct:.2f}%){gap_emoji}"
+                        change_str = f"<span style='color: #ff4b4b; font-weight: bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%){gap_emoji}</span>"
                     elif change_amt < 0:
-                        change_str = f"{change_amt:.2f}\n({change_pct:.2f}%){gap_emoji}"
+                        change_str = f"<span style='color: #00cc96; font-weight: bold;'>{change_amt:.2f}<br>({change_pct:.2f}%){gap_emoji}</span>"
                     else:
-                        change_str = f"0.00\n(0.00%){gap_emoji}"
+                        change_str = f"<span style='color: #a0a0a0; font-weight: bold;'>0.00<br>(0.00%){gap_emoji}</span>"
                     
                     dashboard_rows.append({
-                        "代號": ticker_code,
-                        "名稱": company_name,
+                        "標的": name_str,
                         "及時價 (成交量)": price_vol_str,
                         "今日漲跌幅": change_str
                     })
@@ -434,31 +433,35 @@ else:
         if dashboard_rows:
             monitor_df = pd.DataFrame(dashboard_rows)
             
-            # 🎨 專屬漲跌幅顏色邏輯 (台股：紅漲綠跌)
-            def style_returns(val):
-                if isinstance(val, str):
-                    if val.startswith('+'): 
-                        return 'color: #ff4b4b; font-weight: bold; white-space: pre-wrap; text-align: center;' 
-                    elif val.startswith('-'): 
-                        return 'color: #00cc96; font-weight: bold; white-space: pre-wrap; text-align: center;' 
-                return 'color: #a0a0a0; font-weight: bold; white-space: pre-wrap; text-align: center;'
-
-            def style_price(val):
-                return 'font-weight: bold; white-space: pre-wrap; text-align: center;'
-
-            # ✨ 將使用者的選擇動態注入 (f'{user_font_size}px')
-            styled_df = monitor_df.style.set_properties(**{
-                'font-size': f'{user_font_size}px', 
-                'text-align': 'center',  
-                'padding': '12px'
-            }).map(style_returns, subset=['今日漲跌幅']).map(style_price, subset=['及時價 (成交量)'])
+            # 🚨 改用 HTML 渲染，打破 Streamlit dataframe 鎖死 CSS 的限制
+            html_table = monitor_df.to_html(escape=False, index=False)
             
-            # 渲染極簡 4 欄位表格
-            st.dataframe(
-                styled_df,
-                use_container_width=True,
-                hide_index=True
-            )
+            # 注入客製化動態 CSS (套用您的拉桿參數 user_font_size)
+            css = f"""
+            <style>
+            .watch-board table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            .watch-board th {{
+                text-align: center !important;
+                font-size: {max(14, user_font_size - 4)}px !important;
+                padding: 10px !important;
+                border-bottom: 2px solid #555 !important;
+                color: #888;
+            }}
+            .watch-board td {{
+                text-align: center !important;
+                font-size: {user_font_size}px !important;
+                padding: 16px !important;
+                border-bottom: 1px solid #444 !important;
+                vertical-align: middle !important;
+            }}
+            </style>
+            """
+            
+            # 顯示表格
+            st.markdown(css + f'<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
             
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
             st.write(f"⏱️ *即時報價最後同步：{datetime.datetime.now(tz_tw).strftime('%H:%M:%S')}*")
