@@ -132,7 +132,7 @@ def get_macro_news():
 
 
 # ==========================================
-# 📱 側邊欄
+# 📱 側邊欄 (優化版：支援自動收合)
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -162,7 +162,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 🖥️ 主畫面路由控制
+# 🖥️ 主畫面
 # ==========================================
 st.title("⚡ 台股分析終端")
 
@@ -190,7 +190,7 @@ elif analyze_manual_btn and manual_ticker:
 # ⚡ 模式分流：深度診斷模式 vs 主頁基本資訊看板
 # ==========================================
 if target_ticker:
-    # ─── 詳細診斷模式 ───
+    # ─── 詳細診斷頁面 ───
     with st.spinner(f"正在擷取 {target_ticker} 的量價數據與基本面資料..."):
         try:
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
@@ -368,7 +368,7 @@ if target_ticker:
             st.error(f"分析運算時發生錯誤: {e}")
 
 else:
-    # ─── 🌟 無感刷新黑科技：極致量價實時看板 (HTML 突破版) ───
+    # ─── 🌟 無感刷新黑科技：極致量價實時看板 ───
     st.markdown(f"### 📊 【{selected_cluster}】實時監控看板")
     st.caption("點選左側或利用上方搜尋框，進入個股深度診斷。")
     
@@ -376,7 +376,7 @@ else:
         user_font_size = st.slider(
             "🔍 調整看板文字大小 (px)", 
             min_value=12, 
-            max_value=40, 
+            max_value=36, 
             value=22, 
             step=2,
             help="向右拖曳可將看板數字放大，適合用手機看盤時使用。"
@@ -402,8 +402,8 @@ else:
                     change_amt = price_now - price_prev
                     change_pct = (change_amt / price_prev) * 100
                     
-                    # 💡 直接寫入 HTML 標籤 (<br> 與 <span>)
-                    price_vol_str = f"<b>{price_now:.2f}</b><br><span style='font-size: 0.7em; color: gray;'>({volume_now:,} 張)</span>"
+                    # 💡 結合 HTML 語法建立跨行儲存格資料
+                    price_vol_str = f"{price_now:.2f}<br><span style='font-size: 0.7em; color: gray;'>({volume_now:,} 張)</span>"
                     name_str = f"<b>{company_name}</b><br><span style='font-size: 0.8em; color: gray;'>{ticker_code}</span>"
                     
                     gap_emoji = ""
@@ -415,7 +415,6 @@ else:
                          (prev_day['High'] < prev2_day['Low'] and current_day['High'] >= prev2_day['Low']):
                         gap_emoji = " <span style='font-size: 0.8em;'>✅(缺口補)</span>"
 
-                    # 💡 直接套用顏色色碼
                     if change_amt > 0:
                         change_str = f"<span style='color: #ff4b4b; font-weight: bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%){gap_emoji}</span>"
                     elif change_amt < 0:
@@ -433,35 +432,42 @@ else:
         if dashboard_rows:
             monitor_df = pd.DataFrame(dashboard_rows)
             
-            # 🚨 改用 HTML 渲染，打破 Streamlit dataframe 鎖死 CSS 的限制
+            # 🚨 關鍵防護：徹底移除所有縮排！
             html_table = monitor_df.to_html(escape=False, index=False)
             
-            # 注入客製化動態 CSS (套用您的拉桿參數 user_font_size)
-            css = f"""
-            <style>
-            .watch-board table {{
-                width: 100%;
-                border-collapse: collapse;
-            }}
-            .watch-board th {{
-                text-align: center !important;
-                font-size: {max(14, user_font_size - 4)}px !important;
-                padding: 10px !important;
-                border-bottom: 2px solid #555 !important;
-                color: #888;
-            }}
-            .watch-board td {{
-                text-align: center !important;
-                font-size: {user_font_size}px !important;
-                padding: 16px !important;
-                border-bottom: 1px solid #444 !important;
-                vertical-align: middle !important;
-            }}
-            </style>
-            """
-            
-            # 顯示表格
-            st.markdown(css + f'<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
+            css_and_html = f"""
+<style>
+.watch-board table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-family: sans-serif;
+}}
+.watch-board th {{
+    text-align: center !important;
+    font-size: {max(14, user_font_size - 4)}px !important;
+    padding: 10px !important;
+    border-bottom: 2px solid #555 !important;
+    color: #888;
+    background-color: transparent !important;
+}}
+.watch-board td {{
+    text-align: center !important;
+    font-size: {user_font_size}px !important;
+    padding: 16px !important;
+    border-bottom: 1px solid #444 !important;
+    vertical-align: middle !important;
+    background-color: transparent !important;
+}}
+.dataframe {{
+    border: none !important;
+}}
+</style>
+<div class="watch-board">
+{html_table}
+</div>
+"""
+            # 使用 markdown 安全渲染 HTML
+            st.markdown(css_and_html, unsafe_allow_html=True)
             
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
             st.write(f"⏱️ *即時報價最後同步：{datetime.datetime.now(tz_tw).strftime('%H:%M:%S')}*")
