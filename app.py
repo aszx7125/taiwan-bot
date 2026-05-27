@@ -132,7 +132,7 @@ def get_macro_news():
 
 
 # ==========================================
-# 📱 側邊欄 (優化版：支援自動收合)
+# 📱 側邊欄 
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -162,7 +162,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 🖥️ 主畫面
+# 🖥️ 主畫面路由控制
 # ==========================================
 st.title("⚡ 台股分析終端")
 
@@ -176,7 +176,6 @@ with col2:
 
 st.markdown("---")
 
-# 🎯 路由核心：正確初始化與補捉目標代號
 target_ticker = None
 
 if 'analyze_trigger' in st.session_state and st.session_state.analyze_trigger:
@@ -191,7 +190,7 @@ elif analyze_manual_btn and manual_ticker:
 # ⚡ 模式分流：深度診斷模式 vs 主頁基本資訊看板
 # ==========================================
 if target_ticker:
-    # ─── 進入您指定的詳細分析視圖 ───
+    # ─── 進入詳細分析視圖 ───
     with st.spinner(f"正在擷取 {target_ticker} 的量價數據與基本面資料..."):
         try:
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
@@ -333,6 +332,7 @@ if target_ticker:
 
                 with tab2:
                     n_col1, n_col2 = st.columns(2)
+                    
                     with n_col1:
                         st.markdown(f"### 🎯 {c_name} 最新專屬新聞與公告")
                         if stock_news:
@@ -368,60 +368,92 @@ if target_ticker:
             st.error(f"分析運算時發生錯誤: {e}")
 
 else:
-    # ─── 📋 主畫面狀態：展示當前分組的基本量價資訊 ───
-    st.markdown(f"### 📊 【{selected_cluster}】產業成份股即時監控")
-    st.caption("主畫面僅呈現基礎量價指標，欲查看型態測幅與籌碼細節，請點選左側或利用上方搜尋框進入詳細診斷。")
+    # ─── 🌟 無感刷新黑科技：極致量價實時看板 ───
+    st.markdown(f"### 📊 【{selected_cluster}】實時監控看板")
+    st.caption("點選左側或利用上方搜尋框，進入個股深度診斷。")
     
-    dashboard_rows = []
-    with st.spinner(f"正在同步 【{selected_cluster}】 板塊數據..."):
+    @st.fragment(run_every=datetime.timedelta(seconds=15))
+    def render_realtime_dashboard():
+        dashboard_rows = []
         for stock_ticker in cluster_stocks:
             ticker_code = stock_ticker.split('.')[0]
             company_name = stock_names.get(ticker_code, "未知個股")
-            
             try:
                 kline_df, _ = get_kline_with_fugle(ticker_code)
-                if not kline_df.empty and len(kline_df) >= 2:
+                if not kline_df.empty and len(kline_df) >= 3:
                     current_day = kline_df.iloc[-1]
                     prev_day = kline_df.iloc[-2]
+                    prev2_day = kline_df.iloc[-3]
                     
                     price_now = current_day['Close']
                     price_prev = prev_day['Close']
-                    daily_change = ((price_now - price_prev) / price_prev) * 100
-                    volume_now = current_day['Volume']
+                    volume_now = int(current_day['Volume'])
+                    
+                    change_amt = price_now - price_prev
+                    change_pct = (change_amt / price_prev) * 100
+                    
+                    # 🎯 縫合 1：價格與成交量 (上方價格，下方成交量)
+                    price_vol_str = f"{price_now:.2f}\n({volume_now:,} 張)"
+                    
+                    # 🎯 縫合 2：缺口狀態隱藏在漲跌幅文字中 (使用符號標記)
+                    gap_emoji = ""
+                    if current_day['Low'] > prev_day['High']:
+                        gap_emoji = " 🔥(跳空)"
+                    elif current_day['High'] < prev_day['Low']:
+                        gap_emoji = " ❄️(跳空)"
+                    elif (prev_day['Low'] > prev2_day['High'] and current_day['Low'] <= prev2_day['High']) or \
+                         (prev_day['High'] < prev2_day['Low'] and current_day['High'] >= prev2_day['Low']):
+                        gap_emoji = " ✅(缺口補)"
+
+                    # 格式化：上方金額，下方括號百分比與缺口提示
+                    if change_amt > 0:
+                        change_str = f"+{change_amt:.2f}\n(+{change_pct:.2f}%){gap_emoji}"
+                    elif change_amt < 0:
+                        change_str = f"{change_amt:.2f}\n({change_pct:.2f}%){gap_emoji}"
+                    else:
+                        change_str = f"0.00\n(0.00%){gap_emoji}"
                     
                     dashboard_rows.append({
-                        "股票代號": ticker_code,
-                        "公司名稱": company_name,
-                        "當前現價": round(price_now, 2),
-                        "今日漲跌幅": f"{daily_change:+.2f}%",
-                        "本日成交量 (張)": int(volume_now)
+                        "代號": ticker_code,
+                        "名稱": company_name,
+                        "及時價 (成交量)": price_vol_str,
+                        "今日漲跌幅": change_str
                     })
-            except:
-                pass
+            except: pass
                 
-    if dashboard_rows:
-        monitor_df = pd.DataFrame(dashboard_rows)
-        
-        # 🌟 新增：表格樣式自訂義 (文字大小與台股紅綠漲跌)
-        def style_returns(val):
-            # 判斷是否為字串型態的漲跌幅
-            if isinstance(val, str):
-                if val.startswith('+'):
-                    return 'color: #ff4b4b; font-weight: bold;' # 漲幅顯示為紅色
-                elif val.startswith('-'):
-                    return 'color: #00cc96; font-weight: bold;' # 跌幅顯示為綠色
-            return 'color: gray;'
+        if dashboard_rows:
+            monitor_df = pd.DataFrame(dashboard_rows)
+            
+            # 🎨 專屬漲跌幅顏色邏輯 (台股：紅漲綠跌)
+            def style_returns(val):
+                if isinstance(val, str):
+                    if val.startswith('+'): 
+                        return 'color: #ff4b4b; font-weight: bold; white-space: pre-wrap; text-align: center;' 
+                    elif val.startswith('-'): 
+                        return 'color: #00cc96; font-weight: bold; white-space: pre-wrap; text-align: center;' 
+                return 'color: #a0a0a0; font-weight: bold; white-space: pre-wrap; text-align: center;'
 
-        # 透過 set_properties 放大整體字體，並透過 map 套用針對性顏色
-        styled_df = monitor_df.style.set_properties(**{
-            'font-size': '24px',     # ✨ 在這裡調整整張表格的文字大小
-            'padding': '8px'         # 讓儲存格的空間寬敞一點
-        }).map(style_returns, subset=['今日漲跌幅'])
+            # 讓價格與成交量欄位也能正確換行與置中
+            def style_price(val):
+                return 'font-weight: bold; white-space: pre-wrap; text-align: center;'
 
-        st.dataframe(
-            styled_df,
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("📡 暫時無法取得該板塊的快取數據，請於左側選單點選個股直接發動實時診斷。")
+            # 套用全域大字體與專屬欄位顏色
+            styled_df = monitor_df.style.set_properties(**{
+                'font-size': '26px',     # ✨ 這裡控制看板整體的文字大小 (20px)
+                'text-align': 'center',  
+                'padding': '12px'
+            }).map(style_returns, subset=['今日漲跌幅']).map(style_price, subset=['及時價 (成交量)'])
+            
+            # 渲染極簡 4 欄位表格
+            st.dataframe(
+                styled_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            tz_tw = datetime.timezone(datetime.timedelta(hours=8))
+            st.write(f"⏱️ *即時報價最後同步：{datetime.datetime.now(tz_tw).strftime('%H:%M:%S')}*")
+        else:
+            st.info("📡 讀取中...")
+
+    render_realtime_dashboard()
