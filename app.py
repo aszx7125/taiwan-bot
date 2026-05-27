@@ -6,7 +6,8 @@ import datetime
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
-import concurrent.futures
+import asyncio
+import aiohttp
 
 try:
     import plotly.graph_objects as go
@@ -19,50 +20,54 @@ except ImportError:
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
 
 # ==========================================
-# ⚙️ 系統核心設定區
+# ⚙️ 系統核心設定與自訂清單管理器
 # ==========================================
 try: FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
-except: FUGLE_API_KEY = "" # ⚠️ 若有富果金鑰請貼此
+except: FUGLE_API_KEY = ""
 
 yf_session = requests.Session()
 yf_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
 
-stock_clusters = {
-    "半導體": ["2330.TW", "3711.TW", "2454.TW", "2303.TW", "5347.TWO", "3034.TW"],
-    "矽光子": ["3363.TWO", "3450.TW", "6451.TW", "3081.TWO", "4979.TWO", "3163.TWO"],
-    "伺服器": ["2382.TW", "3231.TW", "6669.TW", "2376.TW", "3017.TW", "5274.TWO"],
-    "金融股": ["2881.TW", "2882.TW", "2886.TW", "2891.TW", "2884.TW"],
-    "傳統產業": ["1101.TW", "2002.TW", "2603.TW", "2609.TW", "2618.TW"],
-    "低軌衛星": ["3491.TWO", "3138.TW", "6285.TW", "2383.TW", "2314.TW"],
-    "面板": ["2409.TW", "3481.TW", "6116.TW"],
-    "ETF": ["0050.TW", "0056.TW", "00878.TW", "00919.TW", "00929.TW"]
-}
+# 初始化預設群組 (存入 session_state 讓使用者可以動態修改)
+if 'stock_clusters' not in st.session_state:
+    st.session_state.stock_clusters = {
+        "半導體": ["2330.TW", "3711.TW", "2454.TW", "2303.TW", "5347.TWO", "3034.TW"],
+        "矽光子": ["3363.TWO", "3450.TW", "6451.TW", "3081.TWO", "4979.TWO", "3163.TWO"],
+        "伺服器": ["2382.TW", "3231.TW", "6669.TW", "2376.TW", "3017.TW", "5274.TWO"],
+        "金融股": ["2881.TW", "2882.TW", "2886.TW", "2891.TW", "2884.TW"],
+        "傳統產業": ["1101.TW", "2002.TW", "2603.TW", "2609.TW", "2618.TW"],
+        "低軌衛星": ["3491.TWO", "3138.TW", "6285.TW", "2383.TW", "2314.TW"],
+        "面板": ["2409.TW", "3481.TW", "6116.TW"],
+        "ETF": ["0050.TW", "0056.TW", "00878.TW", "00919.TW", "00929.TW"]
+    }
 
-stock_names = {
-    "3491": "昇達科", "3138": "耀登", "6285": "啟碁", "2383": "華通", "2314": "台揚",
-    "3363": "上詮", "3450": "聯鈞", "6451": "訊芯", "3081": "聯亞", "4979": "華星光", "3163": "波若威",
-    "2409": "友達", "3481": "群創", "6116": "彩晶",
-    "2330": "台積電", "3711": "日月光投控", "2454": "聯發科", "2303": "聯電", "5347": "世界先進", "3034": "聯詠",
-    "2382": "廣達", "3231": "緯創", "6669": "緯穎", "2376": "技嘉", "3017": "奇鋐", "5274": "信驊",
-    "2881": "富邦金", "2882": "國泰金", "2886": "兆豐金", "2891": "中信金", "2884": "玉山金",
-    "1101": "台泥", "2002": "中鋼", "2603": "長榮", "2609": "陽明", "2618": "長榮航",
-    "0050": "台灣50", "0056": "高股息", "00878": "永續高息", "00919": "精選高息", "00929": "科技優息"
-}
-TICKER_MAP = {t.split('.')[0]: t for tickers in stock_clusters.values() for t in tickers}
+# 初始化預設名稱字典
+if 'stock_names' not in st.session_state:
+    st.session_state.stock_names = {
+        "3491": "昇達科", "3138": "耀登", "6285": "啟碁", "2383": "華通", "2314": "台揚",
+        "3363": "上詮", "3450": "聯鈞", "6451": "訊芯", "3081": "聯亞", "4979": "華星光", "3163": "波若威",
+        "2409": "友達", "3481": "群創", "6116": "彩晶",
+        "2330": "台積電", "3711": "日月光投控", "2454": "聯發科", "2303": "聯電", "5347": "世界先進", "3034": "聯詠",
+        "2382": "廣達", "3231": "緯創", "6669": "緯穎", "2376": "技嘉", "3017": "奇鋐", "5274": "信驊",
+        "2881": "富邦金", "2882": "國泰金", "2886": "兆豐金", "2891": "中信金", "2884": "玉山金",
+        "1101": "台泥", "2002": "中鋼", "2603": "長榮", "2609": "陽明", "2618": "長榮航",
+        "0050": "台灣50", "0056": "高股息", "00878": "永續高息", "00919": "精選高息", "00929": "科技優息"
+    }
+
+def get_ticker_map():
+    return {t.split('.')[0]: t for tickers in st.session_state.stock_clusters.values() for t in tickers}
 
 # ==========================================
 # ⚡ 數據獲取與指標引擎
 # ==========================================
-# ✨ 新增：快取讀取 GitHub 上的 CSV
 @st.cache_data(ttl=3600*24)
 def load_all_market_tickers():
     try:
         df = pd.read_csv("all_tw_stocks.csv")
-        # 同時更新 stock_names 字典，這樣雷達掃出來才會有中文名字！
         for index, row in df.iterrows():
             code = str(row['Ticker']).split('.')[0]
-            if code not in stock_names:
-                stock_names[code] = str(row['Name'])
+            if code not in st.session_state.stock_names:
+                st.session_state.stock_names[code] = str(row['Name'])
         return df['Ticker'].tolist()
     except Exception as e:
         return []
@@ -99,7 +104,8 @@ def get_market_summary():
 
 @st.cache_data(ttl=60) 
 def get_kline_with_fugle(ticker_code):
-    symbols_to_try = [TICKER_MAP.get(ticker_code)] if ticker_code in TICKER_MAP else [f"{ticker_code}.TW", f"{ticker_code}.TWO"]
+    ticker_map = get_ticker_map()
+    symbols_to_try = [ticker_map.get(ticker_code)] if ticker_code in ticker_map else [f"{ticker_code}.TW", f"{ticker_code}.TWO"]
     df, actual_symbol = pd.DataFrame(), ""
     import warnings
     with warnings.catch_warnings():
@@ -151,20 +157,110 @@ def get_macro_news():
     except: return []
 
 # ==========================================
+# ⚡ Asyncio 異步高速爬蟲引擎 (專為全市場掃描設計)
+# ==========================================
+async def fetch_yahoo_history(session, symbol):
+    """使用 aiohttp 異步抓取 Yahoo 歷史數據"""
+    # 這裡我們為了極致速度，繞過 yfinance，直接戳 Yahoo 的底層 API
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=60d&interval=1d"
+    try:
+        async with session.get(url, timeout=5) as response:
+            if response.status == 200:
+                data = await response.json()
+                result = data.get('chart', {}).get('result', [])
+                if result:
+                    indicators = result[0].get('indicators', {}).get('quote', [{}])[0]
+                    closes = indicators.get('close', [])
+                    volumes = indicators.get('volume', [])
+                    
+                    # 清理 None 值
+                    closes = [c for c in closes if c is not None]
+                    volumes = [v for v in volumes if v is not None]
+                    
+                    if len(closes) >= 30:
+                        df = pd.DataFrame({'Close': closes, 'Volume': volumes})
+                        df = add_advanced_indicators(df)
+                        return symbol, df
+    except: pass
+    return symbol, None
+
+async def async_scan_market(tickers_to_scan, cond_vol, cond_ma, cond_rsi, cond_macd, progress_bar, status_text):
+    results = []
+    # 限制同時發出的請求數 (Concurrency Limit)，避免被 Yahoo 鎖 IP
+    connector = aiohttp.TCPConnector(limit=50) 
+    async with aiohttp.ClientSession(connector=connector, headers={"User-Agent": "Mozilla/5.0"}) as session:
+        tasks = [fetch_yahoo_history(session, t) for t in tickers_to_scan]
+        
+        completed = 0
+        total = len(tasks)
+        
+        # 使用 asyncio.as_completed 來即時獲取完成的任務
+        for future in asyncio.as_completed(tasks):
+            symbol, df = await future
+            completed += 1
+            
+            # 更新進度條 UI
+            if completed % 10 == 0 or completed == total:
+                progress_bar.progress(completed / total)
+                status_text.text(f"🚀 光速異步掃描中... ({completed}/{total})")
+
+            if df is not None:
+                c_close, c_vol = df['Close'].iloc[-1], df['Volume'].iloc[-1]
+                sma20, vol_sma5 = df['SMA_20'].iloc[-1], df['Vol_SMA5'].iloc[-1]
+                rsi, macd, signal = df['RSI'].iloc[-1], df['MACD'].iloc[-1], df['Signal'].iloc[-1]
+                macd_prev, signal_prev = df['MACD'].iloc[-2], df['Signal'].iloc[-2]
+                
+                pass_vol = (c_vol > vol_sma5 * 1.5) if cond_vol else True
+                pass_ma = (c_close > sma20) if cond_ma else True
+                pass_rsi = (rsi < 35) if cond_rsi else True
+                pass_macd = (macd > signal and macd_prev <= signal_prev) if cond_macd else True
+                
+                if pass_vol and pass_ma and pass_rsi and pass_macd:
+                    pct = ((c_close - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+                    code = symbol.split('.')[0]
+                    results.append({
+                        "代號": code, 
+                        "名稱": st.session_state.stock_names.get(code, "大盤個股"), 
+                        "現價": f"{c_close:.2f}", 
+                        "今日漲跌": f"{pct:+.2f}%", 
+                        "量比": f"{c_vol/vol_sma5:.1f}x" if vol_sma5>0 else "-",
+                        "RSI": f"{rsi:.1f}"
+                    })
+    return results
+
+# ==========================================
 # 📱 側邊欄 
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
     if 'sidebar_state' not in st.session_state: st.session_state.sidebar_state = 'expanded'
-    selected_cluster = st.selectbox("1. 選擇產業群組", list(stock_clusters.keys()))
-    cluster_stocks = stock_clusters[selected_cluster]
-    display_options = [f"{t.split('.')[0]} {stock_names.get(t.split('.')[0], '')}".strip() for t in cluster_stocks]
+    
+    selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
+    cluster_stocks = st.session_state.stock_clusters[selected_cluster]
+    display_options = [f"{t.split('.')[0]} {st.session_state.stock_names.get(t.split('.')[0], '')}".strip() for t in cluster_stocks]
     sidebar_ticker = st.selectbox("2. 選擇分析標的", display_options).split(' ')[0]
     st.write("") 
     if st.button("📊 診斷此自選股", use_container_width=True, type="primary"):
         st.session_state.analyze_trigger = sidebar_ticker 
         st.rerun()
     st.markdown("---")
+    
+    # ✨ 新增：自訂清單管理器
+    with st.expander("🛠️ 管理自選群組", expanded=False):
+        st.markdown("**新增群組**")
+        new_cluster_name = st.text_input("群組名稱 (如: AI概念股)")
+        new_cluster_tickers = st.text_area("股票代號 (用逗號分隔，如: 2330.TW, 2317.TW)")
+        if st.button("➕ 新增/更新群組"):
+            if new_cluster_name and new_cluster_tickers:
+                tickers_list = [t.strip().upper() for t in new_cluster_tickers.split(',')]
+                # 簡單驗證後綴
+                tickers_list = [t if ('.TW' in t or '.TWO' in t) else f"{t}.TW" for t in tickers_list]
+                st.session_state.stock_clusters[new_cluster_name] = tickers_list
+                st.success(f"已成功新增群組：{new_cluster_name}！")
+                st.rerun()
+            else:
+                st.error("請輸入名稱與代號。")
+
     if FUGLE_API_KEY: st.success("🟢 零延遲即時引擎已啟動")
     else: st.warning("🟡 目前使用 Yahoo 延遲報價")
 
@@ -226,7 +322,7 @@ if target_ticker:
                     if vol_ratio > 1.3 and close_today < open_today: breakout_prob, target_proj = "高機率破底", f"下測 **{round(sup_level - box_height, 1)}**"
                     else: breakout_prob, target_proj = "機率中等 (量縮)", f"支撐位 {round(sup_level, 1)} 防守戰"
 
-                c_name = stock_names.get(target_ticker, actual_symbol)
+                c_name = st.session_state.stock_names.get(target_ticker, actual_symbol)
                 trend_status = "多頭排列 📈" if (pd.notna(today['SMA_60']) and close_today > today['SMA_20'] and close_today > today['SMA_60']) else ("空頭弱勢 📉" if (pd.notna(today['SMA_60']) and close_today < today['SMA_20'] and close_today < today['SMA_60']) else "震盪整理")
                 limit_up, limit_down = round(yesterday_close * 1.10, 1), round(yesterday_close * 0.90, 1)
 
@@ -322,7 +418,7 @@ else:
         st.markdown("""<style>[data-testid="stMetricDelta"] svg { display: none; } [data-testid="stMetricDelta"] > div { flex-direction: row; } [data-testid="stMetricDelta"] > div:has(div:contains("+")) { color: #ff4b4b !important; } [data-testid="stMetricDelta"] > div:has(div:contains("-")) { color: #00cc96 !important; }</style>""", unsafe_allow_html=True)
     st.markdown("---")
 
-    main_tab1, main_tab2 = st.tabs(["📊 板塊實時監控", "⚡ 全市場策略雷達"])
+    main_tab1, main_tab2 = st.tabs(["📊 板塊實時監控", "⚡ 全市場異步策略雷達"])
 
     # 視角 1：實時監控看板
     with main_tab1:
@@ -336,7 +432,7 @@ else:
             dashboard_rows = []
             for stock_ticker in cluster_stocks:
                 ticker_code = stock_ticker.split('.')[0]
-                company_name = stock_names.get(ticker_code, "未知")
+                company_name = st.session_state.stock_names.get(ticker_code, "未知")
                 try:
                     kline_df, _ = get_kline_with_fugle(ticker_code)
                     if not kline_df.empty and len(kline_df) >= 5:
@@ -383,10 +479,10 @@ else:
             else: st.info("讀取中...")
         render_realtime_dashboard()
 
-    # 視角 2：全池策略選股雷達 (多執行緒支援 GitHub CSV)
+    # 視角 2：全池策略選股雷達 (光速 Asyncio 版本)
     with main_tab2:
-        st.markdown("#### ⚡ 全市場策略掃描雷達")
-        st.write("針對 **台股全市場 (上市/上櫃)** 進行即時多條件並行過濾。")
+        st.markdown("#### ⚡ 異步光速：全市場策略掃描雷達")
+        st.write("利用 `asyncio` 底層網路技術，針對 **台股全市場 (上市/上櫃)** 進行非阻塞光速過濾。")
         
         with st.expander("⚙️ 預測趨勢策略設定與說明", expanded=True):
             st.markdown("**【當前策略邏輯】：以下條件採『嚴格交集 (AND)』，全數符合才會出現在清單中。**")
@@ -399,71 +495,38 @@ else:
                 cond_macd = st.checkbox("📊 MACD 黃金交叉", value=True, help="確認波段動能由弱轉強")
                 
             st.markdown("---")
-            scan_mode = st.radio("🔍 選擇掃描範圍", ["僅掃描自選群組 (快速，約 10 秒)", "掃描全台股市場 (極慢，將讀取 GitHub 上的 all_tw_stocks.csv)"], index=0)
+            scan_mode = st.radio("🔍 選擇掃描範圍", ["僅掃描所有自選群組", "掃描全台股市場 (需準備 all_tw_stocks.csv)"], index=0)
         
-        if st.button("🚀 啟動雷達掃描", type="primary"):
-            custom_tickers = [t for group in stock_clusters.values() for t in group]
+        if st.button("🚀 啟動光速雷達掃描", type="primary"):
+            custom_tickers = [t for group in st.session_state.stock_clusters.values() for t in group]
             all_market_tickers = load_all_market_tickers()
             
             if "自選群組" in scan_mode:
                 tickers_to_scan = list(set(custom_tickers))
             else:
                 if not all_market_tickers:
-                    st.error("❌ 找不到 `all_tw_stocks.csv`！請確認您已執行生成腳本並上傳至 GitHub。已為您降級為掃描自選群組。")
+                    st.error("❌ 找不到 `all_tw_stocks.csv`！已為您降級為掃描自選群組。")
                     tickers_to_scan = list(set(custom_tickers))
                 else:
-                    st.warning("⚠️ 警告：掃描全市場 1,700 檔標的需要大量時間，且可能觸發 Yahoo API 的連線限制！")
+                    st.warning("⚠️ 準備向 Yahoo 伺服器發射 1700+ 個異步請求，請繫好安全帶！")
                     tickers_to_scan = list(set(custom_tickers + all_market_tickers))
             
-            st.info(f"📡 雷達已啟動，目標掃描數量：{len(tickers_to_scan)} 檔標的。請耐心等候...")
+            st.info(f"📡 雷達已啟動，目標掃描數量：{len(tickers_to_scan)} 檔標的。")
             
             progress_bar = st.progress(0)
             status_text = st.empty()
-            results = []
             
-            def analyze_single_stock(code):
-                try:
-                    df, _ = get_kline_with_fugle(code.split('.')[0])
-                    if not df.empty and len(df) >= 30:
-                        c_close, c_vol = df['Close'].iloc[-1], df['Volume'].iloc[-1]
-                        sma20, vol_sma5 = df['SMA_20'].iloc[-1], df['Vol_SMA5'].iloc[-1]
-                        rsi, macd, signal = df['RSI'].iloc[-1], df['MACD'].iloc[-1], df['Signal'].iloc[-1]
-                        macd_prev, signal_prev = df['MACD'].iloc[-2], df['Signal'].iloc[-2]
-                        
-                        pass_vol = (c_vol > vol_sma5 * 1.5) if cond_vol else True
-                        pass_ma = (c_close > sma20) if cond_ma else True
-                        pass_rsi = (rsi < 35) if cond_rsi else True
-                        pass_macd = (macd > signal and macd_prev <= signal_prev) if cond_macd else True
-                        
-                        if pass_vol and pass_ma and pass_rsi and pass_macd:
-                            pct = ((c_close - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
-                            name = stock_names.get(code.split('.')[0], "大盤個股")
-                            return {
-                                "代號": code.split('.')[0], 
-                                "名稱": name, 
-                                "現價": f"{c_close:.2f}", 
-                                "今日漲跌": f"{pct:+.2f}%", 
-                                "量比": f"{c_vol/vol_sma5:.1f}x" if vol_sma5>0 else "-",
-                                "RSI": f"{rsi:.1f}"
-                            }
-                except:
-                    pass
-                return None
-
             start_time = time.time()
-            # ✨ 核心多執行緒加速器
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_ticker = {executor.submit(analyze_single_stock, t): t for t in tickers_to_scan}
-                completed = 0
-                for future in concurrent.futures.as_completed(future_to_ticker):
-                    completed += 1
-                    progress_bar.progress(completed / len(tickers_to_scan))
-                    status_text.text(f"⏳ 正在進行海量運算... ({completed}/{len(tickers_to_scan)})")
-                    
-                    res = future.result()
-                    if res:
-                        results.append(res)
             
+            # ✨ 使用 asyncio.run 啟動異步循環
+            try:
+                results = asyncio.run(async_scan_market(tickers_to_scan, cond_vol, cond_ma, cond_rsi, cond_macd, progress_bar, status_text))
+            except Exception as e:
+                # 解決 streamlit 內部 event loop 衝突問題
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                results = loop.run_until_complete(async_scan_market(tickers_to_scan, cond_vol, cond_ma, cond_rsi, cond_macd, progress_bar, status_text))
+                
             end_time = time.time()
             status_text.empty() 
             progress_bar.empty() 
