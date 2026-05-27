@@ -132,7 +132,7 @@ def get_macro_news():
 
 
 # ==========================================
-# 📱 側邊欄 
+# 📱 側邊欄
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -372,6 +372,17 @@ else:
     st.markdown(f"### 📊 【{selected_cluster}】實時監控看板")
     st.caption("點選左側或利用上方搜尋框，進入個股深度診斷。")
     
+    # 🎯 這裡新增：讓使用者動態調整字體大小的拉桿 (放入折疊面板保持整潔)
+    with st.expander("⚙️ 看板顯示設定", expanded=False):
+        user_font_size = st.slider(
+            "🔍 調整看板文字大小 (px)", 
+            min_value=12, 
+            max_value=36, 
+            value=20, # 預設值為我們前一版的 20px
+            step=2,
+            help="向右拖曳可將看板數字放大，適合用手機看盤時使用。"
+        )
+    
     @st.fragment(run_every=datetime.timedelta(seconds=15))
     def render_realtime_dashboard():
         dashboard_rows = []
@@ -392,10 +403,10 @@ else:
                     change_amt = price_now - price_prev
                     change_pct = (change_amt / price_prev) * 100
                     
-                    # 🎯 縫合 1：價格與成交量 (上方價格，下方成交量)
+                    # 縫合 1：價格與成交量 (上方價格，下方成交量)
                     price_vol_str = f"{price_now:.2f}\n({volume_now:,} 張)"
                     
-                    # 🎯 縫合 2：缺口狀態隱藏在漲跌幅文字中 (使用符號標記)
+                    # 縫合 2：缺口狀態隱藏在漲跌幅文字中
                     gap_emoji = ""
                     if current_day['Low'] > prev_day['High']:
                         gap_emoji = " 🔥(跳空)"
@@ -405,7 +416,6 @@ else:
                          (prev_day['High'] < prev2_day['Low'] and current_day['High'] >= prev2_day['Low']):
                         gap_emoji = " ✅(缺口補)"
 
-                    # 格式化：上方金額，下方括號百分比與缺口提示
                     if change_amt > 0:
                         change_str = f"+{change_amt:.2f}\n(+{change_pct:.2f}%){gap_emoji}"
                     elif change_amt < 0:
@@ -433,13 +443,12 @@ else:
                         return 'color: #00cc96; font-weight: bold; white-space: pre-wrap; text-align: center;' 
                 return 'color: #a0a0a0; font-weight: bold; white-space: pre-wrap; text-align: center;'
 
-            # 讓價格與成交量欄位也能正確換行與置中
             def style_price(val):
                 return 'font-weight: bold; white-space: pre-wrap; text-align: center;'
 
-            # 套用全域大字體與專屬欄位顏色
+            # ✨ 將使用者的選擇動態注入 (f'{user_font_size}px')
             styled_df = monitor_df.style.set_properties(**{
-                'font-size': '32px',     # ✨ 這裡控制看板整體的文字大小 (20px)
+                'font-size': f'{user_font_size}px', 
                 'text-align': 'center',  
                 'padding': '12px'
             }).map(style_returns, subset=['今日漲跌幅']).map(style_price, subset=['及時價 (成交量)'])
