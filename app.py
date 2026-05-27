@@ -112,6 +112,24 @@ def get_kline_with_fugle(ticker_code):
             
     return df, actual_symbol
 
+# 🌟 新增：專屬個股新聞獲取引擎 (Google RSS 穩定版)
+@st.cache_data(ttl=300)
+def get_stock_news(keyword):
+    try:
+        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(keyword)}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        root = ET.fromstring(response.text)
+        news_list = []
+        for item in root.findall('./channel/item')[:5]:
+            news_list.append({
+                "title": item.find('title').text,
+                "link": item.find('link').text,
+                "date": item.find('pubDate').text
+            })
+        return news_list
+    except:
+        return []
+
 # --- 總經新聞獲取引擎 ---
 @st.cache_data(ttl=300)
 def get_macro_news():
@@ -132,7 +150,7 @@ def get_macro_news():
 
 
 # ==========================================
-# 📱 側邊欄 
+# 📱 側邊欄 (優化版：支援自動收合)
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -265,13 +283,11 @@ if target_ticker:
                         target_proj = f"支撐位 {round(sup_level, 1)} 防守戰"
 
                 c_name = stock_names.get(target_ticker, "")
-                stock_news = []
                 try:
                     yf_ticker_obj = yf.Ticker(actual_symbol, session=yf_session)
                     info_tw = yf_ticker_obj.info
                     if not c_name: c_name = info_tw.get('shortName', '')
                     pe_ratio = info_tw.get('trailingPE', 'N/A')
-                    stock_news = yf_ticker_obj.news 
                 except:
                     pe_ratio = 'N/A'
                 
@@ -335,15 +351,13 @@ if target_ticker:
                     n_col1, n_col2 = st.columns(2)
                     with n_col1:
                         st.markdown(f"### 🎯 {c_name} 最新專屬新聞與公告")
+                        # 🌟 改用我們全新寫好的 Google RSS 引擎，徹底修復 1970 年的錯誤
+                        stock_news = get_stock_news(c_name if c_name else target_ticker)
                         if stock_news:
-                            for news_item in stock_news[:5]:
-                                title = news_item.get('title', '無標題')
-                                link = news_item.get('link', '#')
-                                publisher = news_item.get('publisher', '未知來源')
-                                dt = datetime.datetime.fromtimestamp(news_item.get('providerPublishTime', 0), tz=datetime.timezone(datetime.timedelta(hours=8)))
-                                time_str = dt.strftime('%Y-%m-%d %H:%M')
-                                st.markdown(f"**[{title}]({link})**")
-                                st.caption(f"📝 {publisher} | 🕒 {time_str}")
+                            for news_item in stock_news:
+                                st.markdown(f"**[{news_item['title']}]({news_item['link']})**")
+                                clean_date = news_item['date'].replace(" GMT", "")
+                                st.caption(f"🕒 {clean_date}")
                                 st.markdown("---")
                         else:
                             st.info("目前無最新個股專屬新聞。")
@@ -460,15 +474,9 @@ else:
                 
         if dashboard_rows:
             monitor_df = pd.DataFrame(dashboard_rows)
-            
-            # 🚨 終極防護：把 HTML 裡的所有換行字元清除，保證是一條無堅不摧的字串！
             html_table = monitor_df.to_html(escape=False, index=False, border=0).replace('\n', '')
-            
-            # 🚨 終極防護：把 CSS 也壓扁成一行，杜絕編輯器搞鬼！
             css = f"<style>.watch-board table {{ width: 100%; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size - 4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; color: #888; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>".replace('\n', '')
-            
             final_html = f'{css}<div class="watch-board">{html_table}</div>'
-            
             st.markdown(final_html, unsafe_allow_html=True)
             
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
