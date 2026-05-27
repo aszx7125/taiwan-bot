@@ -6,6 +6,14 @@ import datetime
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+import concurrent.futures
+
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
 # --- 網頁全局設定 ---
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
@@ -17,9 +25,8 @@ try: FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
 except: FUGLE_API_KEY = "" # ⚠️ 若有富果金鑰請貼此
 
 yf_session = requests.Session()
-yf_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+yf_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
 
-# 💡 您可以在此處隨意新增台股代號，雷達將掃描此處定義的所有標的
 stock_clusters = {
     "半導體": ["2330.TW", "3711.TW", "2454.TW", "2303.TW", "5347.TWO", "3034.TW"],
     "矽光子": ["3363.TWO", "3450.TW", "6451.TW", "3081.TWO", "4979.TWO", "3163.TWO"],
@@ -35,7 +42,7 @@ stock_names = {
     "3491": "昇達科", "3138": "耀登", "6285": "啟碁", "2383": "華通", "2314": "台揚",
     "3363": "上詮", "3450": "聯鈞", "6451": "訊芯", "3081": "聯亞", "4979": "華星光", "3163": "波若威",
     "2409": "友達", "3481": "群創", "6116": "彩晶",
-    "2330": "台積電", "3711": "日月光", "2454": "聯發科", "2303": "聯電", "5347": "世界", "3034": "聯詠",
+    "2330": "台積電", "3711": "日月光投控", "2454": "聯發科", "2303": "聯電", "5347": "世界先進", "3034": "聯詠",
     "2382": "廣達", "3231": "緯創", "6669": "緯穎", "2376": "技嘉", "3017": "奇鋐", "5274": "信驊",
     "2881": "富邦金", "2882": "國泰金", "2886": "兆豐金", "2891": "中信金", "2884": "玉山金",
     "1101": "台泥", "2002": "中鋼", "2603": "長榮", "2609": "陽明", "2618": "長榮航",
@@ -46,36 +53,33 @@ TICKER_MAP = {t.split('.')[0]: t for tickers in stock_clusters.values() for t in
 # ==========================================
 # ⚡ 數據獲取與指標引擎
 # ==========================================
+# ✨ 新增：快取讀取 GitHub 上的 CSV
+@st.cache_data(ttl=3600*24)
+def load_all_market_tickers():
+    try:
+        df = pd.read_csv("all_tw_stocks.csv")
+        # 同時更新 stock_names 字典，這樣雷達掃出來才會有中文名字！
+        for index, row in df.iterrows():
+            code = str(row['Ticker']).split('.')[0]
+            if code not in stock_names:
+                stock_names[code] = str(row['Name'])
+        return df['Ticker'].tolist()
+    except Exception as e:
+        return []
+
 def add_advanced_indicators(df):
     if df.empty or len(df) < 30: return df
-    
-    # 1. 均線與均量
-    df['SMA_5'] = df['Close'].rolling(5).mean()
-    df['SMA_20'] = df['Close'].rolling(20).mean()
-    df['SMA_60'] = df['Close'].rolling(60).mean()
+    df['SMA_5'], df['SMA_20'], df['SMA_60'] = df['Close'].rolling(5).mean(), df['Close'].rolling(20).mean(), df['Close'].rolling(60).mean()
     df['Vol_SMA5'] = df['Volume'].rolling(5).mean()
-    
-    # 2. RSI (相對強弱指標)
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # 3. MACD
-    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    gain, loss = (delta.where(delta > 0, 0)).rolling(14).mean(), (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + gain / loss))
+    exp1, exp2 = df['Close'].ewm(span=12, adjust=False).mean(), df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    
-    # 4. ATR (平均真實波幅)
     df['TR'] = df[['High', 'Low', 'Close']].apply(lambda x: max(x['High'] - x['Low'], abs(x['High'] - df['Close'].shift(1).loc[x.name]), abs(x['Low'] - df['Close'].shift(1).loc[x.name])), axis=1)
     df['ATR_14'] = df['TR'].rolling(14).mean()
-    
-    # 5. 近期壓力與支撐
-    df['Res_20'] = df['High'].shift(1).rolling(20).max()
-    df['Sup_20'] = df['Low'].shift(1).rolling(20).min()
-    
+    df['Res_20'], df['Sup_20'] = df['High'].shift(1).rolling(20).max(), df['Low'].shift(1).rolling(20).min()
     return df
 
 @st.cache_data(ttl=120)
@@ -115,7 +119,6 @@ def get_kline_with_fugle(ticker_code):
                 data = res.json()
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
                 rt_vol = data.get('total', {}).get('tradeVolume', 0)
-                
                 tz_tw = datetime.timezone(datetime.timedelta(hours=8))
                 today_date, last_candle_date = datetime.datetime.now(tz_tw).date(), df.index[-1].date()
                 if last_candle_date < today_date and rt_price:
@@ -189,7 +192,7 @@ if target_ticker:
     with st.spinner(f"正在擷取 {target_ticker} 深度資料..."):
         try:
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
-            is_market_open = datetime.datetime.now(tz_tw).weekday() < 5 and datetime.time(9, 0) <= datetime.datetime.now(tz_tw).time() <= datetime.time(13, 30)
+            is_market_open = now = datetime.datetime.now(tz_tw).weekday() < 5 and datetime.time(9, 0) <= datetime.datetime.now(tz_tw).time() <= datetime.time(13, 30)
             time_label = "今日盤中" if is_market_open else "明日"
             
             df, actual_symbol = get_kline_with_fugle(target_ticker)
@@ -235,7 +238,6 @@ if target_ticker:
                 m_col4.metric("防守風險 (ATR)", f"{atr14:.1f} 元")
                 st.markdown("---")
 
-                # ✨ 專業分析頁籤 ✨
                 tab1, tab2, tab3, tab4 = st.tabs(["🧱 測幅與策略", "🔍 前向驗證", "🕵️‍♂️ 籌碼動向(估)", "📰 新聞動態"])
                 
                 with tab1:
@@ -262,11 +264,9 @@ if target_ticker:
                     st.markdown("### 🔍 昨日策略劇本與今日走勢驗證")
                     y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
                     y_target = y_res + y_atr
-
                     col_r1, col_r2 = st.columns(2)
                     with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{y_res:.1f}**\n- 支撐位: **{y_sup:.1f}**\n- 測幅目標: **{y_target:.1f}**")
                     with col_r2: st.warning(f"**今日實況數據**\n- 最高價: **{high_today:.1f}**\n- 最低價: **{low_today:.1f}**\n- 收盤/現價: **{close_today:.1f}**")
-
                     if close_today > y_res:
                         if high_today >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位 {y_res:.1f}，成功觸及測幅目標 {y_target:.1f}！")
                         else: st.success(f"⭐⭐ **突破確認**：今日收盤 {close_today:.1f} 站上壓力位 {y_res:.1f}，多頭正式發動。")
@@ -281,7 +281,6 @@ if target_ticker:
                     foreign_buy = "連買" if vol_ratio > 1.2 and p_change > 0 else ("連賣" if p_change < 0 else "中立")
                     trust_buy = "加碼" if df['SMA_5'].iloc[-1] > df['SMA_20'].iloc[-1] else "調節"
                     retail_trend = "退場 (利多)" if p_change > 1.5 else ("湧入 (風險)" if p_change < -1.5 else "觀望")
-                    
                     st.write(f"- **👽 外資動向：** `{foreign_buy}` (佔股本約 {hash_val % 40 + 10}%)")
                     st.write(f"- **🏦 投信動向：** `{trust_buy}`")
                     st.write(f"- **🚶 散戶融資：** `{retail_trend}`")
@@ -323,7 +322,6 @@ else:
         st.markdown("""<style>[data-testid="stMetricDelta"] svg { display: none; } [data-testid="stMetricDelta"] > div { flex-direction: row; } [data-testid="stMetricDelta"] > div:has(div:contains("+")) { color: #ff4b4b !important; } [data-testid="stMetricDelta"] > div:has(div:contains("-")) { color: #00cc96 !important; }</style>""", unsafe_allow_html=True)
     st.markdown("---")
 
-    # ✨ 戰情室視角：拿掉熱力圖，專注於實時與全市場雷達 ✨
     main_tab1, main_tab2 = st.tabs(["📊 板塊實時監控", "⚡ 全市場策略雷達"])
 
     # 視角 1：實時監控看板
@@ -385,10 +383,10 @@ else:
             else: st.info("讀取中...")
         render_realtime_dashboard()
 
-    # 視角 2：全池策略選股雷達 (完全客製化)
+    # 視角 2：全池策略選股雷達 (多執行緒支援 GitHub CSV)
     with main_tab2:
         st.markdown("#### ⚡ 全市場策略掃描雷達")
-        st.write("針對 **系統內建全股池** (跨群組) 進行即時多條件過濾。")
+        st.write("針對 **台股全市場 (上市/上櫃)** 進行即時多條件並行過濾。")
         
         with st.expander("⚙️ 預測趨勢策略設定與說明", expanded=True):
             st.markdown("**【當前策略邏輯】：以下條件採『嚴格交集 (AND)』，全數符合才會出現在清單中。**")
@@ -399,44 +397,79 @@ else:
             with scan_c2:
                 cond_ma = st.checkbox("📈 強勢多頭 (收盤價 > 20MA)", value=True, help="過濾掉空頭趨勢股")
                 cond_macd = st.checkbox("📊 MACD 黃金交叉", value=True, help="確認波段動能由弱轉強")
+                
+            st.markdown("---")
+            scan_mode = st.radio("🔍 選擇掃描範圍", ["僅掃描自選群組 (快速，約 10 秒)", "掃描全台股市場 (極慢，將讀取 GitHub 上的 all_tw_stocks.csv)"], index=0)
         
-        if st.button("🚀 啟動全市場掃描", type="primary"):
-            with st.spinner("雷達運算中，請稍候..."):
-                results = []
-                # 取出字典裡定義的所有標的組成全市場清單
-                all_tickers = [t for group in stock_clusters.values() for t in group] 
-                
-                for t in all_tickers:
-                    code = t.split('.')[0]
-                    try:
-                        df, _ = get_kline_with_fugle(code)
-                        if not df.empty and len(df) >= 30:
-                            c_close, c_vol = df['Close'].iloc[-1], df['Volume'].iloc[-1]
-                            sma20, vol_sma5 = df['SMA_20'].iloc[-1], df['Vol_SMA5'].iloc[-1]
-                            rsi, macd, signal = df['RSI'].iloc[-1], df['MACD'].iloc[-1], df['Signal'].iloc[-1]
-                            macd_prev, signal_prev = df['MACD'].iloc[-2], df['Signal'].iloc[-2]
-                            
-                            # 嚴格 AND 邏輯判斷
-                            pass_vol = (c_vol > vol_sma5 * 1.5) if cond_vol else True
-                            pass_ma = (c_close > sma20) if cond_ma else True
-                            pass_rsi = (rsi < 35) if cond_rsi else True
-                            # MACD 金叉：昨日 MACD <= Signal 且 今日 MACD > Signal
-                            pass_macd = (macd > signal and macd_prev <= signal_prev) if cond_macd else True
-                            
-                            if pass_vol and pass_ma and pass_rsi and pass_macd:
-                                pct = ((c_close - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
-                                results.append({
-                                    "代號": code, 
-                                    "名稱": stock_names.get(code, ""), 
-                                    "現價": f"{c_close:.2f}", 
-                                    "今日漲跌": f"{pct:+.2f}%", 
-                                    "量比": f"{c_vol/vol_sma5:.1f}x" if vol_sma5>0 else "-",
-                                    "RSI": f"{rsi:.1f}"
-                                })
-                    except: pass
-                
-                if results:
-                    st.success(f"掃描完成！共捕捉到 {len(results)} 檔符合策略條件的標的：")
-                    st.dataframe(pd.DataFrame(results), use_container_width=True)
-                else: 
-                    st.warning("當前盤面無任何標的符合您設定的嚴格策略交集。")
+        if st.button("🚀 啟動雷達掃描", type="primary"):
+            custom_tickers = [t for group in stock_clusters.values() for t in group]
+            all_market_tickers = load_all_market_tickers()
+            
+            if "自選群組" in scan_mode:
+                tickers_to_scan = list(set(custom_tickers))
+            else:
+                if not all_market_tickers:
+                    st.error("❌ 找不到 `all_tw_stocks.csv`！請確認您已執行生成腳本並上傳至 GitHub。已為您降級為掃描自選群組。")
+                    tickers_to_scan = list(set(custom_tickers))
+                else:
+                    st.warning("⚠️ 警告：掃描全市場 1,700 檔標的需要大量時間，且可能觸發 Yahoo API 的連線限制！")
+                    tickers_to_scan = list(set(custom_tickers + all_market_tickers))
+            
+            st.info(f"📡 雷達已啟動，目標掃描數量：{len(tickers_to_scan)} 檔標的。請耐心等候...")
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            results = []
+            
+            def analyze_single_stock(code):
+                try:
+                    df, _ = get_kline_with_fugle(code.split('.')[0])
+                    if not df.empty and len(df) >= 30:
+                        c_close, c_vol = df['Close'].iloc[-1], df['Volume'].iloc[-1]
+                        sma20, vol_sma5 = df['SMA_20'].iloc[-1], df['Vol_SMA5'].iloc[-1]
+                        rsi, macd, signal = df['RSI'].iloc[-1], df['MACD'].iloc[-1], df['Signal'].iloc[-1]
+                        macd_prev, signal_prev = df['MACD'].iloc[-2], df['Signal'].iloc[-2]
+                        
+                        pass_vol = (c_vol > vol_sma5 * 1.5) if cond_vol else True
+                        pass_ma = (c_close > sma20) if cond_ma else True
+                        pass_rsi = (rsi < 35) if cond_rsi else True
+                        pass_macd = (macd > signal and macd_prev <= signal_prev) if cond_macd else True
+                        
+                        if pass_vol and pass_ma and pass_rsi and pass_macd:
+                            pct = ((c_close - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+                            name = stock_names.get(code.split('.')[0], "大盤個股")
+                            return {
+                                "代號": code.split('.')[0], 
+                                "名稱": name, 
+                                "現價": f"{c_close:.2f}", 
+                                "今日漲跌": f"{pct:+.2f}%", 
+                                "量比": f"{c_vol/vol_sma5:.1f}x" if vol_sma5>0 else "-",
+                                "RSI": f"{rsi:.1f}"
+                            }
+                except:
+                    pass
+                return None
+
+            start_time = time.time()
+            # ✨ 核心多執行緒加速器
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_ticker = {executor.submit(analyze_single_stock, t): t for t in tickers_to_scan}
+                completed = 0
+                for future in concurrent.futures.as_completed(future_to_ticker):
+                    completed += 1
+                    progress_bar.progress(completed / len(tickers_to_scan))
+                    status_text.text(f"⏳ 正在進行海量運算... ({completed}/{len(tickers_to_scan)})")
+                    
+                    res = future.result()
+                    if res:
+                        results.append(res)
+            
+            end_time = time.time()
+            status_text.empty() 
+            progress_bar.empty() 
+            
+            if results:
+                st.success(f"🎯 掃描完成！耗時 {round(end_time - start_time, 1)} 秒。共捕捉到 **{len(results)}** 檔符合嚴格條件的標的：")
+                st.dataframe(pd.DataFrame(results), use_container_width=True)
+            else: 
+                st.warning(f"掃描完成 (耗時 {round(end_time - start_time, 1)} 秒)。當前盤面無任何標的符合您設定的策略交集。")
