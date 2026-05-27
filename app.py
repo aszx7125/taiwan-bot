@@ -132,7 +132,7 @@ def get_macro_news():
 
 
 # ==========================================
-# 📱 側邊欄 (優化版：支援自動收合)
+# 📱 側邊欄 
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -294,12 +294,10 @@ if target_ticker:
 
                 st.markdown("---")
 
-                # ✨ 這裡加入您要求的第三頁籤 (Tab 3)
                 tab1, tab2, tab3 = st.tabs(["📊 量化診斷與策略推演", "📰 財報新聞與總經動態", "🔍 昨日預測 vs 今日實況"])
                 
                 with tab1:
                     d_col1, d_col2 = st.columns(2)
-                    
                     with d_col1:
                         st.markdown("### 🧱 型態與支撐壓力分析")
                         st.write(f"- **前高壓力 (近20日):** {round(res_level, 1)} | **已測試:** {res_tests} 次")
@@ -335,7 +333,6 @@ if target_ticker:
 
                 with tab2:
                     n_col1, n_col2 = st.columns(2)
-                    
                     with n_col1:
                         st.markdown(f"### 🎯 {c_name} 最新專屬新聞與公告")
                         if stock_news:
@@ -363,13 +360,11 @@ if target_ticker:
                         else:
                             st.info("目前無最新總經新聞。")
 
-                # ✨ Tab 3: 前向測試驗證邏輯
                 with tab3:
                     st.markdown("### 🔍 昨日策略劇本與今日走勢驗證")
                     st.write("系統自動讀取**昨日盤後**設定的關鍵點位，對比**今日**的實際走勢，即時驗證策略是否如期發動。")
 
-                    # 讀取昨日的基準數據
-                    y_res = today['Res_20']  # 今天的 Res_20 其實就是昨日收盤後算出來的前高壓力
+                    y_res = today['Res_20']  
                     y_sup = today['Sup_20']
                     y_atr = yesterday['ATR_14']
                     y_target = y_res + y_atr
@@ -381,7 +376,6 @@ if target_ticker:
                         st.warning(f"**今日實況數據**\n- 最高價: **{high_today:.1f}**\n- 最低價: **{low_today:.1f}**\n- 收盤/現價: **{close_today:.1f}**")
 
                     st.markdown("#### 💡 走勢驗證判定")
-                    # AI 自動判定邏輯
                     if close_today > y_res:
                         if high_today >= y_target:
                             st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位 {y_res:.1f}，且最高來到 {high_today:.1f}，成功觸及昨日測幅目標 {y_target:.1f}！")
@@ -404,7 +398,7 @@ if target_ticker:
             st.error(f"分析運算時發生錯誤: {e}")
 
 else:
-    # ─── 🌟 無感刷新黑科技：極致量價實時看板 (HTML 突破版) ───
+    # ─── 🌟 無感刷新黑科技：極致量價實時看板 (單行防護版) ───
     st.markdown(f"### 📊 【{selected_cluster}】實時監控看板")
     st.caption("點選左側或利用上方搜尋框，進入個股深度診斷。")
     
@@ -466,32 +460,16 @@ else:
                 
         if dashboard_rows:
             monitor_df = pd.DataFrame(dashboard_rows)
-            html_table = monitor_df.to_html(escape=False, index=False)
             
-            css = f"""
-            <style>
-            .watch-board table {{
-                width: 100%;
-                border-collapse: collapse;
-            }}
-            .watch-board th {{
-                text-align: center !important;
-                font-size: {max(14, user_font_size - 4)}px !important;
-                padding: 10px !important;
-                border-bottom: 2px solid #555 !important;
-                color: #888;
-            }}
-            .watch-board td {{
-                text-align: center !important;
-                font-size: {user_font_size}px !important;
-                padding: 16px !important;
-                border-bottom: 1px solid #444 !important;
-                vertical-align: middle !important;
-            }}
-            </style>
-            """
+            # 🚨 終極防護：把 HTML 裡的所有換行字元清除，保證是一條無堅不摧的字串！
+            html_table = monitor_df.to_html(escape=False, index=False, border=0).replace('\n', '')
             
-            st.markdown(css + f'<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
+            # 🚨 終極防護：把 CSS 也壓扁成一行，杜絕編輯器搞鬼！
+            css = f"<style>.watch-board table {{ width: 100%; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size - 4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; color: #888; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>".replace('\n', '')
+            
+            final_html = f'{css}<div class="watch-board">{html_table}</div>'
+            
+            st.markdown(final_html, unsafe_allow_html=True)
             
             tz_tw = datetime.timezone(datetime.timedelta(hours=8))
             st.write(f"⏱️ *即時報價最後同步：{datetime.datetime.now(tz_tw).strftime('%H:%M:%S')}*")
