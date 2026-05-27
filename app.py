@@ -439,7 +439,7 @@ else:
 
             # 套用全域大字體與專屬欄位顏色
             styled_df = monitor_df.style.set_properties(**{
-                'font-size': '26px',     # ✨ 這裡控制看板整體的文字大小 (20px)
+                'font-size': '32px',     # ✨ 這裡控制看板整體的文字大小 (20px)
                 'text-align': 'center',  
                 'padding': '12px'
             }).map(style_returns, subset=['今日漲跌幅']).map(style_price, subset=['及時價 (成交量)'])
