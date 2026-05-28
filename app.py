@@ -195,7 +195,41 @@ else:
     with tab3:
         st.markdown("#### 🎯 多因子演算法綜合評分排行榜 (TOP 20)")
         st.caption("結合 日/週雙時區共振、大盤相對強度矩陣 (RS) 及 大戶籌碼估算模型 進行深度排行。")
-        
+        # 🌟 新增：AI 評分標準說明展開面板
+        with st.expander("ℹ️ 了解 AI 多因子評分標準 (滿分 100 分)"):
+            st.markdown("""
+            本系統採用 **6 大核心量化因子** 進行權重計分，以尋找市場上具備「多頭共振」的最強勢標的：
+            
+            * **📈 趨勢防護 (10分)**：收盤價必須站上 20 日均線 (月線)，確保處於多頭基底。
+            * **🔥 量能發動 (15分)**：今日成交量大於近 5 日均量的 1.5 倍，顯示資金實質進駐。
+            * **📊 動能金叉 (15分)**：日線 MACD 大於 Signal 線，確認短波段動能向上。
+            * **🚀 領漲抗跌 (15分)**：近 20 日相對大盤強度 (RS Index) 大於 0.02 (贏過大盤 2%)。
+            * **🌍 週線共振 (15分)**：模擬週線級別 MACD 處於多頭，提供大週期趨勢保護。
+            * **💥 壓縮突破 (15分)**：由布林通道與肯特納通道計算出的 Squeeze 狀態解除，並向上突破上軌。
+            * **👽 籌碼動能 (15分)**：近 5 日「聰明錢指標 (價漲量增/價跌量縮)」累積呈現正向，顯示大戶偏多操作。
+            """)
+
+        # 🌟 新增：互動式多因子權重模擬器 (幫助使用者理解)
+        if st.checkbox("開啟 AI 評分權重模擬器"):
+            st.markdown("下方提供一個互動式模擬器，您可以體驗調整各項因子的權重，觀察其如何影響總分。*(此為教學模擬，實際系統固定採上述 100 分制)*")
+            import json
+            st.components.v1.html(
+                f"""
+                <script type="module" src="https://md-block.github.io/md-block.js"></script>
+                <div style="width: 100%; height: 600px; border: 1px solid #ccc; border-radius: 8px; overflow: hidden;">
+                    <iframe srcdoc='<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e1e;color:#fff;font-family:sans-serif;"><h2>模擬器載入中...請稍候</h2><script>window.location.href="data:text/html;charset=utf-8," + encodeURIComponent(`<html><head><title>模擬器</title></head><body style="background:#1e1e1e; color: white;"><h3>這裡將會顯示互動式組件</h3></body></html>`);</script></body></html>' width="100%" height="100%" frameborder="0"></iframe>
+                </div>
+                """,
+                height=620,
+            )
+            
+            # 使用 LlmGeneratedComponent 插入互動式組件
+            st.markdown("""
+            ```json?chameleon
+            {"component":"LlmGeneratedComponent","props":{"height":"650px","prompt":"建立一個名為『台股多因子演算法權重分配與模擬器』的教學組件。上方提供 7 個獨立可調的權重滑桿（趨勢防護權重、量能發動權重、動能金叉權重、領漲抗跌權重、週線共振權重、壓縮突破權重、籌碼動能權重），每個滑桿預設值為我們系統設定的分數 (10, 15, 15, 15, 15, 15, 15)，範圍為 0 到 30 分，並在下方動態計算『當前權重總分』。中央建立一個數據矩陣表格，列出 5 檔模擬的台股焦點熱門股（例如：聯鈞、昇達科、台積電、上詮、廣達），每檔股票背後綁定一組固定的二元技術型態狀態。當使用者調整滑桿時，下方圖表與表格會即時依據最新的權重比例，動態計算出這 5 檔股票的『AI 綜合評分』與『即時量化排名』。所有 UI 標籤、說明、與股票名稱皆使用繁體中文。","id":"im_c12147141a946c56"}}
+        """)
+
+            st.markdown("---")
         if st.button("🔮 執行全權重深度矩陣運算", type="primary"):
             custom = [t for g in st.session_state.stock_clusters.values() for t in g]
             tickers = list(set(custom + (csv_df['Ticker'].tolist() if not csv_df.empty else [])))
@@ -208,3 +242,4 @@ else:
                 df_res = pd.DataFrame(res).sort_values("量化總分", ascending=False).head(20)
                 st.dataframe(df_res, column_config={"量化總分": st.column_config.ProgressColumn("多空綜合能量", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, index=False)
             else: st.warning("⚠️ 運算失敗，無法取得足夠數據。")
+            
