@@ -32,20 +32,32 @@ def get_market_summary():
         except: pass
     return res
 
+# 🚀 輔助函數：供並行查詢 Yahoo 歷史數據使用
+def _fetch_yf_history(symbol):
+    try:
+        temp = yf.Ticker(symbol, session=yf_session).history(period="6mo")
+        if not temp.empty: return symbol, temp
+    except: pass
+    return symbol, pd.DataFrame()
+
 @st.cache_data(ttl=30) 
 def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
     clean_ticker = ticker_code.split('.')[0]
     symbols_to_try = [f"{clean_ticker}.TW", f"{clean_ticker}.TWO"]
     df, actual_symbol = pd.DataFrame(), ""
+    
+    # 🚀 提速優化 1：並行查詢上市與上櫃代碼，節省 50% 探測時間
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        for symbol in symbols_to_try:
-            try:
-                temp = yf.Ticker(symbol, session=yf_session).history(period="6mo")
-                if not temp.empty: df, actual_symbol = temp, symbol; break 
-            except: pass
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(_fetch_yf_history, sym) for sym in symbols_to_try]
+            for future in concurrent.futures.as_completed(futures):
+                sym, temp_df = future.result()
+                if not temp_df.empty:
+                    df, actual_symbol = temp_df, sym
+                    break # 找到就立刻跳出
 
     if df.empty or len(df) < 20: return df, actual_symbol 
 

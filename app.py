@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import concurrent.futures
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES
 from data_fetcher import (
@@ -59,13 +60,22 @@ st.markdown("---")
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
 if target_ticker:
-    # ─── 【模組 A】單股深度診斷模式 (💯 無損完整恢復版) ───
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
-    with st.spinner(f"正在調用量化矩陣分析 {target_ticker}..."):
+    with st.spinner(f"正在以多執行緒全速分析 {target_ticker}..."):
         try:
-            df, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
+            # 🚀 提速優化 2：主頁面資料搜集全面併發 (Concurrent Fetching)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                future_kline = executor.submit(get_kline_with_fugle, target_ticker, FUGLE_API_KEY)
+                future_news_s = executor.submit(get_stock_news, c_name)
+                future_news_m = executor.submit(get_macro_news)
+                
+                # 取得所有結果 (等待時間由原本累加變成取最大值)
+                df, actual_symbol = future_kline.result()
+                news_s = future_news_s.result()
+                news_m = future_news_m.result()
+
             if df.empty or len(df) < 40: 
                 st.error("❌ 該標的數據深度不足，無法執行複雜演算法。")
             else:
@@ -73,7 +83,6 @@ if target_ticker:
                 vol_ratio = (today['Volume'] / today['Vol_SMA5']) if today['Vol_SMA5'] > 0 else 1.0
                 p_change = ((today['Close'] - yesterday['Close']) / yesterday['Close']) * 100
                 
-                # 🌟 完整恢復：深度測幅與機率評估運算
                 res_level, sup_level = today['Res_20'], today['Sup_20']
                 box_height = res_level - sup_level
                 
@@ -157,19 +166,17 @@ if target_ticker:
                     chip_txt = "👽 外資/大戶積極建倉中 (價漲量增)" if sm >= 1 else ("🚶 散戶接盤/大戶出貨 (價跌量增)" if sm <= -1 else "⚖️ 籌碼無明確方向，量能萎縮")
                     st.info(f"**智能籌碼動向判定:** {chip_txt}")
                     st.progress(int(today.get('Score', 0)), text=f"量化綜合控盤度：{int(today.get('Score', 0))}%")
-                    st.caption("基於價量背離、RS 指標與週線多時區共振加權推算。分數越高，代表法人與大戶資金沉澱度越高。")
+                    st.caption("基於價量背離、RS 指標與週線多時區共振加權推算。分數越高，代表法蘭與大戶資金沉澱度越高。")
                 
                 with t4:
                     nl, nr = st.columns(2)
                     with nl:
                         st.markdown("#### 🎯 個股專屬新聞")
-                        news_s = get_stock_news(c_name)
                         if news_s:
                             for n in news_s[:5]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
                         else: st.info("無相關新聞")
                     with nr:
                         st.markdown("#### 🌍 總經大盤焦點")
-                        news_m = get_macro_news()
                         if news_m:
                             for n in news_m[:5]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
                         else: st.info("無大盤新聞")
@@ -191,7 +198,7 @@ else:
         st.markdown("""<style>[data-testid="stMetricDelta"] svg { display: none; } [data-testid="stMetricDelta"] > div { flex-direction: row; } [data-testid="stMetricDelta"] > div:has(div:contains("+")) { color: #ff4b4b !important; } [data-testid="stMetricDelta"] > div:has(div:contains("-")) { color: #00cc96 !important; }</style>""", unsafe_allow_html=True)
     
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📊 板塊實時監控", "⚡ 多執行緒策略雷達", "🎯 多因子 AI 評分 (含籌碼)"])
+    tab1, tab2, tab3 = st.tabs(["📊 板塊實時監控", "⚡ 條件設定全市場雷達", "🎯 多因子 AI 評分 (含籌碼)"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
