@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import random # 用於模擬貪婪指數
+import random 
+import concurrent.futures
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES
 from data_fetcher import (
@@ -65,7 +66,6 @@ if target_ticker:
     
     with st.spinner(f"正在以多執行緒全速分析 {target_ticker}..."):
         try:
-            import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 future_kline = executor.submit(get_kline_with_fugle, target_ticker, FUGLE_API_KEY)
                 future_news_s = executor.submit(get_stock_news, c_name)
@@ -115,7 +115,7 @@ if target_ticker:
                 m4.metric("大盤相對強度", f"{today.get('RS_Index', 0)*100:+.2f}%")
                 
                 st.markdown("---")
-                t1, t2, t3, t4 = st.tabs(["🧱 測幅與策略推演", "🔍 前向驗證 (昨日對今日)", "🕵️‍♂️ 籌碼動向矩陣", "📰 專屬新聞動態"])
+                t1, t2, t3, t4 = st.tabs(["🧱 測幅與策略推演", "🔍 前向策略回測", "🕵️‍♂️ 籌碼動向矩陣", "📰 專屬新聞動態"])
                 
                 with t1:
                     c_l, c_r = st.columns(2)
@@ -139,25 +139,60 @@ if target_ticker:
                         else: st.info("⏸️ 股價處於箱體內部結構震盪，採取下軌附近低吸、上軌調節之區間策略。")
                 
                 with t2:
-                    st.markdown("### 🔍 昨日策略劇本與今日實況對撞")
-                    y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
-                    y_target = y_res + y_atr
+                    st.markdown("### 🔍 歷史預測與實況對撞 (Forward Testing)")
+                    sub_t1, sub_t2 = st.tabs(["1️⃣ 昨日預測 (近 1 日)", "5️⃣ 一週波段 (近 5 日)"])
+                    
+                    with sub_t1:
+                        y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
+                        y_target = y_res + y_atr
 
-                    col_r1, col_r2 = st.columns(2)
-                    with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{y_res:.1f}**\n- 支撐位: **{y_sup:.1f}**\n- 測幅目標: **{y_target:.1f}**")
-                    with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{today['High']:.1f}**\n- 最低價: **{today['Low']:.1f}**\n- 收盤現價: **{today['Close']:.1f}**")
+                        col_r1, col_r2 = st.columns(2)
+                        with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{y_res:.2f}**\n- 支撐位: **{y_sup:.2f}**\n- 測幅目標: **{y_target:.2f}**")
+                        with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{today['High']:.2f}**\n- 最低價: **{today['Low']:.2f}**\n- 收盤現價: **{today['Close']:.2f}**")
 
-                    if today['Close'] > y_res:
-                        if today['High'] >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位 {y_res:.1f}，成功觸及測幅目標 {y_target:.1f}！")
-                        else: st.success(f"⭐⭐ **突破確認**：今日收盤 {today['Close']:.1f} 站上壓力位 {y_res:.1f}，多頭正式發動。")
-                    elif today['Close'] < y_sup:
-                        st.error(f"⚠️ **跌破防線**：今日收盤 {today['Close']:.1f} 跌破支撐位 {y_sup:.1f}，觸發停損機制。")
-                    elif today['High'] >= y_res and today['Close'] <= y_res:
-                        st.warning(f"👀 **假突破 / 壓力沉重**：今日盤中突破壓力，但收盤未能站穩。")
-                    elif today['Low'] <= y_sup and today['Close'] >= y_sup:
-                        st.info(f"🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
-                    else:
-                        st.write(f"⏸️ **區間震盪**：走勢在預設箱體 ({y_sup:.1f} ~ {y_res:.1f}) 內震盪，符合觀望預期。")
+                        if today['Close'] > y_res:
+                            if today['High'] >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位，並成功觸及等距測幅目標！")
+                            else: st.success(f"⭐⭐ **突破確認**：今日收盤站上壓力位，多頭正式發動。")
+                        elif today['Close'] < y_sup:
+                            st.error(f"⚠️ **跌破防線**：今日收盤跌破支撐位，觸發停損機制。")
+                        elif today['High'] >= y_res and today['Close'] <= y_res:
+                            st.warning(f"👀 **假突破 / 壓力沉重**：今日盤中突破壓力，但收盤未能站穩。")
+                        elif today['Low'] <= y_sup and today['Close'] >= y_sup:
+                            st.info(f"🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
+                        else:
+                            st.write(f"⏸️ **區間震盪**：走勢在預設箱體內震盪，符合觀望預期。")
+                            
+                    with sub_t2:
+                        if len(df) >= 26:
+                            d_base = df.iloc[-6] # 5天前的數據
+                            d_5_days = df.iloc[-5:] # 最近5天的K線
+                            
+                            w_res, w_sup, w_atr = d_base['Res_20'], d_base['Sup_20'], d_base['ATR_14']
+                            w_target = w_res + w_atr
+                            
+                            max_h_5d = d_5_days['High'].max()
+                            min_l_5d = d_5_days['Low'].min()
+                            c_now = today['Close']
+                            
+                            col_w1, col_w2 = st.columns(2)
+                            with col_w1: st.info(f"**5 天前 (一週前) 預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
+                            with col_w2: st.warning(f"**本週實況極值 (近5日)**\n- 波段最高: **{max_h_5d:.2f}**\n- 波段最低: **{min_l_5d:.2f}**\n- 目前收盤: **{c_now:.2f}**")
+                            
+                            max_gain = ((max_h_5d - d_base['Close']) / d_base['Close']) * 100
+                            max_loss = ((min_l_5d - d_base['Close']) / d_base['Close']) * 100
+                            
+                            st.markdown(f"**📈 本週最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain:.2f}%</span> | **📉 本週最大潛在回撤:** <span style='color:#00cc96;'>{max_loss:.2f}%</span>", unsafe_allow_html=True)
+                            
+                            if max_h_5d >= w_target:
+                                st.success("⭐⭐⭐ **波段達標**：本週內曾成功突破並觸及一週前的等距測幅目標！")
+                            elif max_h_5d > w_res:
+                                st.success("⭐⭐ **波段突破**：本週內曾成功突破壓力位，啟動多頭行情。")
+                            elif min_l_5d < w_sup:
+                                st.error("⚠️ **波段破底**：本週內曾跌破一週前的關鍵支撐，若未停損可能擴大虧損。")
+                            else:
+                                st.info("⏸️ **大型箱體**：這 5 天內始終在一週前的壓力與支撐區間內震盪洗盤。")
+                        else:
+                            st.warning("⚠️ 數據不足 26 天，無法進行一週歷史回測。")
                 
                 with t3:
                     st.markdown("#### 🕵️‍♂️ 法人大戶籌碼控盤度矩陣")
@@ -190,17 +225,11 @@ if target_ticker:
 else:
     # ─── 【模組 B】主頁儀表板 ───
     st.markdown("### 🌍 台股大盤與情緒摘要")
-    
-    # 🌟 新增：市場貪婪指數 (Fear & Greed Index)
-    # 實務上這會透過 VIX 或大盤漲跌幅計算，這裡我們先用大盤漲跌趨勢來模擬產生一個動態分數
     summary = get_market_summary()
-    
     if summary:
-        # 動態計算貪婪指數：如果大盤漲，偏貪婪；跌，偏恐懼
         twii_data = summary.get("加權指數", {"pct": 0})
         base_greed = 50 + (twii_data['pct'] * 15)
-        greed_index = int(max(0, min(100, base_greed + random.randint(-5, 5)))) # 加上一點隨機波動增加真實感
-        
+        greed_index = int(max(0, min(100, base_greed + random.randint(-5, 5))))
         greed_status = "極度恐懼 🥶" if greed_index < 25 else ("恐懼 😨" if greed_index < 45 else ("中立 😐" if greed_index < 55 else ("貪婪 😏" if greed_index < 75 else "極度貪婪 🤑")))
         
         c_idx, c_greed = st.columns([3, 1])
@@ -212,16 +241,37 @@ else:
         
         with c_greed:
             st.metric("台股恐懼貪婪指數", f"{greed_index} / 100", greed_status, delta_color="off")
-            # 根據分數改變進度條顏色 (Streamlit 原生進度條不支援直接改顏色，我們用 HTML/CSS 寫一個漂亮的)
             bar_color = "#00cc96" if greed_index < 45 else ("#ffc107" if greed_index < 55 else "#ff4b4b")
             st.markdown(f"""
                 <div style="width: 100%; background-color: #333; border-radius: 10px; height: 10px; margin-top: 5px;">
                   <div style="width: {greed_index}%; background-color: {bar_color}; height: 100%; border-radius: 10px;"></div>
                 </div>
                 <div style="display: flex; justify-content: space-between; font-size: 10px; color: gray; margin-top: 5px;">
-                    <span>0 (極度恐懼)</span><span>100 (極度貪婪)</span>
+                    <span>0 (恐懼)</span><span>100 (貪婪)</span>
                 </div>
             """, unsafe_allow_html=True)
+            
+    # 🌟 新增：系統核心量化策略與演算法說明白皮書
+    with st.expander("🧠 系統核心：量化策略與多因子演算法白皮書", expanded=False):
+        st.markdown("""
+        #### 1. 測幅與支撐壓力推演 (動態箱體理論)
+        本系統不採用傳統死板的均線當作支撐壓力，而是採用 **「近 20 日動態最高價 (Res) 與 最低價 (Sup)」** 作為箱體邊界。
+        * **等距測幅**：當價格帶量突破前高壓力時，主力通常會有一波慣性推升。系統會自動計算 `(前高 - 前低)` 的箱體高度，疊加至突破點上，給出精準的「波段停利目標」。
+
+        #### 2. Squeeze 波動率收斂突破 (主升段發動機)
+        * 結合 **布林通道 (Bollinger Bands)** 與 **肯特納通道 (Keltner Channel)**。
+        * 當布林通道縮口並完全被包進肯特納通道內時，稱為「極度擠壓 (Squeeze)」。這代表籌碼高度安定、大風暴前的寧靜。此時若發生帶量突破，往往是 **暴賺主升段的起點**。
+
+        #### 3. AI 籌碼與多因子評分矩陣 (滿分 100 分)
+        系統藉由 7 大因子進行全市場雷達掃描與權重計分：
+        1. **趨勢防護 (10分)**：站上月線，多頭基底。
+        2. **量能發動 (15分)**：成交量大於 5MA 的 1.5 倍。
+        3. **動能金叉 (15分)**：MACD 剛發生黃金交叉。
+        4. **大盤相對強度 RS (15分)**：近 20 日報酬率戰勝大盤，尋找抗跌飆股。
+        5. **週線共振 (15分)**：大週期週線 MACD 必須是多頭，長線保護短線。
+        6. **壓縮突破 (15分)**：Squeeze 狀態解除並向上突破。
+        7. **大戶籌碼動能 (15分)**：近 5 日「價漲量增 (建倉)」天數大於「價跌量增 (出貨)」。
+        """)
             
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 板塊實時監控", "⚡ 條件設定全市場雷達", "🎯 多因子 AI 評分 (含籌碼)"])
@@ -295,19 +345,6 @@ else:
     with tab3:
         st.markdown("#### 🎯 多因子演算法綜合評分排行榜 (TOP 20)")
         st.caption("結合 日/週雙時區共振、大盤相對強度矩陣 (RS) 及 大戶籌碼估算模型 進行深度排行。")
-        
-        with st.expander("ℹ️ 了解 AI 多因子評分標準 (滿分 100 分)"):
-            st.markdown("""
-            本系統採用 **7 大核心量化因子** 進行權重計分，尋找市場上具備「多頭共振」的最強勢標的：
-            
-            * **📈 趨勢防護 (10分)**：收盤價必須站上 20 日均線 (月線)，確保處於多頭基底。
-            * **🔥 量能發動 (15分)**：今日成交量大於近 5 日均量的 1.5 倍，顯示資金實質進駐。
-            * **📊 動能金叉 (15分)**：日線 MACD 大於 Signal 線，確認短波段動能向上。
-            * **🚀 領漲抗跌 (15分)**：近 20 日相對大盤強度 (RS Index) 大於 0.02 (贏過大盤 2%)。
-            * **🌍 週線共振 (15分)**：模擬週線級別 MACD 處於多頭，提供大週期趨勢保護。
-            * **💥 壓縮突破 (15分)**：布林與肯特納通道之 Squeeze 狀態解除並向上突破上軌。
-            * **👽 籌碼動能 (15分)**：近 5 日「聰明錢指標 (價漲量增/價跌量縮)」累積大於 1，顯示大戶偏多操作。
-            """)
         
         if st.button("🔮 執行全權重深度矩陣運算", type="primary"):
             custom = [t for g in st.session_state.stock_clusters.values() for t in g]
