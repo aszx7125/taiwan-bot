@@ -52,7 +52,6 @@ st.markdown("---")
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
 if target_ticker:
-    # 🐛 修復：確保 c_name 在迴圈外被正確定義
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
@@ -98,8 +97,6 @@ else:
         st.markdown("""<style>[data-testid="stMetricDelta"] svg { display: none; } [data-testid="stMetricDelta"] > div { flex-direction: row; } [data-testid="stMetricDelta"] > div:has(div:contains("+")) { color: #ff4b4b !important; } [data-testid="stMetricDelta"] > div:has(div:contains("-")) { color: #00cc96 !important; }</style>""", unsafe_allow_html=True)
     
     st.markdown("---")
-    
-    # 🌟 這裡完美保留了您要的三個頁籤！
     tab1, tab2, tab3 = st.tabs(["📊 板塊實時監控", "⚡ 全市場策略雷達", "🎯 多因子 AI 評分系統"])
     
     with tab1:
@@ -113,7 +110,8 @@ else:
             rows = []
             for t in cluster_stocks:
                 try:
-                    df, _ = get_kline_with_fugle(t, FUGLE_API_KEY)
+                    # 🛡️ 雙重保險：強制剝離後綴餵給 API
+                    df, _ = get_kline_with_fugle(t.split('.')[0], FUGLE_API_KEY)
                     if len(df) >= 3:
                         c, p = df.iloc[-1], df.iloc[-2]
                         change_amt = c['Close'] - p['Close']
@@ -121,7 +119,7 @@ else:
                         gap = " <span style='color:#ff4b4b;font-size:0.7em;'>(跳空🔥)</span>" if c['Low'] > p['High'] else ""
                         
                         price_vol = f"<b>{c['Close']:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(c['Volume']):,} 張)</span>"
-                        name_str = f"<b>{st.session_state.stock_names.get(t.split('.')[0], t)}</b><br><span style='font-size:0.8em;color:gray;'>{t}</span>"
+                        name_str = f"<b>{st.session_state.stock_names.get(t.split('.')[0], t)}</b><br><span style='font-size:0.8em;color:gray;'>{t.split('.')[0]}</span>"
                         change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%){gap}</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%){gap}</span>" if change_amt < 0 else "0.00")
                         
                         rows.append({"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str})
@@ -129,7 +127,6 @@ else:
                 
             if rows:
                 html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')
-                # 🐛 修復：確保寬度 100% 的霸氣排版
                 css = f"""
                 <style>
                 .watch-board {{ width: 100%; }}

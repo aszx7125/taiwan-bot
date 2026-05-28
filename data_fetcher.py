@@ -36,7 +36,11 @@ def get_market_summary():
 @st.cache_data(ttl=30) 
 def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
-    symbols_to_try = [f"{ticker_code}.TW", f"{ticker_code}.TWO"]
+    
+    # 🛡️ 核心修復：強制清洗代號，去掉 .TW 或 .TWO，確保後續 API 能正確讀取
+    clean_ticker = ticker_code.split('.')[0]
+    
+    symbols_to_try = [f"{clean_ticker}.TW", f"{clean_ticker}.TWO"]
     df, actual_symbol = pd.DataFrame(), ""
     import warnings
     with warnings.catch_warnings():
@@ -49,24 +53,33 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
 
     if df.empty or len(df) < 20: return df, actual_symbol 
 
+    # ⚡ Fugle 零延遲行情補寫
     if fugle_api_key:
         try:
-            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{ticker_code}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
+            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
             if res.status_code == 200:
                 data = res.json()
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
                 rt_vol = data.get('total', {}).get('tradeVolume', 0)
+                
                 tz_tw = datetime.timezone(datetime.timedelta(hours=8))
-                today_date, last_candle_date = datetime.datetime.now(tz_tw).date(), df.index[-1].date()
+                today_date = datetime.datetime.now(tz_tw).date()
+                last_candle_date = df.index[-1].date()
+                
+                # 如果 Yahoo 還沒更新今日 K 線，透過 Fugle 補上一根即時 K 線
                 if last_candle_date < today_date and rt_price:
                     new_row = df.iloc[-1].copy()
                     new_row.name = pd.Timestamp(today_date, tz=df.index.tz)
                     df = pd.concat([df, pd.DataFrame([new_row])])
+                
+                # 覆寫最新價格與總量
                 if rt_price:
-                    df.iloc[-1, df.columns.get_loc('Close')] = rt_price
+                    df.iloc[-1, df.columns.get_loc('Close')] = float(rt_price)
                 if rt_vol > 0: 
-                    df.iloc[-1, df.columns.get_loc('Volume')] = rt_vol
-        except: pass
+                    df.iloc[-1, df.columns.get_loc('Volume')] = float(rt_vol)
+        except Exception as e:
+            print(f"Fugle API 同步異常: {e}")
+            pass
         
     df = add_advanced_indicators(df, market_df)
     return df, actual_symbol
@@ -87,7 +100,6 @@ def get_macro_news():
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
     except: return []
 
-# ⚡ 安全的異步底層引擎
 async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, p_bar, s_text, total, counter, mode):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=90d&interval=1d"
     try:
@@ -148,7 +160,6 @@ def run_async_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df, 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    # 建立新的事件迴圈以避免 Streamlit 衝突
     new_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(new_loop)
     return new_loop.run_until_complete(_main_async_runner(tickers, conds, p_bar, s_text, names_dict, market_df, mode))
