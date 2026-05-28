@@ -157,7 +157,7 @@ if target_ticker:
                     chip_txt = "👽 外資/大戶積極建倉中 (價漲量增)" if sm >= 1 else ("🚶 散戶接盤/大戶出貨 (價跌量增)" if sm <= -1 else "⚖️ 籌碼無明確方向，量能萎縮")
                     st.info(f"**智能籌碼動向判定:** {chip_txt}")
                     st.progress(int(today.get('Score', 0)), text=f"量化綜合控盤度：{int(today.get('Score', 0))}%")
-                    st.caption("基於價量背離、RS 指標與週線多時區共振加權推算。分數越高，代表法蘭與大戶資金沉澱度越高。")
+                    st.caption("基於價量背離、RS 指標與週線多時區共振加權推算。分數越高，代表法人與大戶資金沉澱度越高。")
                 
                 with t4:
                     nl, nr = st.columns(2)
