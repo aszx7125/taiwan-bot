@@ -6,9 +6,16 @@ import datetime
 import urllib.parse
 import xml.etree.ElementTree as ET
 import concurrent.futures
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from indicators import add_advanced_indicators
 
+# 🛡️ 建立具備自動重試功能的 HTTP Session，防禦 Yahoo 阻擋
 yf_session = requests.Session()
+retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+yf_session.mount('http://', adapter)
+yf_session.mount('https://', adapter)
 yf_session.headers.update({"User-Agent": "Mozilla/5.0"})
 
 @st.cache_data(ttl=3600*12)
@@ -32,7 +39,6 @@ def get_market_summary():
         except: pass
     return res
 
-# 🚀 輔助函數：供並行查詢 Yahoo 歷史數據使用
 def _fetch_yf_history(symbol):
     try:
         temp = yf.Ticker(symbol, session=yf_session).history(period="6mo")
@@ -47,7 +53,6 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     symbols_to_try = [f"{clean_ticker}.TW", f"{clean_ticker}.TWO"]
     df, actual_symbol = pd.DataFrame(), ""
     
-    # 🚀 提速優化 1：並行查詢上市與上櫃代碼，節省 50% 探測時間
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -57,7 +62,7 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
                 sym, temp_df = future.result()
                 if not temp_df.empty:
                     df, actual_symbol = temp_df, sym
-                    break # 找到就立刻跳出
+                    break
 
     if df.empty or len(df) < 20: return df, actual_symbol 
 
@@ -100,6 +105,7 @@ def get_macro_news():
 def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
     try:
         df = yf.Ticker(symbol, session=yf_session).history(period="6mo", raise_errors=False)
+        df = df.dropna(subset=['Close', 'Volume']) # 剔除 Yahoo 偶發的空行
         if df.empty or len(df) < 35: return None
         
         df = add_advanced_indicators(df, market_df)
@@ -138,7 +144,8 @@ def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df,
     results = []
     total = len(tickers)
     completed = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+    # 🛡️ 執行緒降至 15，兼顧極速與防封鎖
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_df, conds, names_dict, mode): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
             completed += 1

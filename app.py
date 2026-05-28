@@ -65,13 +65,11 @@ if target_ticker:
     
     with st.spinner(f"正在以多執行緒全速分析 {target_ticker}..."):
         try:
-            # 🚀 提速優化 2：主頁面資料搜集全面併發 (Concurrent Fetching)
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 future_kline = executor.submit(get_kline_with_fugle, target_ticker, FUGLE_API_KEY)
                 future_news_s = executor.submit(get_stock_news, c_name)
                 future_news_m = executor.submit(get_macro_news)
                 
-                # 取得所有結果 (等待時間由原本累加變成取最大值)
                 df, actual_symbol = future_kline.result()
                 news_s = future_news_s.result()
                 news_m = future_news_m.result()
@@ -293,10 +291,10 @@ else:
             
             if res: 
                 df_res = pd.DataFrame(res).sort_values("量化總分", ascending=False).head(20)
+                # 🛡️ 安全渲染表格，絕不使用 index=False 觸發 TypeError
                 st.dataframe(
                     df_res, 
                     column_config={"量化總分": st.column_config.ProgressColumn("多空綜合能量", min_value=0, max_value=100, format="%d 分")}, 
-                    use_container_width=True, 
-                    hide_index=True
+                    use_container_width=True
                 )
             else: st.warning("⚠️ 運算失敗，無法取得足夠數據。")

@@ -4,6 +4,9 @@ import numpy as np
 def add_advanced_indicators(df, market_df=None):
     if df.empty or len(df) < 35: 
         return df
+    
+    # 🛡️ 核心防呆修復：強制剝離時區並對齊日期，避免大盤與個股對撞時產生空值崩潰
+    df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
         
     df['SMA_5'] = df['Close'].rolling(5).mean()
     df['SMA_20'] = df['Close'].rolling(20).mean()
@@ -36,11 +39,16 @@ def add_advanced_indicators(df, market_df=None):
 
     # 2. 大盤相對強度 (RS Index)
     if market_df is not None and not market_df.empty:
+        # 處理大盤數據時區並去除重複日期
+        market_df = market_df.copy()
+        market_df.index = pd.to_datetime(market_df.index).tz_localize(None).normalize()
+        market_df = market_df[~market_df.index.duplicated(keep='last')]
+        
         stock_ret = df['Close'].pct_change(20)
         mkt_ret = market_df['Close'].reindex(df.index, method='ffill').pct_change(20)
         df['RS_Index'] = stock_ret - mkt_ret
     else:
-        df['RS_Index'] = pd.Series(0, index=df.index)
+        df['RS_Index'] = 0.0
 
     # 3. 多時區週線共振
     w_ema12 = df['Close'].ewm(span=60, adjust=False).mean()
