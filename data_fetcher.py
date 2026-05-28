@@ -62,10 +62,8 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
                     new_row = df.iloc[-1].copy()
                     new_row.name = pd.Timestamp(today_date, tz=df.index.tz)
                     df = pd.concat([df, pd.DataFrame([new_row])])
-                if rt_price:
-                    df.iloc[-1, df.columns.get_loc('Close')] = rt_price
-                if rt_vol > 0: 
-                    df.iloc[-1, df.columns.get_loc('Volume')] = rt_vol
+                if rt_price: df.iloc[-1, df.columns.get_loc('Close')] = rt_price
+                if rt_vol > 0: df.iloc[-1, df.columns.get_loc('Volume')] = rt_vol
         except: pass
         
     df = add_advanced_indicators(df, market_df)
@@ -87,11 +85,10 @@ def get_macro_news():
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
     except: return []
 
-# ⚡ 安全的異步底層引擎 (加入 DataFrame 安全檢核)
 async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, p_bar, s_text, total, counter, mode):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=90d&interval=1d"
     try:
-        async with session.get(url, timeout=6) as response:
+        async with session.get(url, timeout=8) as response:
             if response.status == 200:
                 data = await response.json()
                 res = data.get('chart', {}).get('result', [])
@@ -109,20 +106,25 @@ async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, 
                         df = pd.DataFrame({'Close': [fc[i] for i in v_idx], 'Volume': [v[i] for i in v_idx], 'High': [h[i] for i in v_idx], 'Low': [l[i] for i in v_idx]})
                         df = add_advanced_indicators(df, market_df)
                         
-                        # 🛡️ 核心防護：如果資料太少導致沒算出 Score，直接跳過，避免 KeyError 崩潰
                         if 'Score' not in df.columns: return None
                         
                         counter[0] += 1
-                        if counter[0] % 15 == 0 or counter[0] == total:
-                            p_bar.progress(counter[0] / total)
+                        if counter[0] % 10 == 0 or counter[0] == total:
+                            p_bar.progress(min(counter[0] / total, 1.0))
                             s_text.text(f"🚀 量化運算中... ({counter[0]}/{total})")
 
                         last = df.iloc[-1]
                         code = symbol.split('.')[0]
                         name = names_dict.get(code, "市場焦點")
-                        pct = ((last['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
-                        vol_ratio = last['Volume'] / last['Vol_SMA5'] if last['Vol_SMA5'] > 0 else 1.0
-                        squeeze_status = "💥 臨界突破" if (df['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']) else ("🛡️ 區間收斂" if last['Squeeze_On'] else "📈 趨勢多頭")
+                        
+                        # 🛡️ 嚴格防呆，確保空值不會搞垮表格
+                        score = int(last.get('Score', 0)) if pd.notna(last.get('Score')) else 0
+                        rs_val = float(last.get('RS_Index', 0)) if pd.notna(last.get('RS_Index')) else 0.0
+                        rsi_val = float(last.get('RSI', 50)) if pd.notna(last.get('RSI')) else 50.0
+                        chip_trend = int(last.get('Smart_Money_Trend', 0)) if pd.notna(last.get('Smart_Money_Trend')) else 0
+                        wt_up = bool(last.get('Weekly_Trend_Up', False)) if pd.notna(last.get('Weekly_Trend_Up')) else False
+                        
+                        chip_status = "👽 外資/大戶連買" if chip_trend >= 1 else ("🚶 散戶接盤/大戶退場" if chip_trend <= -1 else "⚖️ 籌碼無方向")
 
                         if mode == "radar":
                             f_vol = (last['Volume'] > last['Vol_SMA5'] * 1.5) if conds.get('vol') else True
@@ -131,17 +133,26 @@ async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, 
                             f_macd = (last['MACD'] > last['Signal'] and df['MACD'].iloc[-2] <= df['Signal'].iloc[-2]) if conds.get('macd') else True
                             
                             if f_vol and f_ma and f_rsi and f_macd:
-                                return {"代號": code, "名稱": name, "現價": f"{last['Close']:.2f}", "今日漲跌": f"{pct:+.2f}%", "量比": f"{vol_ratio:.1f}x", "RSI": f"{last['RSI']:.1f}", "型態特徵": squeeze_status}
+                                pct = ((last['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+                                vol_ratio = last['Volume'] / last['Vol_SMA5'] if last['Vol_SMA5'] > 0 else 1.0
+                                sqz = "💥 臨界突破" if (df['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']) else ("🛡️ 區間收斂" if last['Squeeze_On'] else "📈 趨勢多頭")
+                                return {"代號": code, "名稱": name, "現價": f"{last['Close']:.2f}", "今日漲跌": f"{pct:+.2f}%", "量比": f"{vol_ratio:.1f}x", "RSI": f"{rsi_val:.1f}", "型態": sqz}
                         
                         elif mode == "score":
-                            rs_val = last['RS_Index'] if pd.notna(last['RS_Index']) else 0.0
-                            rsi_val = last['RSI'] if pd.notna(last['RSI']) else 50.0
-                            return {"代號": code, "名稱": name, "量化總分": int(last['Score']), "相對大盤強度": f"{rs_val*100:+.2f}%", "現價": f"{last['Close']:.2f}", "RSI": round(rsi_val, 1), "週線趨勢": "🟢 多頭共振" if last['Weekly_Trend_Up'] else "🔴 趨勢壓制"}
+                            return {
+                                "代號": code, "名稱": name, "量化總分": score, 
+                                "籌碼狀態": chip_status,
+                                "大盤相對強度": f"{rs_val*100:+.2f}%", 
+                                "現價": f"{last['Close']:.2f}", 
+                                "RSI": round(rsi_val, 1), 
+                                "週線趨勢": "🟢 多頭共振" if wt_up else "🔴 空頭壓制"
+                            }
     except: pass
     return None
 
 async def _main_async_runner(tickers, conds, p_bar, s_text, names_dict, market_df, mode):
-    connector = aiohttp.TCPConnector(limit=50)
+    # 🛡️ 將 limit 降為 30，保護您的 API 請求不被 Yahoo 秒鎖
+    connector = aiohttp.TCPConnector(limit=30)
     counter = [0]
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [_async_fetch_and_score(session, t, market_df, conds, names_dict, p_bar, s_text, len(tickers), counter, mode) for t in tickers]
@@ -153,7 +164,6 @@ def run_async_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df, 
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    
     new_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(new_loop)
     return new_loop.run_until_complete(_main_async_runner(tickers, conds, p_bar, s_text, names_dict, market_df, mode))
