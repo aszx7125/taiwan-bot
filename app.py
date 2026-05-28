@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import time
 import asyncio
+import aiohttp
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES
 from data_fetcher import (
@@ -76,7 +77,10 @@ if target_ticker:
                 vol_ratio = (today['Volume'] / today['Vol_SMA5']) if today['Vol_SMA5'] > 0 else 1.0
                 p_change = ((today['Close'] - yesterday['Close']) / yesterday['Close']) * 100
                 
-                st.subheader(f"🧬 {target_ticker} {st.session_state.stock_names.get(target_ticker, actual_symbol)} 深度量化診斷")
+                # 🐛 修復：在此處明確定義 c_name
+                c_name = st.session_state.stock_names.get(target_ticker, actual_symbol)
+                
+                st.subheader(f"🧬 {target_ticker} {c_name} 深度量化診斷")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("當前收盤價", f"{today['Close']:.2f}", f"{p_change:+.2f}%")
                 m2.metric("即時量比", f"{vol_ratio:.1f}x", f"今日成交 {int(today['Volume'])} 張", delta_color="off")
@@ -201,11 +205,10 @@ else:
                 
                 if res_list:
                     st.success(f"🎯 雷達掃描完成！符合當前篩選交集共 {len(res_list)} 檔標的：")
-                    st.dataframe(pd.DataFrame(res_list)[["代號", "名稱", "現價", "今日漲跌", "量比", "RSI", "型態特特征"]], use_container_width=True)
+                    st.dataframe(pd.DataFrame(res_list)[["代號", "名稱", "現價", "今日漲跌", "量比", "RSI", "型態特徵"]], use_container_width=True)
                 else: st.warning("當前盤面無任何標的通過此多重演算法過濾閥。")
 
     with main_tab3:
-        # ✨ 新增：高階多因子評分系統分頁
         st.markdown("#### 🎯 多因子演算法綜合評分排行榜 (TOP 20)")
         st.caption("本系統採用權重計分制（最高 100 分），融合日/週雙時區共振、相對強度矩陣 (RS Index) 及布林/肯特納收斂臨界點進行全市場深度運算。")
         
@@ -220,8 +223,7 @@ else:
             except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-            
-            # 利用我們的高頻異步爬蟲，抓出全市場的完整 DF 並提取 Score
+                
             connector = aiohttp.TCPConnector(limit=60)
             async def run_scoring():
                 scored_results = []
