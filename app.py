@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import time
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES
 from data_fetcher import (
@@ -21,7 +22,7 @@ if not csv_df.empty:
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
 # ==========================================
-# 📱 側邊欄控制
+# 📱 側邊欄控制與零延遲狀態顯示
 # ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -35,6 +36,7 @@ with st.sidebar:
         st.rerun()
     st.markdown("---")
     
+    # 🌟 零延遲系統狀態顯示
     if FUGLE_API_KEY: st.success("🟢 零延遲即時引擎已啟動")
     else: st.warning("🟡 目前使用 Yahoo 延遲報價")
     st.markdown("---")
@@ -59,6 +61,7 @@ st.markdown("---")
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
 if target_ticker:
+    # ─── 【模組 A】單股深度診斷模式 (全數復原) ───
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
@@ -67,39 +70,102 @@ if target_ticker:
         if df.empty or len(df) < 35: st.error("❌ 數據不足")
         else:
             today, yesterday = df.iloc[-1], df.iloc[-2]
+            vol_ratio = (today['Volume'] / today['Vol_SMA5']) if today['Vol_SMA5'] > 0 else 1.0
+            p_change = ((today['Close'] - yesterday['Close']) / yesterday['Close']) * 100
+            
+            # --- 🌟 恢復策略推演計算 ---
+            res_level, sup_level = today['Res_20'], today['Sup_20']
+            box_height = res_level - sup_level
+            breakout_status, target_proj, breakout_prob = "區間震盪 (未突破)", "無明確突破方向", "中立"
+            if today['Close'] > res_level:
+                breakout_status, target_proj, breakout_prob = "🚀 向上突破前高", f"目標上看 **{round(res_level + box_height, 1)}**", "強勢發動"
+            elif today['Close'] < sup_level:
+                breakout_status, target_proj, breakout_prob = "⚠️ 向下摜破前低", f"下看 **{round(sup_level - box_height, 1)}**", "弱勢探底"
+            elif today['Close'] >= res_level * 0.98:
+                breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
+                if vol_ratio > 1.3 and today['Close'] > yesterday['Close']: breakout_prob, target_proj = "高機率突破", f"目標上看 **{round(res_level + box_height, 1)}**"
+                else: breakout_prob, target_proj = "機率中等 (量縮)", f"壓力位 {round(res_level, 1)} 附近震盪"
+            elif today['Close'] <= sup_level * 1.02:
+                breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
+                if vol_ratio > 1.3 and today['Close'] < yesterday['Close']: breakout_prob, target_proj = "高機率破底", f"下測 **{round(sup_level - box_height, 1)}**"
+                else: breakout_prob, target_proj = "機率中等 (量縮)", f"支撐位 {round(sup_level, 1)} 防守戰"
+            
             st.subheader(f"🧬 {target_ticker} {c_name} 深度量化診斷")
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("現價", f"{today['Close']:.2f}", f"{((today['Close']-yesterday['Close'])/yesterday['Close'])*100:+.2f}%")
-            m2.metric("量比", f"{today['Volume']/today['Vol_SMA5']:.1f}x", delta_color="off")
-            m3.metric("AI評分", f"{int(today.get('Score', 0))} 分")
+            m1.metric("當前現價", f"{today['Close']:.2f}", f"{p_change:+.2f}%")
+            m2.metric("即時量比", f"{vol_ratio:.1f}x", f"成交 {int(today['Volume'])} 張", delta_color="off")
+            m3.metric("AI 綜合評分", f"{int(today.get('Score', 0))} 分")
             m4.metric("大盤相對強度", f"{today.get('RS_Index', 0)*100:+.2f}%")
             
             st.markdown("---")
             t1, t2, t3, t4 = st.tabs(["🧱 測幅與策略", "🔍 前向驗證", "🕵️‍♂️ 籌碼動向", "📰 新聞動態"])
+            
             with t1:
-                st.write(f"**壓力:** {today['Res_20']:.2f} | **支撐:** {today['Sup_20']:.2f} | **型態:** {'💥 擠壓收斂中' if today['Squeeze_On'] else '常態'}")
-                st.write(f"**週線共振:** {'📈 多頭保護' if today['Weekly_Trend_Up'] else '📉 空頭壓制'}")
+                c_l, c_r = st.columns(2)
+                with c_l:
+                    st.markdown("#### 📐 關鍵結構水位")
+                    st.write(f"- **前高關鍵阻力 (20日):** {res_level:.2f}")
+                    st.write(f"- **前低關鍵支撐 (20日):** {sup_level:.2f}")
+                    st.write(f"- **盤勢型態判定:** {breakout_status}")
+                    st.write(f"- **波動壓縮狀態:** {'⚠️ 處於極度擠壓收斂期 (Squeeze)' if today['Squeeze_On'] else '🟢 波動度常態分佈'}")
+                    st.write(f"- **大週期週線共振:** {'📈 週線波段多頭保護' if today['Weekly_Trend_Up'] else '📉 週線空頭趨勢壓制'}")
+                with c_r:
+                    st.markdown("#### 💡 操作劇本規劃")
+                    limit_up = round(yesterday['Close'] * 1.10, 1)
+                    limit_down = round(yesterday['Close'] * 0.90, 1)
+                    st.write(f"**🔴 漲停極限:** {limit_up} | **🟢 跌停極限:** {limit_down}")
+                    st.write(f"**等距測幅目標:** {target_proj}")
+                    if "突破前高" in breakout_status: st.success("🚀 順勢偏多操作，停損防守點位移至前高。")
+                    elif "挑戰前高" in breakout_status: st.warning("兵臨城下！若帶量突破布林上軌可嘗試建倉。")
+                    elif "回測前低" in breakout_status: st.warning("測試底部支撐，若跌破前低應果斷停損。")
+                    elif "摜破前低" in breakout_status: st.error("破底危機！嚴格執行停損，切勿攤平。")
+                    else: st.info("⏸️ 箱體內部震盪，建議於支撐與壓力邊緣低買高賣。")
+            
             with t2:
+                st.markdown("### 🔍 昨日預測劇本 vs 今日實況對撞")
                 y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
-                st.write(f"昨日預測壓力: **{y_res:.2f}** | 今日最高價: **{today['High']:.2f}**")
-                if today['Close'] > y_res: st.success("突破確立！")
-                else: st.info("區間震盪")
+                y_target = y_res + y_atr
+                col_r1, col_r2 = st.columns(2)
+                with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{y_res:.1f}**\n- 支撐位: **{y_sup:.1f}**\n- 測幅目標: **{y_target:.1f}**")
+                with col_r2: st.warning(f"**今日實況數據**\n- 最高價: **{today['High']:.1f}**\n- 最低價: **{today['Low']:.1f}**\n- 收盤現價: **{today['Close']:.1f}**")
+                
+                if today['Close'] > y_res:
+                    if today['High'] >= y_target: st.success("⭐⭐⭐ **超前達標**：今日強勢突破壓力位，成功觸及測幅目標！")
+                    else: st.success("⭐⭐ **突破確認**：今日收盤站上壓力位，多頭正式發動。")
+                elif today['Close'] < y_sup: st.error("⚠️ **跌破防線**：今日收盤跌破支撐位，觸發停損機制。")
+                elif today['High'] >= y_res and today['Close'] <= y_res: st.warning("👀 **假突破 / 壓力沉重**：盤中一度穿越壓力，但收盤未能站穩。")
+                elif today['Low'] <= y_sup and today['Close'] >= y_sup: st.info("🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
+                else: st.write("⏸️ **區間震盪**：走勢在預設箱體內震盪，符合觀望預期。")
+            
             with t3:
+                st.markdown("#### 🕵️‍♂️ 法人大戶籌碼控盤度矩陣")
                 sm = int(today.get('Smart_Money_Trend', 0))
                 chip_txt = "👽 外資/大戶積極建倉中" if sm >= 1 else ("🚶 散戶接盤/大戶出貨" if sm <= -1 else "⚖️ 籌碼無明確方向")
                 st.info(f"**智能籌碼動向判定:** {chip_txt}")
                 st.progress(int(today.get('Score', 0)), text=f"量化綜合控盤度：{int(today.get('Score', 0))}%")
+                st.caption("基於價量背離、RS 指標與週線多時區共振加權推算。分數越高，代表法人與大戶資金沉澱度越高。")
+            
             with t4:
+                # 🌟 恢復新聞分類版面
                 nl, nr = st.columns(2)
                 with nl:
-                    for n in get_stock_news(c_name)[:3]: st.markdown(f"[{n['title']}]({n['link']})")
+                    st.markdown("#### 🎯 個股專屬新聞")
+                    news_s = get_stock_news(c_name)
+                    if news_s:
+                        for n in news_s[:4]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
+                    else: st.info("無相關個股新聞")
                 with nr:
-                    for n in get_macro_news()[:3]: st.markdown(f"[{n['title']}]({n['link']})")
+                    st.markdown("#### 🌍 總經大盤焦點")
+                    news_m = get_macro_news()
+                    if news_m:
+                        for n in news_m[:4]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
+                    else: st.info("無大盤新聞")
                     
-        if st.button("⬅️ 返回主頁"): st.rerun()
+        if st.button("⬅️ 返回戰情室主頁", use_container_width=True): st.rerun()
 
 else:
-    st.markdown("### 🌍 大盤摘要")
+    # ─── 【模組 B】主頁儀表板 ───
+    st.markdown("### 🌍 台股大盤摘要")
     summary = get_market_summary()
     if summary:
         cols = st.columns(len(summary))
@@ -107,7 +173,7 @@ else:
         st.markdown("""<style>[data-testid="stMetricDelta"] svg { display: none; } [data-testid="stMetricDelta"] > div { flex-direction: row; } [data-testid="stMetricDelta"] > div:has(div:contains("+")) { color: #ff4b4b !important; } [data-testid="stMetricDelta"] > div:has(div:contains("-")) { color: #00cc96 !important; }</style>""", unsafe_allow_html=True)
     
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📊 板塊實時監控", "⚡ 異步策略雷達", "🎯 多因子 AI 評分 (含籌碼)"])
+    tab1, tab2, tab3 = st.tabs(["📊 板塊實時監控", "⚡ 全市場策略雷達", "🎯 多因子 AI 評分系統"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -138,6 +204,7 @@ else:
                 sorted_by_pct = sorted(rows, key=lambda x: x['raw_pct'], reverse=True)
                 top_gainers = [s for s in sorted_by_pct if s['raw_pct'] > 0][:3]
                 
+                # 🌟 恢復主頁頂部的強勢股三宮格紅框
                 st.markdown("##### 🏆 群組內領漲強勢股")
                 if top_gainers:
                     c_g1, c_g2, c_g3 = st.columns(3)
@@ -150,7 +217,14 @@ else:
                 st.write("")
 
                 html_table = pd.DataFrame(rows)[["標的", "及時價 (成交量)", "今日漲跌幅"]].to_html(escape=False, index=False, border=0).replace('\n', '')
-                css = f"<style>.watch-board {{ width: 100%; }} .watch-board table {{ width: 100% !important; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size-4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; color: #888; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>".replace('\n', '')
+                css = f"""
+                <style>
+                .watch-board {{ width: 100%; }}
+                .watch-board table {{ width: 100% !important; border-collapse: collapse; }}
+                .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size-4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; color: #888; }}
+                .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}
+                </style>
+                """.replace('\n', '')
                 st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
             else: st.info("同步流介接中...")
         render_rt()

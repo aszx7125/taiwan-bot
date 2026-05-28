@@ -36,8 +36,10 @@ def get_market_summary():
 @st.cache_data(ttl=30) 
 def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
-    symbols_to_try = [f"{ticker_code}.TW", f"{ticker_code}.TWO"]
+    clean_ticker = ticker_code.split('.')[0]
+    symbols_to_try = [f"{clean_ticker}.TW", f"{clean_ticker}.TWO"]
     df, actual_symbol = pd.DataFrame(), ""
+    
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -51,19 +53,21 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
 
     if fugle_api_key:
         try:
-            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{ticker_code}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
+            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
             if res.status_code == 200:
                 data = res.json()
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
                 rt_vol = data.get('total', {}).get('tradeVolume', 0)
+                
                 tz_tw = datetime.timezone(datetime.timedelta(hours=8))
                 today_date, last_candle_date = datetime.datetime.now(tz_tw).date(), df.index[-1].date()
+                
                 if last_candle_date < today_date and rt_price:
                     new_row = df.iloc[-1].copy()
                     new_row.name = pd.Timestamp(today_date, tz=df.index.tz)
                     df = pd.concat([df, pd.DataFrame([new_row])])
-                if rt_price: df.iloc[-1, df.columns.get_loc('Close')] = rt_price
-                if rt_vol > 0: df.iloc[-1, df.columns.get_loc('Volume')] = rt_vol
+                if rt_price: df.iloc[-1, df.columns.get_loc('Close')] = float(rt_price)
+                if rt_vol > 0: df.iloc[-1, df.columns.get_loc('Volume')] = float(rt_vol)
         except: pass
         
     df = add_advanced_indicators(df, market_df)
@@ -117,7 +121,6 @@ async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, 
                         code = symbol.split('.')[0]
                         name = names_dict.get(code, "市場焦點")
                         
-                        # 🛡️ 嚴格防呆，確保空值不會搞垮表格
                         score = int(last.get('Score', 0)) if pd.notna(last.get('Score')) else 0
                         rs_val = float(last.get('RS_Index', 0)) if pd.notna(last.get('RS_Index')) else 0.0
                         rsi_val = float(last.get('RSI', 50)) if pd.notna(last.get('RSI')) else 50.0
@@ -141,17 +144,14 @@ async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, 
                         elif mode == "score":
                             return {
                                 "代號": code, "名稱": name, "量化總分": score, 
-                                "籌碼狀態": chip_status,
-                                "大盤相對強度": f"{rs_val*100:+.2f}%", 
-                                "現價": f"{last['Close']:.2f}", 
-                                "RSI": round(rsi_val, 1), 
+                                "籌碼狀態": chip_status, "大盤相對強度": f"{rs_val*100:+.2f}%", 
+                                "現價": f"{last['Close']:.2f}", "RSI": round(rsi_val, 1), 
                                 "週線趨勢": "🟢 多頭共振" if wt_up else "🔴 空頭壓制"
                             }
     except: pass
     return None
 
 async def _main_async_runner(tickers, conds, p_bar, s_text, names_dict, market_df, mode):
-    # 🛡️ 將 limit 降為 30，保護您的 API 請求不被 Yahoo 秒鎖
     connector = aiohttp.TCPConnector(limit=30)
     counter = [0]
     async with aiohttp.ClientSession(connector=connector) as session:
