@@ -85,10 +85,8 @@ def get_macro_news():
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
     except: return []
 
-# 🚀 穩若泰山的多執行緒單股運算核心
 def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
     try:
-        # 使用官方 yf.Ticker 避開 Yahoo 反爬蟲 401/403 封鎖
         df = yf.Ticker(symbol, session=yf_session).history(period="6mo", raise_errors=False)
         if df.empty or len(df) < 35: return None
         
@@ -117,7 +115,7 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
                 pct = ((last['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
                 vol_ratio = last['Volume'] / last['Vol_SMA5'] if last['Vol_SMA5'] > 0 else 1.0
                 sqz = "💥 臨界突破" if (df['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']) else ("🛡️ 區間收斂" if last['Squeeze_On'] else "📈 趨勢多頭")
-                return {"代號": code, "名稱": name, "現價": f"{last['Close']:.2f}", "今日漲跌": f"{pct:+.2f}%", "量比": f"{vol_ratio:.1f}x", "RSI": f"{rsi_val:.1f}", "型態": sqz}
+                return {"代號": code, "名稱": name, "現價": f"{last['Close']:.2f}", "今日漲跌": f"{pct:+.2f}%", "量比": f"{vol_ratio:.1f}x", "RSI": f"{rsi_val:.1f}", "型態特徵": sqz}
         
         elif mode == "score":
             return {"代號": code, "名稱": name, "量化總分": score, "籌碼狀態": chip_status, "大盤相對強度": f"{rs_val*100:+.2f}%", "現價": f"{last['Close']:.2f}", "RSI": round(rsi_val, 1), "週線趨勢": "🟢 多頭共振" if wt_up else "🔴 空頭壓制"}
@@ -125,24 +123,18 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
     return None
 
 def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df, mode="radar"):
-    """使用多執行緒平行掃描，保證不會崩潰的終極引擎"""
     results = []
     total = len(tickers)
     completed = 0
-    
-    # 控制並行數量在 30 條，兼顧光速與伺服器友善
     with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_df, conds, names_dict, mode): t for t in tickers}
-        
         for future in concurrent.futures.as_completed(future_to_ticker):
             completed += 1
             if completed % 10 == 0 or completed == total:
                 p_bar.progress(min(completed / total, 1.0))
                 s_text.text(f"🚀 量化核心運算中... ({completed}/{total})")
-            
             try:
                 res = future.result()
                 if res: results.append(res)
             except: pass
-            
     return results
