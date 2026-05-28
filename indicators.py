@@ -25,7 +25,6 @@ def add_advanced_indicators(df, market_df=None):
     )
     df['ATR_14'] = df['TR'].rolling(14).mean()
 
-    # ⚡ 優化 1：波動率收斂 (Squeeze)
     df['BB_Mid'] = df['SMA_20']
     df['BB_Std'] = df['Close'].rolling(20).std()
     df['BB_Upper'] = df['BB_Mid'] + (2 * df['BB_Std'])
@@ -34,7 +33,6 @@ def add_advanced_indicators(df, market_df=None):
     df['KC_Lower'] = df['BB_Mid'] - (1.5 * df['ATR_14'])
     df['Squeeze_On'] = (df['BB_Upper'] < df['KC_Upper']) & (df['BB_Lower'] > df['KC_Lower'])
 
-    # ⚡ 優化 2：大盤相對強度 (RS Index)
     if market_df is not None and not market_df.empty:
         stock_ret = df['Close'].pct_change(20)
         mkt_ret = market_df['Close'].reindex(df.index, method='ffill').pct_change(20)
@@ -42,14 +40,13 @@ def add_advanced_indicators(df, market_df=None):
     else:
         df['RS_Index'] = pd.Series(0, index=df.index)
 
-    # ⚡ 優化 3：多時區週線共振 (模擬週線 MACD)
     w_ema12 = df['Close'].ewm(span=60, adjust=False).mean()
     w_ema26 = df['Close'].ewm(span=130, adjust=False).mean()
     w_macd = w_ema12 - w_ema26
     w_signal = w_macd.ewm(span=45, adjust=False).mean()
     df['Weekly_Trend_Up'] = w_macd > w_signal
 
-    # ⚡ 優化 4：多因子 AI 評分系統 (0-100分)
+    # 評分系統
     df['Score'] = 0
     df.loc[df['Close'] > df['SMA_20'], 'Score'] += 15
     df.loc[df['Volume'] > df['Vol_SMA5'] * 1.5, 'Score'] += 20

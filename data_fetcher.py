@@ -36,11 +36,7 @@ def get_market_summary():
 @st.cache_data(ttl=30) 
 def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
-    
-    # 🛡️ 核心修復：強制清洗代號，去掉 .TW 或 .TWO，確保後續 API 能正確讀取
-    clean_ticker = ticker_code.split('.')[0]
-    
-    symbols_to_try = [f"{clean_ticker}.TW", f"{clean_ticker}.TWO"]
+    symbols_to_try = [f"{ticker_code}.TW", f"{ticker_code}.TWO"]
     df, actual_symbol = pd.DataFrame(), ""
     import warnings
     with warnings.catch_warnings():
@@ -53,33 +49,24 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
 
     if df.empty or len(df) < 20: return df, actual_symbol 
 
-    # ⚡ Fugle 零延遲行情補寫
     if fugle_api_key:
         try:
-            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
+            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{ticker_code}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
             if res.status_code == 200:
                 data = res.json()
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
                 rt_vol = data.get('total', {}).get('tradeVolume', 0)
-                
                 tz_tw = datetime.timezone(datetime.timedelta(hours=8))
-                today_date = datetime.datetime.now(tz_tw).date()
-                last_candle_date = df.index[-1].date()
-                
-                # 如果 Yahoo 還沒更新今日 K 線，透過 Fugle 補上一根即時 K 線
+                today_date, last_candle_date = datetime.datetime.now(tz_tw).date(), df.index[-1].date()
                 if last_candle_date < today_date and rt_price:
                     new_row = df.iloc[-1].copy()
                     new_row.name = pd.Timestamp(today_date, tz=df.index.tz)
                     df = pd.concat([df, pd.DataFrame([new_row])])
-                
-                # 覆寫最新價格與總量
                 if rt_price:
-                    df.iloc[-1, df.columns.get_loc('Close')] = float(rt_price)
+                    df.iloc[-1, df.columns.get_loc('Close')] = rt_price
                 if rt_vol > 0: 
-                    df.iloc[-1, df.columns.get_loc('Volume')] = float(rt_vol)
-        except Exception as e:
-            print(f"Fugle API 同步異常: {e}")
-            pass
+                    df.iloc[-1, df.columns.get_loc('Volume')] = rt_vol
+        except: pass
         
     df = add_advanced_indicators(df, market_df)
     return df, actual_symbol
@@ -100,6 +87,7 @@ def get_macro_news():
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
     except: return []
 
+# ⚡ 安全的異步底層引擎 (加入 DataFrame 安全檢核)
 async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, p_bar, s_text, total, counter, mode):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=90d&interval=1d"
     try:
@@ -121,6 +109,9 @@ async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, 
                         df = pd.DataFrame({'Close': [fc[i] for i in v_idx], 'Volume': [v[i] for i in v_idx], 'High': [h[i] for i in v_idx], 'Low': [l[i] for i in v_idx]})
                         df = add_advanced_indicators(df, market_df)
                         
+                        # 🛡️ 核心防護：如果資料太少導致沒算出 Score，直接跳過，避免 KeyError 崩潰
+                        if 'Score' not in df.columns: return None
+                        
                         counter[0] += 1
                         if counter[0] % 15 == 0 or counter[0] == total:
                             p_bar.progress(counter[0] / total)
@@ -141,8 +132,11 @@ async def _async_fetch_and_score(session, symbol, market_df, conds, names_dict, 
                             
                             if f_vol and f_ma and f_rsi and f_macd:
                                 return {"代號": code, "名稱": name, "現價": f"{last['Close']:.2f}", "今日漲跌": f"{pct:+.2f}%", "量比": f"{vol_ratio:.1f}x", "RSI": f"{last['RSI']:.1f}", "型態特徵": squeeze_status}
+                        
                         elif mode == "score":
-                            return {"代號": code, "名稱": name, "量化總分": int(last['Score']), "相對大盤強度": f"{last['RS_Index']*100:+.2f}%", "現價": f"{last['Close']:.2f}", "RSI": round(last['RSI'], 1), "週線趨勢": "🟢 多頭共振" if last['Weekly_Trend_Up'] else "🔴 趨勢壓制"}
+                            rs_val = last['RS_Index'] if pd.notna(last['RS_Index']) else 0.0
+                            rsi_val = last['RSI'] if pd.notna(last['RSI']) else 50.0
+                            return {"代號": code, "名稱": name, "量化總分": int(last['Score']), "相對大盤強度": f"{rs_val*100:+.2f}%", "現價": f"{last['Close']:.2f}", "RSI": round(rsi_val, 1), "週線趨勢": "🟢 多頭共振" if last['Weekly_Trend_Up'] else "🔴 趨勢壓制"}
     except: pass
     return None
 
