@@ -2,10 +2,12 @@ import pandas as pd
 import numpy as np
 
 def add_advanced_indicators(df, market_df=None):
+    # 🛡️ 確保不會因為 Yahoo 回傳假空值而崩潰
+    df = df.dropna(subset=['Close', 'Volume']).copy()
     if df.empty or len(df) < 35: 
         return df
     
-    # 🛡️ 核心防呆修復：強制剝離時區並對齊日期，避免大盤與個股對撞時產生空值崩潰
+    # 強制剝離時區並對齊日期，避免大盤與個股對撞時產生空值崩潰
     df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
         
     df['SMA_5'] = df['Close'].rolling(5).mean()
@@ -39,7 +41,6 @@ def add_advanced_indicators(df, market_df=None):
 
     # 2. 大盤相對強度 (RS Index)
     if market_df is not None and not market_df.empty:
-        # 處理大盤數據時區並去除重複日期
         market_df = market_df.copy()
         market_df.index = pd.to_datetime(market_df.index).tz_localize(None).normalize()
         market_df = market_df[~market_df.index.duplicated(keep='last')]
