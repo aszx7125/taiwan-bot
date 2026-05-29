@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import datetime
 import random 
-import concurrent.futures
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES
 from data_fetcher import (
@@ -64,19 +63,15 @@ if target_ticker:
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
-    with st.spinner(f"正在以多執行緒全速分析 {target_ticker}..."):
+    with st.spinner(f"正在全速分析 {target_ticker}..."):
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                future_kline = executor.submit(get_kline_with_fugle, target_ticker, FUGLE_API_KEY)
-                future_news_s = executor.submit(get_stock_news, c_name)
-                future_news_m = executor.submit(get_macro_news)
-                
-                df, actual_symbol = future_kline.result()
-                news_s = future_news_s.result()
-                news_m = future_news_m.result()
+            # 🛡️ 移除多執行緒呼叫 st.cache_data，徹底解決 Streamlit 死結問題
+            df, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
+            news_s = get_stock_news(c_name)
+            news_m = get_macro_news()
 
             if df.empty or len(df) < 40: 
-                st.error("❌ 該標的數據深度不足，無法執行複雜演算法。")
+                st.error("❌ 該標的數據深度不足，無法執行複雜演算法。可能原因：代號錯誤或剛上市。")
             else:
                 today, yesterday = df.iloc[-1], df.iloc[-2]
                 vol_ratio = (today['Volume'] / today['Vol_SMA5']) if today['Vol_SMA5'] > 0 else 1.0
@@ -89,7 +84,6 @@ if target_ticker:
                 res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
                 sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
                 
-                # 🚀 提取背離狀態
                 bull_div = bool(today.get('Bullish_Div', False))
                 bear_div = bool(today.get('Bearish_Div', False))
                 div_status = "🟢 底背離 (空頭力竭，醞釀反彈)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
@@ -129,7 +123,6 @@ if target_ticker:
                         st.write(f"- **前高壓力 (近20日):** {res_level:.2f} | **已測試:** {res_tests} 次")
                         st.write(f"- **前低支撐 (近20日):** {sup_level:.2f} | **已測試:** {sup_tests} 次")
                         st.write(f"- **盤勢型態判定:** {breakout_status}")
-                        # 🚀 加入背離顯示
                         st.markdown(f"- **RSI 動能背離偵測:** <span style='color:{'#00cc96' if bull_div else ('#ff4b4b' if bear_div else 'gray')}; font-weight:bold;'>{div_status}</span>", unsafe_allow_html=True)
                         st.write(f"- **波動壓縮狀態:** {'⚠️ 極度擠壓收斂 (Squeeze)' if today.get('Squeeze_On', False) else '🟢 波動度常態分佈'}")
                         st.write(f"- **大週期週線共振:** {'📈 週線處於波段多頭保護期' if today.get('Weekly_Trend_Up', False) else '📉 週線空頭趨勢壓制'}")
@@ -282,7 +275,8 @@ else:
         with c_slider:
             with st.expander("⚙️ 畫幅設定"): user_font_size = st.slider("表格文字大小", 12, 40, 22, 2)
             
-        @st.fragment(run_every=datetime.timedelta(seconds=15))
+        # 🛡️ 延長重新整理時間至 30 秒，給予爬蟲足夠的喘息空間，避免大塞車死結
+        @st.fragment(run_every=datetime.timedelta(seconds=30))
         def render_rt():
             rows = []
             for t in cluster_stocks:
