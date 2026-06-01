@@ -4,11 +4,10 @@ import datetime
 import urllib.parse
 import xml.etree.ElementTree as ET
 import concurrent.futures
-import cloudscraper  # 🚀 導入替代 Scrapling 的雲端輕量級隱形引擎
+import cloudscraper
 from indicators import add_advanced_indicators
 
 # 🛡️ 建立自動穿透防爬蟲網關的 Scraper
-# 完美模擬 Windows 平台上的真實 Chrome 瀏覽器特徵，繞過 Yahoo 的 TLS 指紋檢測
 stealth_scraper = cloudscraper.create_scraper(
     browser={
         'browser': 'chrome',
@@ -18,25 +17,16 @@ stealth_scraper = cloudscraper.create_scraper(
 )
 
 def fetch_yahoo_robust(symbol, period="6mo"):
-    """
-    🚀 隱形直連 K 線爬蟲：
-    利用 cloudscraper 完美偽裝成真人瀏覽，徹底解決網頁轉圈圈與被阻擋的問題。
-    """
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval=1d"
     try:
-        # 使用 cloudscraper 發送高穿透力的 GET 請求，設定 5 秒超時防卡死
         res = stealth_scraper.get(url, timeout=5)
-        
         if res.status_code == 200:
             data = res.json()
             res_data = data.get('chart', {}).get('result', [])
             if res_data:
                 timestamps = res_data[0].get('timestamp', [])
                 quote = res_data[0].get('indicators', {}).get('quote', [{}])[0]
-                
-                if not timestamps or not quote: 
-                    return pd.DataFrame()
-                    
+                if not timestamps or not quote: return pd.DataFrame()
                 df = pd.DataFrame({
                     'Open': quote.get('open', []),
                     'High': quote.get('high', []),
@@ -44,13 +34,10 @@ def fetch_yahoo_robust(symbol, period="6mo"):
                     'Close': quote.get('close', []),
                     'Volume': quote.get('volume', [])
                 }, index=pd.to_datetime(timestamps, unit='s', utc=True))
-                
-                # 統一時區洗條，確保 SMC 與背離演算法不會對撞空值
                 df.index = df.index.tz_convert('Asia/Taipei').tz_localize(None).normalize()
                 return df.dropna(subset=['Close', 'Volume'])
     except Exception:
         pass
-        
     return pd.DataFrame()
 
 @st.cache_data(ttl=3600*12)
@@ -78,7 +65,6 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
     clean_ticker = ticker_code.split('.')[0]
     
-    # 依序快速查探上市與上櫃
     df = fetch_yahoo_robust(f"{clean_ticker}.TW")
     actual_symbol = f"{clean_ticker}.TW"
     if df.empty or len(df) < 20:
@@ -88,7 +74,6 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     if df.empty or len(df) < 20: 
         return pd.DataFrame(), actual_symbol 
 
-    # Fugle 零延遲即時報價整合 (同樣透過隱形引擎護航)
     if fugle_api_key:
         try:
             res = stealth_scraper.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
@@ -96,15 +81,12 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
                 data = res.json()
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
                 rt_vol = data.get('total', {}).get('tradeVolume', 0)
-                
                 tz_tw = datetime.timezone(datetime.timedelta(hours=8))
                 today_date, last_candle_date = datetime.datetime.now(tz_tw).date(), df.index[-1].date()
-                
                 if last_candle_date < today_date and rt_price:
                     new_row = df.iloc[-1].copy()
                     new_row.name = pd.Timestamp(today_date)
                     df = pd.concat([df, pd.DataFrame([new_row])])
-                    
                 if rt_price: df.iloc[-1, df.columns.get_loc('Close')] = float(rt_price)
                 if rt_vol > 0: df.iloc[-1, df.columns.get_loc('Volume')] = float(rt_vol)
         except Exception:
@@ -144,28 +126,23 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
         score = int(last.get('Score', 0)) if pd.notna(last.get('Score')) else 0
         rs_val = float(last.get('RS_Index', 0)) if pd.notna(last.get('RS_Index')) else 0.0
         rsi_val = float(last.get('RSI', 50)) if pd.notna(last.get('RSI')) else 50.0
-        chip_trend = int(last.get('Smart_Money_Trend', 0)) if pd.notna(last.get('Smart_Money_Trend')) else 0
-        wt_up = bool(last.get('Weekly_Trend_Up', False)) if pd.notna(last.get('Weekly_Trend_Up')) else False
         
-        bull_div = bool(last.get('Bullish_Div', False))
-        bear_div = bool(last.get('Bearish_Div', False))
+        # 提取 SMC 與機構籌碼
         liq_sweep = bool(last.get('Liquidity_Sweep_Bull', False))
         fvg = bool(last.get('FVG_Bull', False))
+        block_trade = bool(last.get('Block_Trade_Inflow', False))
+        broker_conc = float(last.get('Broker_Concentration', 0.0))
         
         pattern_list = []
-        if liq_sweep: pattern_list.append("🌊 破底翻(洗盤結束)")
-        if fvg: pattern_list.append("🧱 FVG大戶缺口")
+        if block_trade: pattern_list.append("🌊 大單狂敲")
+        if broker_conc > 0.3: pattern_list.append("🏦 分點囤貨")
+        if liq_sweep: pattern_list.append("🧹 破底翻")
+        if fvg: pattern_list.append("🧱 FVG缺口")
         if df['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']: pattern_list.append("💥 壓縮突破")
-        elif last['Squeeze_On']: pattern_list.append("🛡️ 區間收斂")
-        
-        if bull_div: pattern_list.append("🟢 RSI底背離")
-        elif bear_div: pattern_list.append("🚨 RSI頂背離")
         
         if not pattern_list: pattern_list.append("多頭" if last['Close'] > last['SMA_20'] else "空頭")
-        pattern_str = " + ".join(pattern_list)
+        pattern_str = " + ".join(pattern_list[:3]) # 顯示前三個最強訊號
         
-        chip_status = "👽 大戶連買" if chip_trend >= 1 else ("🚶 散戶接盤" if chip_trend <= -1 else "⚖️ 無方向")
-
         if mode == "radar":
             f_vol = (last['Volume'] > last['Vol_SMA5'] * 1.5) if conds.get('vol') else True
             f_ma = (last['Close'] > last['SMA_20']) if conds.get('ma') else True
@@ -178,7 +155,7 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
                 return {"代號": code, "名稱": name, "現價": f"{last['Close']:.2f}", "今日漲跌": f"{pct:+.2f}%", "量比": f"{vol_ratio:.1f}x", "RSI": f"{rsi_val:.1f}", "型態特徵": pattern_str}
         
         elif mode == "score":
-            return {"代號": code, "名稱": name, "量化總分": score, "籌碼/型態": f"{chip_status} | {pattern_str}", "大盤相對強度": f"{rs_val*100:+.2f}%", "現價": f"{last['Close']:.2f}", "週線趨勢": "🟢 共振" if wt_up else "🔴 壓制"}
+            return {"代號": code, "名稱": name, "量化總分": score, "機構籌碼/型態": pattern_str, "大盤相對強度": f"{rs_val*100:+.2f}%", "現價": f"{last['Close']:.2f}"}
     except: pass
     return None
 
@@ -186,7 +163,6 @@ def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df,
     results = []
     total = len(tickers)
     completed = 0
-    # 🛡️ 保持穩定的 15 條執行緒併發，配合 cloudscraper 隱形流，實現全市場與產業鏈的安全高速掃描
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_df, conds, names_dict, mode): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):

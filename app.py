@@ -79,11 +79,11 @@ if target_ticker:
             
             res_level, sup_level = today['Res_20'], today['Sup_20']
             box_height = res_level - sup_level
-            
             recent_20_df = df.iloc[-21:-1]
             res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
             sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
             
+            # SMC 與 背離狀態
             bull_div = bool(today.get('Bullish_Div', False))
             bear_div = bool(today.get('Bearish_Div', False))
             div_status = "🟢 底背離 (空頭力竭，醞釀反彈)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
@@ -95,23 +95,15 @@ if target_ticker:
             if fvg_bull: smc_status.append("🧱 公允價值缺口 (主力強勢建倉)")
             smc_text = " + ".join(smc_status) if smc_status else "無觸發"
             
+            # 大單與分點狀態
+            block_trade = bool(today.get('Block_Trade_Inflow', False))
+            broker_conc = float(today.get('Broker_Concentration', 0.0))
+            
             breakout_status, target_proj, breakout_prob = "區間震盪 (未突破)", "無明確突破方向", "中立"
-            if today['Close'] > res_level:
-                breakout_status, target_proj, breakout_prob = "🚀 向上突破前高", f"目標上看 **{round(res_level + box_height, 1)}**", "強勢發動"
-            elif today['Close'] < sup_level:
-                breakout_status, target_proj, breakout_prob = "⚠️ 向下摜破前低", f"下看 **{round(sup_level - box_height, 1)}**", "弱勢探底"
-            elif today['Close'] >= res_level * 0.98:
-                breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
-                if vol_ratio > 1.3 and today['Close'] > today['Open']:
-                    breakout_prob, target_proj = "高機率突破", f"目標上看 **{round(res_level + box_height, 1)}**"
-                else:
-                    breakout_prob, target_proj = "機率中等 (量縮)", f"壓力位 {round(res_level, 1)} 附近震盪"
-            elif today['Close'] <= sup_level * 1.02:
-                breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
-                if vol_ratio > 1.3 and today['Close'] < today['Open']:
-                    breakout_prob, target_proj = "高機率破底", f"下測 **{round(sup_level - box_height, 1)}**"
-                else:
-                    breakout_prob, target_proj = "機率中等 (量縮)", f"支撐位 {round(sup_level, 1)} 防守戰"
+            if today['Close'] > res_level: breakout_status, target_proj = "🚀 向上突破前高", f"目標上看 **{round(res_level + box_height, 1)}**"
+            elif today['Close'] < sup_level: breakout_status, target_proj = "⚠️ 向下摜破前低", f"下看 **{round(sup_level - box_height, 1)}**"
+            elif today['Close'] >= res_level * 0.98: breakout_status, target_proj = "⚔️ 兵臨城下 (挑戰前高)", f"目標上看 **{round(res_level + box_height, 1)}**"
+            elif today['Close'] <= sup_level * 1.02: breakout_status, target_proj = "🛡️ 支撐保衛戰 (回測前低)", f"下測 **{round(sup_level - box_height, 1)}**"
 
             st.subheader(f"🧬 {target_ticker} {c_name} 深度量化診斷報告")
             m1, m2, m3, m4 = st.columns(4)
@@ -121,7 +113,7 @@ if target_ticker:
             m4.metric("大盤相對強度", f"{today.get('RS_Index', 0)*100:+.2f}%")
             
             st.markdown("---")
-            t1, t2, t3, t4 = st.tabs(["🧱 今日策略與前瞻推演", "🔍 多週期策略回測", "🕵️‍♂️ 籌碼動向矩陣", "📰 專屬新聞動態"])
+            t1, t2, t3, t4 = st.tabs(["🧱 結構與前瞻推演", "🔍 多週期策略回測", "🏦 大單流與分點籌碼", "📰 專屬新聞動態"])
             
             with t1:
                 c_l, c_r = st.columns(2)
@@ -131,9 +123,8 @@ if target_ticker:
                     st.write(f"- **前低支撐 (近20日):** {sup_level:.2f} | **已測試:** {sup_tests} 次")
                     st.write(f"- **盤勢型態判定:** {breakout_status}")
                     st.markdown(f"- **RSI 動能背離偵測:** <span style='color:{'#00cc96' if bull_div else ('#ff4b4b' if bear_div else 'gray')}; font-weight:bold;'>{div_status}</span>", unsafe_allow_html=True)
-                    st.markdown(f"- **SMC 機構級微觀結構:** <span style='color:{'#ffc107' if smc_status else 'gray'}; font-weight:bold;'>{smc_text}</span>", unsafe_allow_html=True)
+                    st.markdown(f"- **SMC 微觀結構:** <span style='color:{'#ffc107' if smc_status else 'gray'}; font-weight:bold;'>{smc_text}</span>", unsafe_allow_html=True)
                     st.write(f"- **波動壓縮狀態:** {'⚠️ 極度擠壓收斂 (Squeeze)' if today.get('Squeeze_On', False) else '🟢 波動度常態分佈'}")
-                    st.write(f"- **大週期週線共振:** {'📈 週線處於波段多頭保護期' if today.get('Weekly_Trend_Up', False) else '📉 週線空頭趨勢壓制'}")
                 with c_r:
                     st.markdown("#### 💡 當日操作劇本規劃")
                     st.write(f"**🔴 漲停極限:** {round(yesterday['Close'] * 1.10, 1)} | **🟢 跌停極限:** {round(yesterday['Close'] * 0.90, 1)}")
@@ -159,22 +150,12 @@ if target_ticker:
                 with sub_t1:
                     y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
                     y_target = y_res + y_atr
-
                     col_r1, col_r2 = st.columns(2)
                     with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{y_res:.2f}**\n- 支撐位: **{y_sup:.2f}**\n- 測幅目標: **{y_target:.2f}**")
                     with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{today['High']:.2f}**\n- 最低價: **{today['Low']:.2f}**\n- 收盤現價: **{today['Close']:.2f}**")
-
-                    if today['Close'] > y_res:
-                        if today['High'] >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位，並成功觸及等距測幅目標！")
-                        else: st.success(f"⭐⭐ **突破確認**：今日收盤站上壓力位，多頭正式發動。")
-                    elif today['Close'] < y_sup:
-                        st.error(f"⚠️ **跌破防線**：今日收盤跌破支撐位，觸發停損機制。")
-                    elif today['High'] >= y_res and today['Close'] <= y_res:
-                        st.warning(f"👀 **假突破 / 壓力沉重**：今日盤中突破壓力，但收盤未能站穩。")
-                    elif today['Low'] <= y_sup and today['Close'] >= y_sup:
-                        st.info(f"🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
-                    else:
-                        st.write(f"⏸️ **區間震盪**：走勢在預設箱體內震盪，符合短線觀望預期。")
+                    if today['Close'] > y_res: st.success("突破確認！多頭正式發動。")
+                    elif today['Close'] < y_sup: st.error("跌破防線！觸發停損機制。")
+                    else: st.write("走勢在預設箱體內震盪。")
                         
                 with sub_t2:
                     if len(df) >= 26:
@@ -187,23 +168,18 @@ if target_ticker:
                         c_now = today['Close']
                         
                         col_w1, col_w2 = st.columns(2)
-                        with col_w1: st.info(f"**5 天前 (一週) 預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
+                        with col_w1: st.info(f"**5 天前預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
                         with col_w2: st.warning(f"**本週實況極值 (近5日)**\n- 波段最高: **{max_h_5d:.2f}**\n- 波段最低: **{min_l_5d:.2f}**\n- 目前收盤: **{c_now:.2f}**")
                         
                         max_gain = ((max_h_5d - d_base['Close']) / d_base['Close']) * 100
                         max_loss = ((min_l_5d - d_base['Close']) / d_base['Close']) * 100
                         st.markdown(f"**📈 本週最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain:.2f}%</span> | **📉 本週最大潛在回撤:** <span style='color:#00cc96;'>{max_loss:.2f}%</span>", unsafe_allow_html=True)
-                        
-                        if max_h_5d >= w_target: st.success("⭐⭐⭐ **波段達標**：本週內曾成功突破並觸及一週前的等距測幅目標！")
-                        elif max_h_5d > w_res: st.success("⭐⭐ **波段突破**：本週內曾成功突破壓力位，啟動多頭行情。")
-                        elif min_l_5d < w_sup: st.error("⚠️ **波段破底**：本週內曾跌破一週前的關鍵支撐，若未停損可能擴大虧損。")
-                        else: st.info("⏸️ **大型箱體**：這 5 天內始終在一週前的壓力與支撐區間內震盪洗盤。")
                     else:
                         st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
 
                 with sub_t3:
                     if len(df) >= 45:
-                        d_base_m = df.iloc[-21] # 20 個交易日前約為一個月
+                        d_base_m = df.iloc[-21] 
                         d_20_days = df.iloc[-20:]
                         m_res, m_sup, m_atr = d_base_m['Res_20'], d_base_m['Sup_20'], d_base_m['ATR_14']
                         m_target = m_res + m_atr
@@ -212,27 +188,35 @@ if target_ticker:
                         c_now = today['Close']
                         
                         col_m1, col_m2 = st.columns(2)
-                        with col_m1: st.info(f"**20 天前 (單月) 預測基準**\n- 當時壓力: **{m_res:.2f}**\n- 當時支撐: **{m_sup:.2f}**\n- 測幅目標: **{m_target:.2f}**")
+                        with col_m1: st.info(f"**20 天前預測基準**\n- 當時壓力: **{m_res:.2f}**\n- 當時支撐: **{m_sup:.2f}**\n- 測幅目標: **{m_target:.2f}**")
                         with col_m2: st.warning(f"**本月實況極值 (近20日)**\n- 波段最高: **{max_h_20d:.2f}**\n- 波段最低: **{min_l_20d:.2f}**\n- 目前收盤: **{c_now:.2f}**")
                         
                         max_gain_m = ((max_h_20d - d_base_m['Close']) / d_base_m['Close']) * 100
                         max_loss_m = ((min_l_20d - d_base_m['Close']) / d_base_m['Close']) * 100
                         st.markdown(f"**📈 本月最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain_m:.2f}%</span> | **📉 本月最大潛在回撤:** <span style='color:#00cc96;'>{max_loss_m:.2f}%</span>", unsafe_allow_html=True)
-                        
-                        if max_h_20d >= m_target: st.success("⭐⭐⭐ **單月波段達標**：本月內曾成功突破並觸及一個月前的等距測幅目標！這是一個非常成功的波段操作。")
-                        elif max_h_20d > m_res: st.success("⭐⭐ **單月波段突破**：本月內曾成功突破壓力位，順利啟動了長波段多頭行情。")
-                        elif min_l_20d < m_sup: st.error("⚠️ **單月波段破底**：本月內曾跌破一個月前的關鍵支撐，代表趨勢已遭破壞，嚴格停損是保命關鍵。")
-                        else: st.info("⏸️ **超大型箱體**：這整整一個月內，股價始終在當時的壓力與支撐區間內震盪，屬於長週期的籌碼沉澱階段。")
                     else:
-                        st.warning("⚠️ 歷史數據深度不足，無法進行單月 (20個交易日) 歷史回測。")
+                        st.warning("⚠️ 歷史數據深度不足，無法進行單月回測。")
             
             with t3:
-                st.markdown("#### 🕵️‍♂️ 法人大戶籌碼控盤度矩陣")
-                sm = int(today.get('Smart_Money_Trend', 0))
-                chip_txt = "👽 外資/大戶積極建倉中 (價漲量增)" if sm >= 1 else ("🚶 散戶接盤/大戶出貨 (價跌量增)" if sm <= -1 else "⚖️ 籌碼無明確方向，量能萎縮")
-                st.info(f"**智能籌碼動向判定:** {chip_txt}")
-                st.progress(int(today.get('Score', 0)), text=f"量化綜合控盤度：{int(today.get('Score', 0))}%")
-                st.caption("基於價量背離、RS 指標與週線多時區共振加權推算。分數越高，代表法蘭與大戶資金沉澱度越高。")
+                st.markdown("#### 🏦 微觀結構：特大單與贏家分點籌碼追蹤")
+                st.caption("透過解析日內價格推升強度與極端成交量，反向追蹤機構主力的大單淨流入與分點囤貨軌跡。")
+                
+                c_flow1, c_flow2 = st.columns(2)
+                with c_flow1:
+                    st.markdown("##### 🌊 盤中特大單淨流入 (Order Flow)")
+                    if block_trade:
+                        st.success("🚨 **偵測到異常大單狂敲！**\n今日成交量大幅超越均量，且價格強勢推升收在高點附近，顯示有機構級資金不計代價掃貨。")
+                    else:
+                        st.info("📉 **無明顯大單流入**\n今日成交量能平穩，屬於一般散戶或程式單的自然換手。")
+                        
+                with c_flow2:
+                    st.markdown("##### 🏦 贏家分點集中囤貨 (Broker Concentration)")
+                    if broker_conc > 0.3:
+                        st.success(f"🔥 **高度集中 (集中度: {broker_conc*100:.1f}%)**\n近 5 日資金呈現異常淨流入，極可能有特定主力分點正在暗中大舉囤貨！")
+                    elif broker_conc > 0:
+                        st.warning(f"🔍 **溫和吃貨 (集中度: {broker_conc*100:.1f}%)**\n籌碼緩步集中，有特定買盤正在吸收浮額。")
+                    else:
+                        st.info(f"⚖️ **籌碼發散 (集中度: {broker_conc*100:.1f}%)**\n近 5 日無特定分點囤貨跡象，籌碼呈現自然發散或主力正在出脫。")
             
             with t4:
                 nl, nr = st.columns(2)
@@ -282,33 +266,33 @@ else:
 
     with st.expander("🧠 系統核心：量化策略與多因子演算法白皮書 (點此展開)", expanded=False):
         st.markdown("""
-        #### 1. 前瞻性預判：SMC 機構級微觀結構 (起漲點偵測)
-        有別於落後的均線指標，本系統內建 **Smart Money Concepts (聰明錢概念)** 演算法，專抓主力發動前的細微痕跡：
-        * **🌊 流動性掠奪 (破底翻)**：偵測股價刻意跌破近 20 日低點觸發散戶停損，卻在收盤強勢站回。這代表主力洗盤完畢，準備拉升。
-        * **🧱 公允價值缺口 (FVG)**：偵測連續 K 線間留下的價格真空區，代表大戶不計代價的強勢建倉。
+        #### 1. 🏦 機構級微觀結構：大單流與分點追蹤
+        系統內建 Order Flow 與分點囤貨代理模型：
+        * **🌊 特大單淨流入**：偵測日內極端爆量與價格高位收盤，抓出不計代價掃貨的法人機構。
+        * **🏦 分點集中囤貨**：計算近 5 日資金異常淨流入率，追蹤特定「贏家分點」或主力暗中吃貨的軌跡。
 
-        #### 2. RSI 動態背離掃描 (左側抄底指標)
-        系統內建波峰波谷比對演算法：當股價創下近期新低，但 RSI 指標卻「沒有」創低反而墊高時，觸發 **🟢 底背離** 訊號。代表殺跌動能枯竭，是極佳的低接訊號。
+        #### 2. 前瞻性預判：SMC 機構級起漲點偵測
+        * **🧹 流動性掠奪 (破底翻)**：偵測股價刻意跌破近 20 日低點觸發散戶停損，隨即強勢站回。代表主力洗盤完畢。
+        * **🧱 公允價值缺口 (FVG)**：偵測連續 K 線間留下的價格真空區，代表大戶強勢建倉不留空隙。
 
-        #### 3. 產業鏈資金共振 (Top-Down 法人視角)
-        系統將市場熱門標的嚴格劃分為「上、中、下游」。當資金灌入時，熱度會從上游（如：晶片）蔓延至下游（如：組裝）。透過觀察各區塊的平均 AI 評分，精準捕捉資金外溢效應。
+        #### 3. RSI 動態背離掃描 (左側抄底指標)
+        當股價創下近期新低，但 RSI 指標卻「沒有」創低反而墊高時，觸發 **🟢 底背離** 訊號。代表殺跌動能枯竭。
 
-        #### 4. Squeeze 波動率收斂突破 (右側主升段發動機)
-        當布林通道縮口並完全被包進肯特納通道內時，稱為「極度擠壓 (Squeeze)」。這代表大風暴前的寧靜，此時若發生帶量突破，往往是暴賺主升段的起點。
+        #### 4. Squeeze 波動率收斂突破 (右側發動機)
+        布林通道被包進肯特納通道內時，稱為「極度擠壓 (Squeeze)」。此時若帶量突破，往往是暴賺主升段的起點。
 
         #### 5. AI 多因子評分矩陣 (滿分 100 分)
-        為了強化「買在起漲前」的能力，我們降低了落後指標的權重，大幅提升了前瞻性指標的配分：
-        1. **趨勢與動能 (10分)**：站上月線(5分) + MACD 金叉(5分)。
-        2. **大盤相對強度 RS (15分)**：近 20 日報酬率戰勝大盤，抗跌飆股。
-        3. **週線共振 (15分)**：大週期週線 MACD 為多頭，長線保護短線。
-        4. **大戶籌碼動能 (10分)**：近 5 日「價漲量增」天數多於「價跌量增」。
-        5. **量能與壓縮突破 (20分)**：爆發量(10分) + Squeeze 突破(10分)。
-        6. **前瞻 - 底部背離發動 (10分)**：價格破底但 RSI 墊高，強烈反轉訊號。
-        7. **前瞻 - SMC 主力建倉 (20分)**：流動性掠奪(10分) + FVG 缺口(10分)。
+        1. **技術與動能 (10分)**：站上月線(5分) + MACD 金叉(5分)。
+        2. **大盤相對強度 RS (10分)**：近 20 日報酬率戰勝大盤。
+        3. **週線共振 (10分)**：大週期週線 MACD 為多頭。
+        4. **壓縮突破 (10分)**：Squeeze 狀態解除並向上突破。
+        5. **底部背離發動 (10分)**：價格破底但 RSI 墊高。
+        6. **SMC 主力建倉 (20分)**：流動性掠奪(10分) + FVG 缺口(10分)。
+        7. **微觀大單籌碼 (20分)**：特大單敲進(10分) + 分點高度集中(10分)。
         """)
             
     st.markdown("---")
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 板塊實時監控", "⚡ 條件設定全市場雷達", "🎯 多因子 AI 評分 (含SMC)", "🕸️ 產業鏈資金共振 (精選)"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 板塊實時監控", "⚡ 條件設定全市場雷達", "🎯 多因子 AI 評分 (含籌碼)", "🕸️ 產業鏈資金共振 (精選)"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -426,7 +410,7 @@ else:
                 st.markdown("---")
                 st.markdown("### 🌟 AI 產業鏈精選建議標的")
                 if recommendations:
-                    st.success("🎯 以下標的為該產業鏈中，具備「SMC前瞻訊號、技術面突破與大戶籌碼介入」的高分強勢股，建議優先列入波段觀察清單：")
+                    st.success("🎯 以下標的為該產業鏈中，具備「微觀籌碼流入、SMC前瞻訊號與技術面突破」的高分強勢股，建議優先列入波段觀察清單：")
                     for rec in recommendations:
                         st.markdown(f"- {rec}")
                 else:
