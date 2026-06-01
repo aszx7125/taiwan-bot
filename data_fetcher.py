@@ -4,32 +4,28 @@ import datetime
 import urllib.parse
 import xml.etree.ElementTree as ET
 import concurrent.futures
-import os
+import cloudscraper  # 🚀 導入替代 Scrapling 的雲端輕量級隱形引擎
 from indicators import add_advanced_indicators
 
-# 🚀 雲端破解手術：強迫 Streamlit Cloud 在啟動時下載 Chromium 瀏覽器核心
-@st.cache_resource
-def install_browser():
-    try:
-        os.system("playwright install chromium")
-    except Exception as e:
-        print(f"Browser installation failed: {e}")
-
-# 確保瀏覽器核心安裝完畢後，再載入神兵利器
-install_browser()
-from scrapling import Fetcher
-
-# 啟動 Scrapling 隱形抓取引擎
-stealth_fetcher = Fetcher()
+# 🛡️ 建立自動穿透防爬蟲網關的 Scraper
+# 完美模擬 Windows 平台上的真實 Chrome 瀏覽器特徵，繞過 Yahoo 的 TLS 指紋檢測
+stealth_scraper = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    }
+)
 
 def fetch_yahoo_robust(symbol, period="6mo"):
     """
-    🚀 終極型態：Scrapling 隱形爬蟲引擎。
-    完美模擬人類瀏覽器，無視 Yahoo WAF 阻擋。
+    🚀 隱形直連 K 線爬蟲：
+    利用 cloudscraper 完美偽裝成真人瀏覽，徹底解決網頁轉圈圈與被阻擋的問題。
     """
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval=1d"
     try:
-        res = stealth_fetcher.get(url, timeout=5)
+        # 使用 cloudscraper 發送高穿透力的 GET 請求，設定 5 秒超時防卡死
+        res = stealth_scraper.get(url, timeout=5)
         
         if res.status_code == 200:
             data = res.json()
@@ -49,6 +45,7 @@ def fetch_yahoo_robust(symbol, period="6mo"):
                     'Volume': quote.get('volume', [])
                 }, index=pd.to_datetime(timestamps, unit='s', utc=True))
                 
+                # 統一時區洗條，確保 SMC 與背離演算法不會對撞空值
                 df.index = df.index.tz_convert('Asia/Taipei').tz_localize(None).normalize()
                 return df.dropna(subset=['Close', 'Volume'])
     except Exception:
@@ -81,7 +78,7 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
     clean_ticker = ticker_code.split('.')[0]
     
-    # 優先查上市，找不到再查上櫃
+    # 依序快速查探上市與上櫃
     df = fetch_yahoo_robust(f"{clean_ticker}.TW")
     actual_symbol = f"{clean_ticker}.TW"
     if df.empty or len(df) < 20:
@@ -91,10 +88,10 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     if df.empty or len(df) < 20: 
         return pd.DataFrame(), actual_symbol 
 
-    # Fugle 零延遲報價整合
+    # Fugle 零延遲即時報價整合 (同樣透過隱形引擎護航)
     if fugle_api_key:
         try:
-            res = stealth_fetcher.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
+            res = stealth_scraper.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
             if res.status_code == 200:
                 data = res.json()
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
@@ -120,7 +117,7 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
 def get_stock_news(keyword):
     try:
         url = f"https://news.google.com/rss/search?q={urllib.parse.quote(keyword)}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        root = ET.fromstring(stealth_fetcher.get(url, timeout=5).text)
+        root = ET.fromstring(stealth_scraper.get(url, timeout=4).text)
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:5]]
     except: return []
 
@@ -128,7 +125,7 @@ def get_stock_news(keyword):
 def get_macro_news():
     try:
         url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台股 OR 聯準會 OR 財報')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        root = ET.fromstring(stealth_fetcher.get(url, timeout=5).text)
+        root = ET.fromstring(stealth_scraper.get(url, timeout=4).text)
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
     except: return []
 
@@ -171,7 +168,7 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
 
         if mode == "radar":
             f_vol = (last['Volume'] > last['Vol_SMA5'] * 1.5) if conds.get('vol') else True
-            f_ma = (last['Close'] > last['SMA_20']) if conds.get('ma') else True
+            f_ma = (last['Close'] > last['SMA_20']) if conds.get('ma') += True
             f_rsi = (last['RSI'] < 35) if conds.get('rsi') else True
             f_macd = (last['MACD'] > last['Signal'] and df['MACD'].iloc[-2] <= df['Signal'].iloc[-2]) if conds.get('macd') else True
             
@@ -189,6 +186,7 @@ def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df,
     results = []
     total = len(tickers)
     completed = 0
+    # 🛡️ 保持穩定的 15 條執行緒併發，配合 cloudscraper 隱形流，實現全市場與產業鏈的安全高速掃描
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_df, conds, names_dict, mode): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):

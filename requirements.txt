@@ -2,5 +2,4 @@ streamlit
 pandas
 requests
 yfinance
-playwright
-scrapling
+cloudscraper
