@@ -168,7 +168,7 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
 
         if mode == "radar":
             f_vol = (last['Volume'] > last['Vol_SMA5'] * 1.5) if conds.get('vol') else True
-            f_ma = (last['Close'] > last['SMA_20']) if conds.get('ma') += True
+            f_ma = (last['Close'] > last['SMA_20']) if conds.get('ma') else True
             f_rsi = (last['RSI'] < 35) if conds.get('rsi') else True
             f_macd = (last['MACD'] > last['Signal'] and df['MACD'].iloc[-2] <= df['Signal'].iloc[-2]) if conds.get('macd') else True
             
