@@ -9,7 +9,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from indicators import add_advanced_indicators
 
-# 🛡️ 建立穩健的 HTTP Session，帶有自動重試機制與強勢偽裝
 retry_strategy = Retry(
     total=2,
     status_forcelist=[429, 500, 502, 503, 504],
@@ -27,10 +26,6 @@ general_session.headers.update({
 })
 
 def fetch_yahoo_robust(symbol, period="6mo"):
-    """
-    🚀 終極直連爬蟲：徹底放棄 yfinance 套件。
-    使用強制 timeout=3，保證 3 秒內一定有回應，絕對不會死結卡死。
-    """
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval=1d"
     try:
         res = general_session.get(url, timeout=3)
@@ -56,7 +51,6 @@ def fetch_yahoo_robust(symbol, period="6mo"):
                 return df.dropna(subset=['Close', 'Volume'])
     except Exception:
         pass
-        
     return pd.DataFrame()
 
 @st.cache_data(ttl=3600*12)
@@ -84,7 +78,6 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
     clean_ticker = ticker_code.split('.')[0]
     
-    # 依序尋訪上市與上櫃
     df = fetch_yahoo_robust(f"{clean_ticker}.TW")
     actual_symbol = f"{clean_ticker}.TW"
     if df.empty or len(df) < 20:
@@ -94,7 +87,6 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     if df.empty or len(df) < 20: 
         return pd.DataFrame(), actual_symbol 
 
-    # Fugle 零延遲報價整合
     if fugle_api_key:
         try:
             res = general_session.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=2)
@@ -156,7 +148,13 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
         bull_div = bool(last.get('Bullish_Div', False))
         bear_div = bool(last.get('Bearish_Div', False))
         
+        # 🚀 提取 SMC 訊號
+        liq_sweep = bool(last.get('Liquidity_Sweep_Bull', False))
+        fvg = bool(last.get('FVG_Bull', False))
+        
         pattern_list = []
+        if liq_sweep: pattern_list.append("🌊 破底翻(洗盤結束)")
+        if fvg: pattern_list.append("🧱 FVG大戶缺口")
         if df['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']: pattern_list.append("💥 壓縮突破")
         elif last['Squeeze_On']: pattern_list.append("🛡️ 區間收斂")
         
@@ -188,7 +186,6 @@ def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df,
     results = []
     total = len(tickers)
     completed = 0
-    # 策略雷達因為不會卡到 Streamlit 的 cache，使用執行緒是安全的
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_df, conds, names_dict, mode): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
