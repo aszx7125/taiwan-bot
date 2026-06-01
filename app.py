@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import random 
+import concurrent.futures
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES, INDUSTRY_CHAINS
 from data_fetcher import (
@@ -131,7 +132,6 @@ if target_ticker:
                     st.write(f"- **前低支撐 (近20日):** {sup_level:.2f} | **已測試:** {sup_tests} 次")
                     st.write(f"- **盤勢型態判定:** {breakout_status}")
                     st.markdown(f"- **RSI 動能背離偵測:** <span style='color:{'#00cc96' if bull_div else ('#ff4b4b' if bear_div else 'gray')}; font-weight:bold;'>{div_status}</span>", unsafe_allow_html=True)
-                    # 🚀 顯示 SMC 狀態
                     st.markdown(f"- **SMC 機構級微觀結構:** <span style='color:{'#ffc107' if smc_status else 'gray'}; font-weight:bold;'>{smc_text}</span>", unsafe_allow_html=True)
                     st.write(f"- **波動壓縮狀態:** {'⚠️ 極度擠壓收斂 (Squeeze)' if today.get('Squeeze_On', False) else '🟢 波動度常態分佈'}")
                     st.write(f"- **大週期週線共振:** {'📈 週線處於波段多頭保護期' if today.get('Weekly_Trend_Up', False) else '📉 週線空頭趨勢壓制'}")
@@ -255,8 +255,9 @@ else:
                     <span>0 (恐懼)</span><span>100 (貪婪)</span>
                 </div>
             """, unsafe_allow_html=True)
-            
-    with st.expander("🧠 系統核心：量化策略與多因子演算法白皮書", expanded=False):
+
+    # 🌟 重點修復：系統核心白皮書強勢回歸！
+    with st.expander("🧠 系統核心：量化策略與多因子演算法白皮書 (點此展開)", expanded=False):
         st.markdown("""
         #### 1. 前瞻性預判：SMC 機構級微觀結構 (起漲點偵測)
         有別於落後的均線指標，本系統內建 **Smart Money Concepts (聰明錢概念)** 演算法，專抓主力發動前的細微痕跡：
@@ -266,20 +267,21 @@ else:
         #### 2. RSI 動態背離掃描 (左側抄底指標)
         系統內建波峰波谷比對演算法：當股價創下近期新低，但 RSI 指標卻「沒有」創低反而墊高時，觸發 **🟢 底背離** 訊號。代表殺跌動能枯竭，是極佳的低接訊號。
 
-        #### 3. Squeeze 波動率收斂突破 (右側主升段發動機)
+        #### 3. 產業鏈資金共振 (Top-Down 法人視角)
+        系統將市場熱門標的嚴格劃分為「上、中、下游」。當資金灌入時，熱度會從上游（如：晶片）蔓延至下游（如：組裝）。透過觀察各區塊的平均 AI 評分，精準捕捉資金外溢效應。
+
+        #### 4. Squeeze 波動率收斂突破 (右側主升段發動機)
         當布林通道縮口並完全被包進肯特納通道內時，稱為「極度擠壓 (Squeeze)」。這代表大風暴前的寧靜，此時若發生帶量突破，往往是暴賺主升段的起點。
 
-        #### 4. AI 籌碼與多因子評分矩陣 (滿分 100 分)
-        系統藉由 9 大因子進行全市場雷達掃描與權重計分。為了強化「買在起漲前」的能力，我們**降低了落後指標的權重，大幅提升了前瞻性指標的配分**：
-        1. **趨勢防護 (5分)**：站上月線。
-        2. **動能金叉 (5分)**：MACD 黃金交叉。
-        3. **量能發動 (10分)**：成交量大於 5MA 的 1.5 倍。
-        4. **大戶籌碼動能 (10分)**：近 5 日「價漲量增」天數大於「價跌量增」。
-        5. **壓縮突破 (10分)**：Squeeze 狀態解除並向上突破。
-        6. **大盤相對強度 RS (15分)**：近 20 日報酬率戰勝大盤，尋找抗跌飆股。
-        7. **週線共振 (15分)**：大週期週線 MACD 為多頭，長線保護短線。
-        8. **前瞻 - 底部背離發動 (10分)**：價格破底但 RSI 墊高，強烈反轉訊號。
-        9. **前瞻 - SMC 主力建倉 (20分)**：出現流動性掠奪 (10分) 或 FVG 強勢缺口 (10分)。
+        #### 5. AI 多因子評分矩陣 (滿分 100 分)
+        為了強化「買在起漲前」的能力，我們降低了落後指標的權重，大幅提升了前瞻性指標的配分：
+        1. **趨勢與動能 (10分)**：站上月線(5分) + MACD 金叉(5分)。
+        2. **大盤相對強度 RS (15分)**：近 20 日報酬率戰勝大盤，抗跌飆股。
+        3. **週線共振 (15分)**：大週期週線 MACD 為多頭，長線保護短線。
+        4. **大戶籌碼動能 (10分)**：近 5 日「價漲量增」天數多於「價跌量增」。
+        5. **量能與壓縮突破 (20分)**：爆發量(10分) + Squeeze 突破(10分)。
+        6. **前瞻 - 底部背離發動 (10分)**：價格破底但 RSI 墊高，強烈反轉訊號。
+        7. **前瞻 - SMC 主力建倉 (20分)**：流動性掠奪(10分) + FVG 缺口(10分)。
         """)
             
     st.markdown("---")
@@ -347,8 +349,7 @@ else:
             
             res = run_robust_market_scan(tickers, conds, p_bar, s_text, st.session_state.stock_names, get_market_index_data(), "radar")
             s_text.empty(); p_bar.empty()
-            
-            if res: st.dataframe(pd.DataFrame(res), use_container_width=True)
+            if res: st.dataframe(pd.DataFrame(res), use_container_width=True, hide_index=True)
             else: st.warning("⚠️ 查無符合標的，請嘗試放寬條件。")
 
     with tab3:
