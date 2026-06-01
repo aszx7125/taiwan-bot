@@ -98,65 +98,76 @@ if target_ticker:
             elif today['Close'] <= sup_level * 1.02: breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
 
             # ==========================================
-            # 🎯 核心升級：AI 戰術執行面板 (四要件計算)
+            # 🎯 核心升級：AI 動態結構化戰術執行面板
             # ==========================================
             entry_price = today['Close']
             
-            # 4. 止損價格 (防禦)：取 ATR 吊燈止損 與 前低支撐 的較低者，給予足夠洗盤空間
+            # 1. 止損價格 (防禦基準)
             atr_stop = entry_price - (1.5 * yesterday['ATR_14'])
-            structural_stop = sup_level * 0.985 # 跌破前低 1.5% 視為真跌破
+            structural_stop = sup_level * 0.985 # 跌破前低 1.5% 視為結構破壞
             stop_loss = round(min(atr_stop, structural_stop), 2)
             
-            # 若為強勢突破，將停損點拉高保護利潤 (Trailing Stop)
             if today['Close'] > res_level:
-                stop_loss = round(res_level * 0.985, 2)
+                stop_loss = round(res_level * 0.985, 2) # 突破後以箱頂為回踩防守線
                 
-            risk_per_share = entry_price - stop_loss
-            
-            # 3. 停利價格 (攻擊)：嚴格執行 1:2.5 的風報比 (賺要賺賠的 2.5 倍)
-            # 若等距測幅的目標價更高，則取更高者
-            rr_target = entry_price + (risk_per_share * 2.5)
-            structural_target = res_level + box_height
-            take_profit = round(max(rr_target, structural_target), 2)
+            risk_per_share = max(entry_price - stop_loss, 0.01)
+
+            # 2. 獲利價格與依據 (純盤面結構與型態動態判定)
+            if today['Close'] > res_level:
+                # 狀況 A：多頭真突破，上方無套牢區 -> 目標看箱體對稱之等距測幅擴展位
+                take_profit = round(res_level + box_height, 2)
+                profit_reason = "🚀 噴發目標：箱體等距測幅位"
+            elif liq_sweep or bull_div or today['Close'] <= (sup_level + box_height * 0.3):
+                # 狀況 B：底部左側建倉 (出現破底翻、底背離或極度靠近下軌) -> 第一重強壓力必在箱頂前高
+                take_profit = round(res_level, 2)
+                profit_reason = "🎯 結構目標：近20日箱頂強壓力區"
+            else:
+                # 狀況 C：箱體內部中段右側推進 -> 預期挑戰突破，獲利看前高外溢之波動幅
+                take_profit = round(res_level + (yesterday['ATR_14'] * 1.2), 2)
+                profit_reason = "⚔️ 突破目標：前高外溢之波動擴張位"
+                
+            # 計算該盤面結構下的「實況風報比」供交易者判斷
+            real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
             
             # 交易建議判定
             ai_score = int(today.get('Score', 0))
-            if ai_score >= 75 and (liq_sweep or fvg_bull or today['Close'] > res_level or block_trade):
+            if ai_score >= 75 and (liq_sweep or fvg_bull or today['Close'] > res_level or block_trade) and real_rr_ratio >= 1.2:
                 trade_action = f"✅ 強烈建議買進 (AI評分: {ai_score} 分)"
                 box_color = "#00cc96"
-            elif ai_score >= 60:
+            elif ai_score >= 60 and real_rr_ratio >= 1.0:
                 trade_action = "⚠️ 建議小部位試單 (條件尚未完全共振)"
                 box_color = "#ffc107"
             else:
-                trade_action = "⏸️ 建議空手觀望 (動能不足或風險過高)"
+                trade_action = "⏸️ 建議空手觀望 (結構風報比不佳或動能不足)"
                 box_color = "#555555"
 
             st.subheader(f"🧬 {target_ticker} {c_name} 深度量化診斷報告")
             
-            # 🎯 獨立顯示的 AI 戰術面板
+            # 🎯 渲染全新結構化戰術執行面板
             st.markdown(f"""
             <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
-                <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 戰術執行計畫</h4>
+                <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 盤面結構交易計畫 (動態測幅)</h4>
                 <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
-                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
+                    <div style="flex: 1; min-width: 180px; margin-bottom: 10px;">
                         <span style="color: gray; font-size: 14px;">1. 建議動作與標的</span><br>
                         <b style="font-size: 18px; color: {box_color};">{trade_action}</b><br>
                         <span style="font-size: 16px;">{c_name} ({target_ticker})</span>
                     </div>
-                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
+                    <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
                         <span style="color: gray; font-size: 14px;">2. 建議買入價格</span><br>
                         <b style="font-size: 22px;">{entry_price:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(現價進場或限價掛單)</span>
+                        <span style="font-size: 12px; color: gray;">(今日收盤現價)</span>
                     </div>
-                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">3. 獲利了結目標價</span><br>
+                    <div style="flex: 1; min-width: 200px; margin-bottom: 10px;">
+                        <span style="color: gray; font-size: 14px;">3. 盤面合理獲利點</span><br>
                         <b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(風報比 1:2.5 測幅)</span>
+                        <span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br>
+                        <span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span>
                     </div>
-                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
+                    <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
                         <span style="color: gray; font-size: 14px;">4. 嚴格止損防禦價</span><br>
                         <b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(跌破此價無條件砍倉)</span>
+                        <span style="font-size: 12px; color: gray;">(微觀結構防守點)</span>
                     </div>
                 </div>
             </div>
@@ -364,7 +375,7 @@ else:
 
     with tab3:
         st.markdown("#### 🎯 多因子 AI 評分與戰術預選 (TOP 20)")
-        st.caption("請從下方高分榜中，挑選呈現「買進建議」的標的，點擊『單股掃描』取得精確的進出場價格。")
+        st.caption("請從下方高分榜中，挑選呈現「買進建議」的標的，點擊『單股掃描』取得精確的結構交易計畫。")
         if st.button("🔮 執行全權重深度矩陣運算", type="primary"):
             custom = [t for g in st.session_state.stock_clusters.values() for t in g]
             tickers = list(set(custom + (csv_df['Ticker'].tolist() if not csv_df.empty else [])))
