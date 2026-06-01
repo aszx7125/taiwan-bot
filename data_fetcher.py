@@ -1,34 +1,36 @@
 import streamlit as st
-import requests
 import pandas as pd
 import datetime
 import urllib.parse
 import xml.etree.ElementTree as ET
 import concurrent.futures
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import os
 from indicators import add_advanced_indicators
 
-retry_strategy = Retry(
-    total=2,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["HEAD", "GET", "OPTIONS"],
-    backoff_factor=0.5
-)
-adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=50, pool_maxsize=50)
+# 🚀 雲端破解手術：強迫 Streamlit Cloud 在啟動時下載 Chromium 瀏覽器核心
+@st.cache_resource
+def install_browser():
+    try:
+        os.system("playwright install chromium")
+    except Exception as e:
+        print(f"Browser installation failed: {e}")
 
-general_session = requests.Session()
-general_session.mount("https://", adapter)
-general_session.mount("http://", adapter)
-general_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-})
+# 確保瀏覽器核心安裝完畢後，再載入神兵利器
+install_browser()
+from scrapling import Fetcher
+
+# 啟動 Scrapling 隱形抓取引擎
+stealth_fetcher = Fetcher()
 
 def fetch_yahoo_robust(symbol, period="6mo"):
+    """
+    🚀 終極型態：Scrapling 隱形爬蟲引擎。
+    完美模擬人類瀏覽器，無視 Yahoo WAF 阻擋。
+    """
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval=1d"
     try:
-        res = general_session.get(url, timeout=3)
+        res = stealth_fetcher.get(url, timeout=5)
+        
         if res.status_code == 200:
             data = res.json()
             res_data = data.get('chart', {}).get('result', [])
@@ -51,6 +53,7 @@ def fetch_yahoo_robust(symbol, period="6mo"):
                 return df.dropna(subset=['Close', 'Volume'])
     except Exception:
         pass
+        
     return pd.DataFrame()
 
 @st.cache_data(ttl=3600*12)
@@ -78,6 +81,7 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     market_df = get_market_index_data()
     clean_ticker = ticker_code.split('.')[0]
     
+    # 優先查上市，找不到再查上櫃
     df = fetch_yahoo_robust(f"{clean_ticker}.TW")
     actual_symbol = f"{clean_ticker}.TW"
     if df.empty or len(df) < 20:
@@ -87,9 +91,10 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
     if df.empty or len(df) < 20: 
         return pd.DataFrame(), actual_symbol 
 
+    # Fugle 零延遲報價整合
     if fugle_api_key:
         try:
-            res = general_session.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=2)
+            res = stealth_fetcher.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
             if res.status_code == 200:
                 data = res.json()
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
@@ -115,7 +120,7 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
 def get_stock_news(keyword):
     try:
         url = f"https://news.google.com/rss/search?q={urllib.parse.quote(keyword)}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        root = ET.fromstring(general_session.get(url, timeout=5).text)
+        root = ET.fromstring(stealth_fetcher.get(url, timeout=5).text)
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:5]]
     except: return []
 
@@ -123,7 +128,7 @@ def get_stock_news(keyword):
 def get_macro_news():
     try:
         url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台股 OR 聯準會 OR 財報')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        root = ET.fromstring(general_session.get(url, timeout=5).text)
+        root = ET.fromstring(stealth_fetcher.get(url, timeout=5).text)
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
     except: return []
 
@@ -147,8 +152,6 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
         
         bull_div = bool(last.get('Bullish_Div', False))
         bear_div = bool(last.get('Bearish_Div', False))
-        
-        # 🚀 提取 SMC 訊號
         liq_sweep = bool(last.get('Liquidity_Sweep_Bull', False))
         fvg = bool(last.get('FVG_Bull', False))
         
