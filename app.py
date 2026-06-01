@@ -88,7 +88,6 @@ if target_ticker:
             bear_div = bool(today.get('Bearish_Div', False))
             div_status = "🟢 底背離 (空頭力竭，醞釀反彈)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
             
-            # 🚀 提取 SMC 狀態
             liq_sweep = bool(today.get('Liquidity_Sweep_Bull', False))
             fvg_bull = bool(today.get('FVG_Bull', False))
             smc_status = []
@@ -122,12 +121,12 @@ if target_ticker:
             m4.metric("大盤相對強度", f"{today.get('RS_Index', 0)*100:+.2f}%")
             
             st.markdown("---")
-            t1, t2, t3, t4 = st.tabs(["🧱 測幅與前瞻策略推演", "🔍 前向策略回測", "🕵️‍♂️ 籌碼動向矩陣", "📰 專屬新聞動態"])
+            t1, t2, t3, t4 = st.tabs(["🧱 今日策略與前瞻推演", "🔍 多週期策略回測", "🕵️‍♂️ 籌碼動向矩陣", "📰 專屬新聞動態"])
             
             with t1:
                 c_l, c_r = st.columns(2)
                 with c_l:
-                    st.markdown("#### 📐 關鍵結構與前瞻預判")
+                    st.markdown("#### 📐 當前關鍵結構與預判")
                     st.write(f"- **前高壓力 (近20日):** {res_level:.2f} | **已測試:** {res_tests} 次")
                     st.write(f"- **前低支撐 (近20日):** {sup_level:.2f} | **已測試:** {sup_tests} 次")
                     st.write(f"- **盤勢型態判定:** {breakout_status}")
@@ -136,7 +135,7 @@ if target_ticker:
                     st.write(f"- **波動壓縮狀態:** {'⚠️ 極度擠壓收斂 (Squeeze)' if today.get('Squeeze_On', False) else '🟢 波動度常態分佈'}")
                     st.write(f"- **大週期週線共振:** {'📈 週線處於波段多頭保護期' if today.get('Weekly_Trend_Up', False) else '📉 週線空頭趨勢壓制'}")
                 with c_r:
-                    st.markdown("#### 💡 操作劇本規劃")
+                    st.markdown("#### 💡 當日操作劇本規劃")
                     st.write(f"**🔴 漲停極限:** {round(yesterday['Close'] * 1.10, 1)} | **🟢 跌停極限:** {round(yesterday['Close'] * 0.90, 1)}")
                     st.write(f"**等距測幅 (目標):** {target_proj}")
                     
@@ -154,8 +153,8 @@ if target_ticker:
                         st.info("⏸️ **【箱體觀望】** 股價處於箱體內部結構震盪，採取下軌附近低吸、上軌調節之區間策略。")
             
             with t2:
-                st.markdown("### 🔍 歷史預測與實況對撞 (Forward Testing)")
-                sub_t1, sub_t2 = st.tabs(["1️⃣ 昨日預測 (近 1 日)", "5️⃣ 一週波段 (近 5 日)"])
+                st.markdown("### 🔍 多週期策略回測與實況對撞 (Forward Testing)")
+                sub_t1, sub_t2, sub_t3 = st.tabs(["1️⃣ 昨日對撞 (1日)", "5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
                 
                 with sub_t1:
                     y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
@@ -175,7 +174,7 @@ if target_ticker:
                     elif today['Low'] <= y_sup and today['Close'] >= y_sup:
                         st.info(f"🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
                     else:
-                        st.write(f"⏸️ **區間震盪**：走勢在預設箱體內震盪，符合觀望預期。")
+                        st.write(f"⏸️ **區間震盪**：走勢在預設箱體內震盪，符合短線觀望預期。")
                         
                 with sub_t2:
                     if len(df) >= 26:
@@ -188,7 +187,7 @@ if target_ticker:
                         c_now = today['Close']
                         
                         col_w1, col_w2 = st.columns(2)
-                        with col_w1: st.info(f"**5 天前預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
+                        with col_w1: st.info(f"**5 天前 (一週) 預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
                         with col_w2: st.warning(f"**本週實況極值 (近5日)**\n- 波段最高: **{max_h_5d:.2f}**\n- 波段最低: **{min_l_5d:.2f}**\n- 目前收盤: **{c_now:.2f}**")
                         
                         max_gain = ((max_h_5d - d_base['Close']) / d_base['Close']) * 100
@@ -200,7 +199,32 @@ if target_ticker:
                         elif min_l_5d < w_sup: st.error("⚠️ **波段破底**：本週內曾跌破一週前的關鍵支撐，若未停損可能擴大虧損。")
                         else: st.info("⏸️ **大型箱體**：這 5 天內始終在一週前的壓力與支撐區間內震盪洗盤。")
                     else:
-                        st.warning("⚠️ 數據不足 26 天，無法進行一週歷史回測。")
+                        st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
+
+                with sub_t3:
+                    if len(df) >= 45:
+                        d_base_m = df.iloc[-21] # 20 個交易日前約為一個月
+                        d_20_days = df.iloc[-20:]
+                        m_res, m_sup, m_atr = d_base_m['Res_20'], d_base_m['Sup_20'], d_base_m['ATR_14']
+                        m_target = m_res + m_atr
+                        max_h_20d = d_20_days['High'].max()
+                        min_l_20d = d_20_days['Low'].min()
+                        c_now = today['Close']
+                        
+                        col_m1, col_m2 = st.columns(2)
+                        with col_m1: st.info(f"**20 天前 (單月) 預測基準**\n- 當時壓力: **{m_res:.2f}**\n- 當時支撐: **{m_sup:.2f}**\n- 測幅目標: **{m_target:.2f}**")
+                        with col_m2: st.warning(f"**本月實況極值 (近20日)**\n- 波段最高: **{max_h_20d:.2f}**\n- 波段最低: **{min_l_20d:.2f}**\n- 目前收盤: **{c_now:.2f}**")
+                        
+                        max_gain_m = ((max_h_20d - d_base_m['Close']) / d_base_m['Close']) * 100
+                        max_loss_m = ((min_l_20d - d_base_m['Close']) / d_base_m['Close']) * 100
+                        st.markdown(f"**📈 本月最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain_m:.2f}%</span> | **📉 本月最大潛在回撤:** <span style='color:#00cc96;'>{max_loss_m:.2f}%</span>", unsafe_allow_html=True)
+                        
+                        if max_h_20d >= m_target: st.success("⭐⭐⭐ **單月波段達標**：本月內曾成功突破並觸及一個月前的等距測幅目標！這是一個非常成功的波段操作。")
+                        elif max_h_20d > m_res: st.success("⭐⭐ **單月波段突破**：本月內曾成功突破壓力位，順利啟動了長波段多頭行情。")
+                        elif min_l_20d < m_sup: st.error("⚠️ **單月波段破底**：本月內曾跌破一個月前的關鍵支撐，代表趨勢已遭破壞，嚴格停損是保命關鍵。")
+                        else: st.info("⏸️ **超大型箱體**：這整整一個月內，股價始終在當時的壓力與支撐區間內震盪，屬於長週期的籌碼沉澱階段。")
+                    else:
+                        st.warning("⚠️ 歷史數據深度不足，無法進行單月 (20個交易日) 歷史回測。")
             
             with t3:
                 st.markdown("#### 🕵️‍♂️ 法人大戶籌碼控盤度矩陣")
@@ -256,7 +280,6 @@ else:
                 </div>
             """, unsafe_allow_html=True)
 
-    # 🌟 重點修復：系統核心白皮書強勢回歸！
     with st.expander("🧠 系統核心：量化策略與多因子演算法白皮書 (點此展開)", expanded=False):
         st.markdown("""
         #### 1. 前瞻性預判：SMC 機構級微觀結構 (起漲點偵測)
