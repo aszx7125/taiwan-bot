@@ -7,13 +7,8 @@ import concurrent.futures
 import cloudscraper
 from indicators import add_advanced_indicators
 
-# 🛡️ 建立自動穿透防爬蟲網關的 Scraper
 stealth_scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
+    browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
 )
 
 def fetch_yahoo_robust(symbol, period="6mo"):
@@ -60,9 +55,18 @@ def get_market_summary():
             res[name] = {"price": p_now, "change": p_now - p_prev, "pct": ((p_now - p_prev) / p_prev) * 100}
     return res
 
+# 🚀 極速優化 3：萃取並預計算大盤報酬率，供全市場雷達統一調用
+def get_precalculated_market_ret():
+    market_df = get_market_index_data()
+    if not market_df.empty:
+        market_df.index = pd.to_datetime(market_df.index).tz_localize(None).normalize()
+        market_df = market_df[~market_df.index.duplicated(keep='last')]
+        return market_df['Close'].pct_change(20)
+    return None
+
 @st.cache_data(ttl=30) 
 def get_kline_with_fugle(ticker_code, fugle_api_key=""):
-    market_df = get_market_index_data()
+    market_ret_20 = get_precalculated_market_ret() # 使用輕量化大盤參數
     clean_ticker = ticker_code.split('.')[0]
     
     df = fetch_yahoo_robust(f"{clean_ticker}.TW")
@@ -92,7 +96,7 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
         except Exception:
             pass
         
-    df = add_advanced_indicators(df, market_df)
+    df = add_advanced_indicators(df, market_ret_20)
     return df, actual_symbol
 
 @st.cache_data(ttl=300)
@@ -111,12 +115,13 @@ def get_macro_news():
         return [{"title": i.find('title').text, "link": i.find('link').text, "date": i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
     except: return []
 
-def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
+def _fetch_and_score_sync(symbol, market_ret_20, conds, names_dict, mode):
     try:
         df = fetch_yahoo_robust(symbol)
         if df.empty or len(df) < 35: return None
         
-        df = add_advanced_indicators(df, market_df)
+        # 傳入預先算好的輕量化大盤指標
+        df = add_advanced_indicators(df, market_ret_20)
         if 'Score' not in df.columns: return None
         
         last = df.iloc[-1]
@@ -127,7 +132,6 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
         rs_val = float(last.get('RS_Index', 0)) if pd.notna(last.get('RS_Index')) else 0.0
         rsi_val = float(last.get('RSI', 50)) if pd.notna(last.get('RSI')) else 50.0
         
-        # 提取 SMC 與機構籌碼
         liq_sweep = bool(last.get('Liquidity_Sweep_Bull', False))
         fvg = bool(last.get('FVG_Bull', False))
         block_trade = bool(last.get('Block_Trade_Inflow', False))
@@ -141,7 +145,7 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
         if df['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']: pattern_list.append("💥 壓縮突破")
         
         if not pattern_list: pattern_list.append("多頭" if last['Close'] > last['SMA_20'] else "空頭")
-        pattern_str = " + ".join(pattern_list[:3]) # 顯示前三個最強訊號
+        pattern_str = " + ".join(pattern_list[:3]) 
         
         if mode == "radar":
             f_vol = (last['Volume'] > last['Vol_SMA5'] * 1.5) if conds.get('vol') else True
@@ -159,17 +163,22 @@ def _fetch_and_score_sync(symbol, market_df, conds, names_dict, mode):
     except: pass
     return None
 
-def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_df, mode="radar"):
+def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_data_raw, mode="radar"):
     results = []
     total = len(tickers)
     completed = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-        future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_df, conds, names_dict, mode): t for t in tickers}
+    
+    # 在進入多執行緒掃描前，先將大盤報酬率算好，只傳遞這個輕量的 pandas Series！
+    market_ret_20 = get_precalculated_market_ret()
+    
+    # 將執行緒調高至 25 條，因為現在 CPU 負擔已經極小化
+    with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+        future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_ret_20, conds, names_dict, mode): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
             completed += 1
             if completed % max(1, total // 20) == 0 or completed == total:
                 p_bar.progress(min(completed / total, 1.0))
-                s_text.text(f"🚀 量化核心運算中... ({completed}/{total})")
+                s_text.text(f"🚀 AI 演算法極速運算中... ({completed}/{total})")
             try:
                 res = future.result()
                 if res: results.append(res)
