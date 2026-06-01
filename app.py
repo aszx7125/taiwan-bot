@@ -7,7 +7,7 @@ import concurrent.futures
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES, INDUSTRY_CHAINS
 from data_fetcher import (
     load_all_market_tickers, get_market_index_data, get_market_summary, 
-    get_kline_with_fugle, get_stock_news, get_macro_news, run_robust_market_scan
+    get_kline_with_fugle, get_stock_news, get_macro_news, run_robust_market_scan, get_precalculated_market_ret
 )
 
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
@@ -22,9 +22,6 @@ if not csv_df.empty:
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
-# ==========================================
-# 📱 側邊欄控制
-# ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
@@ -49,9 +46,6 @@ with st.sidebar:
                 st.session_state.stock_clusters[new_cluster_name] = [t if '.TW' in t or '.TWO' in t else f"{t}.TW" for t in new_cluster_tickers.split(',')]
                 st.success("配置成功！"); st.rerun()
 
-# ==========================================
-# 🖥️ 主路由
-# ==========================================
 st.title("⚡ 台股戰情分析終端")
 col1, col2 = st.columns([3, 1])
 with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed")
@@ -68,7 +62,7 @@ if target_ticker:
         df, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
         
         if df.empty or len(df) < 40: 
-            st.error("❌ 該標的數據深度不足，無法執行複雜演算法。可能原因：代號錯誤、剛上市、或暫停交易。")
+            st.error("❌ 該標的數據深度不足，無法執行複雜演算法。")
         else:
             news_s = get_stock_news(c_name)
             news_m = get_macro_news()
@@ -83,7 +77,6 @@ if target_ticker:
             res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
             sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
             
-            # SMC 與 背離狀態
             bull_div = bool(today.get('Bullish_Div', False))
             bear_div = bool(today.get('Bearish_Div', False))
             div_status = "🟢 底背離 (空頭力竭，醞釀反彈)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
@@ -91,25 +84,88 @@ if target_ticker:
             liq_sweep = bool(today.get('Liquidity_Sweep_Bull', False))
             fvg_bull = bool(today.get('FVG_Bull', False))
             smc_status = []
-            if liq_sweep: smc_status.append("🌊 流動性掠奪 (破底翻洗盤結束)")
-            if fvg_bull: smc_status.append("🧱 公允價值缺口 (主力強勢建倉)")
+            if liq_sweep: smc_status.append("🌊 流動性掠奪 (破底翻)")
+            if fvg_bull: smc_status.append("🧱 FVG大戶缺口")
             smc_text = " + ".join(smc_status) if smc_status else "無觸發"
             
-            # 大單與分點狀態
             block_trade = bool(today.get('Block_Trade_Inflow', False))
             broker_conc = float(today.get('Broker_Concentration', 0.0))
             
-            breakout_status, target_proj, breakout_prob = "區間震盪 (未突破)", "無明確突破方向", "中立"
-            if today['Close'] > res_level: breakout_status, target_proj = "🚀 向上突破前高", f"目標上看 **{round(res_level + box_height, 1)}**"
-            elif today['Close'] < sup_level: breakout_status, target_proj = "⚠️ 向下摜破前低", f"下看 **{round(sup_level - box_height, 1)}**"
-            elif today['Close'] >= res_level * 0.98: breakout_status, target_proj = "⚔️ 兵臨城下 (挑戰前高)", f"目標上看 **{round(res_level + box_height, 1)}**"
-            elif today['Close'] <= sup_level * 1.02: breakout_status, target_proj = "🛡️ 支撐保衛戰 (回測前低)", f"下測 **{round(sup_level - box_height, 1)}**"
+            breakout_status = "區間震盪 (未突破)"
+            if today['Close'] > res_level: breakout_status = "🚀 向上突破前高"
+            elif today['Close'] < sup_level: breakout_status = "⚠️ 向下摜破前低"
+            elif today['Close'] >= res_level * 0.98: breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
+            elif today['Close'] <= sup_level * 1.02: breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
+
+            # ==========================================
+            # 🎯 核心升級：AI 戰術執行面板 (四要件計算)
+            # ==========================================
+            entry_price = today['Close']
+            
+            # 4. 止損價格 (防禦)：取 ATR 吊燈止損 與 前低支撐 的較低者，給予足夠洗盤空間
+            atr_stop = entry_price - (1.5 * yesterday['ATR_14'])
+            structural_stop = sup_level * 0.985 # 跌破前低 1.5% 視為真跌破
+            stop_loss = round(min(atr_stop, structural_stop), 2)
+            
+            # 若為強勢突破，將停損點拉高保護利潤 (Trailing Stop)
+            if today['Close'] > res_level:
+                stop_loss = round(res_level * 0.985, 2)
+                
+            risk_per_share = entry_price - stop_loss
+            
+            # 3. 停利價格 (攻擊)：嚴格執行 1:2.5 的風報比 (賺要賺賠的 2.5 倍)
+            # 若等距測幅的目標價更高，則取更高者
+            rr_target = entry_price + (risk_per_share * 2.5)
+            structural_target = res_level + box_height
+            take_profit = round(max(rr_target, structural_target), 2)
+            
+            # 交易建議判定
+            ai_score = int(today.get('Score', 0))
+            if ai_score >= 75 and (liq_sweep or fvg_bull or today['Close'] > res_level or block_trade):
+                trade_action = f"✅ 強烈建議買進 (AI評分: {ai_score} 分)"
+                box_color = "#00cc96"
+            elif ai_score >= 60:
+                trade_action = "⚠️ 建議小部位試單 (條件尚未完全共振)"
+                box_color = "#ffc107"
+            else:
+                trade_action = "⏸️ 建議空手觀望 (動能不足或風險過高)"
+                box_color = "#555555"
 
             st.subheader(f"🧬 {target_ticker} {c_name} 深度量化診斷報告")
+            
+            # 🎯 獨立顯示的 AI 戰術面板
+            st.markdown(f"""
+            <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
+                <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 戰術執行計畫</h4>
+                <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
+                        <span style="color: gray; font-size: 14px;">1. 建議動作與標的</span><br>
+                        <b style="font-size: 18px; color: {box_color};">{trade_action}</b><br>
+                        <span style="font-size: 16px;">{c_name} ({target_ticker})</span>
+                    </div>
+                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
+                        <span style="color: gray; font-size: 14px;">2. 建議買入價格</span><br>
+                        <b style="font-size: 22px;">{entry_price:.2f}</b><br>
+                        <span style="font-size: 12px; color: gray;">(現價進場或限價掛單)</span>
+                    </div>
+                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
+                        <span style="color: gray; font-size: 14px;">3. 獲利了結目標價</span><br>
+                        <b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br>
+                        <span style="font-size: 12px; color: gray;">(風報比 1:2.5 測幅)</span>
+                    </div>
+                    <div style="flex: 1; min-width: 150px; margin-bottom: 10px;">
+                        <span style="color: gray; font-size: 14px;">4. 嚴格止損防禦價</span><br>
+                        <b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b><br>
+                        <span style="font-size: 12px; color: gray;">(跌破此價無條件砍倉)</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{today['Close']:.2f}", f"{p_change:+.2f}%")
             m2.metric("即時量比", f"{vol_ratio:.1f}x", f"今日成交 {int(today['Volume']):,} 張", delta_color="off")
-            m3.metric("AI 綜合評分", f"{int(today.get('Score', 0))} 分")
+            m3.metric("AI 綜合評分", f"{ai_score} 分")
             m4.metric("大盤相對強度", f"{today.get('RS_Index', 0)*100:+.2f}%")
             
             st.markdown("---")
@@ -124,40 +180,21 @@ if target_ticker:
                     st.write(f"- **盤勢型態判定:** {breakout_status}")
                     st.markdown(f"- **RSI 動能背離偵測:** <span style='color:{'#00cc96' if bull_div else ('#ff4b4b' if bear_div else 'gray')}; font-weight:bold;'>{div_status}</span>", unsafe_allow_html=True)
                     st.markdown(f"- **SMC 微觀結構:** <span style='color:{'#ffc107' if smc_status else 'gray'}; font-weight:bold;'>{smc_text}</span>", unsafe_allow_html=True)
-                    st.write(f"- **波動壓縮狀態:** {'⚠️ 極度擠壓收斂 (Squeeze)' if today.get('Squeeze_On', False) else '🟢 波動度常態分佈'}")
                 with c_r:
-                    st.markdown("#### 💡 當日操作劇本規劃")
-                    st.write(f"**🔴 漲停極限:** {round(yesterday['Close'] * 1.10, 1)} | **🟢 跌停極限:** {round(yesterday['Close'] * 0.90, 1)}")
-                    st.write(f"**等距測幅 (目標):** {target_proj}")
-                    
+                    st.markdown("#### 💡 當日訊號解析")
                     if "破底翻" in smc_text or "底背離" in div_status:
-                        st.success("🎯 **【起漲潛力】** 出現左側底背離或主力洗盤結束訊號！若確認站穩支撐，此處為風報比極佳的低價試單區間。")
+                        st.success("🎯 **【起漲潛力】** 出現左側底背離或主力洗盤結束訊號！此處為風報比極佳的低價試單區間。")
                     elif "突破前高" in breakout_status: 
                         st.success("🚀 **【右側追隨】** 型態正式帶量向上突破！屬強勢追隨訊號，防守點位移至前高。")
                     elif "挑戰前高" in breakout_status: 
-                        st.warning("⚔️ **【突破預備】** 兵臨城下，即將挑戰壓力！若帶量突破布林上軌可試單。")
-                    elif "回測前低" in breakout_status: 
-                        st.warning("🛡️ **【支撐保衛】** 測試底部支撐，若跌破前低應果斷停損。")
-                    elif "摜破前低" in breakout_status: 
-                        st.error("⚠️ **【破底危機】** 嚴格執行停損，切勿攤平。")
+                        st.warning("⚔️ **【突破預備】** 兵臨城下，即將挑戰壓力！若帶量突破可試單。")
                     else: 
-                        st.info("⏸️ **【箱體觀望】** 股價處於箱體內部結構震盪，採取下軌附近低吸、上軌調節之區間策略。")
+                        st.info("⏸️ **【箱體觀望】** 股價處於內部結構震盪，動能未發動前不建議重倉。")
             
             with t2:
-                st.markdown("### 🔍 多週期策略回測與實況對撞 (Forward Testing)")
-                sub_t1, sub_t2, sub_t3 = st.tabs(["1️⃣ 昨日對撞 (1日)", "5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
-                
+                st.markdown("### 🔍 多週期策略回測與實況對撞")
+                sub_t1, sub_t2 = st.tabs(["5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
                 with sub_t1:
-                    y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
-                    y_target = y_res + y_atr
-                    col_r1, col_r2 = st.columns(2)
-                    with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{y_res:.2f}**\n- 支撐位: **{y_sup:.2f}**\n- 測幅目標: **{y_target:.2f}**")
-                    with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{today['High']:.2f}**\n- 最低價: **{today['Low']:.2f}**\n- 收盤現價: **{today['Close']:.2f}**")
-                    if today['Close'] > y_res: st.success("突破確認！多頭正式發動。")
-                    elif today['Close'] < y_sup: st.error("跌破防線！觸發停損機制。")
-                    else: st.write("走勢在預設箱體內震盪。")
-                        
-                with sub_t2:
                     if len(df) >= 26:
                         d_base = df.iloc[-6]
                         d_5_days = df.iloc[-5:]
@@ -177,7 +214,7 @@ if target_ticker:
                     else:
                         st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
 
-                with sub_t3:
+                with sub_t2:
                     if len(df) >= 45:
                         d_base_m = df.iloc[-21] 
                         d_20_days = df.iloc[-20:]
@@ -199,24 +236,18 @@ if target_ticker:
             
             with t3:
                 st.markdown("#### 🏦 微觀結構：特大單與贏家分點籌碼追蹤")
-                st.caption("透過解析日內價格推升強度與極端成交量，反向追蹤機構主力的大單淨流入與分點囤貨軌跡。")
                 
                 c_flow1, c_flow2 = st.columns(2)
                 with c_flow1:
                     st.markdown("##### 🌊 盤中特大單淨流入 (Order Flow)")
-                    if block_trade:
-                        st.success("🚨 **偵測到異常大單狂敲！**\n今日成交量大幅超越均量，且價格強勢推升收在高點附近，顯示有機構級資金不計代價掃貨。")
-                    else:
-                        st.info("📉 **無明顯大單流入**\n今日成交量能平穩，屬於一般散戶或程式單的自然換手。")
+                    if block_trade: st.success("🚨 **偵測到異常大單狂敲！**\n今日成交量大幅超越均量，且價格強勢推升收在高點附近，顯示有機構級資金不計代價掃貨。")
+                    else: st.info("📉 **無明顯大單流入**\n今日成交量能平穩，屬於一般散戶或程式單的自然換手。")
                         
                 with c_flow2:
                     st.markdown("##### 🏦 贏家分點集中囤貨 (Broker Concentration)")
-                    if broker_conc > 0.3:
-                        st.success(f"🔥 **高度集中 (集中度: {broker_conc*100:.1f}%)**\n近 5 日資金呈現異常淨流入，極可能有特定主力分點正在暗中大舉囤貨！")
-                    elif broker_conc > 0:
-                        st.warning(f"🔍 **溫和吃貨 (集中度: {broker_conc*100:.1f}%)**\n籌碼緩步集中，有特定買盤正在吸收浮額。")
-                    else:
-                        st.info(f"⚖️ **籌碼發散 (集中度: {broker_conc*100:.1f}%)**\n近 5 日無特定分點囤貨跡象，籌碼呈現自然發散或主力正在出脫。")
+                    if broker_conc > 0.3: st.success(f"🔥 **高度集中 (集中度: {broker_conc*100:.1f}%)**\n近 5 日資金呈現異常淨流入，極可能有特定主力分點正在暗中大舉囤貨！")
+                    elif broker_conc > 0: st.warning(f"🔍 **溫和吃貨 (集中度: {broker_conc*100:.1f}%)**\n籌碼緩步集中，有特定買盤正在吸收浮額。")
+                    else: st.info(f"⚖️ **籌碼發散 (集中度: {broker_conc*100:.1f}%)**\n近 5 日無特定分點囤貨跡象，籌碼呈現自然發散。")
             
             with t4:
                 nl, nr = st.columns(2)
@@ -236,7 +267,6 @@ if target_ticker:
             st.rerun()
 
 else:
-    # ─── 【模組 B】主頁儀表板 ───
     st.markdown("### 🌍 台股大盤與情緒摘要")
     summary = get_market_summary()
     if summary:
@@ -263,33 +293,6 @@ else:
                     <span>0 (恐懼)</span><span>100 (貪婪)</span>
                 </div>
             """, unsafe_allow_html=True)
-
-    with st.expander("🧠 系統核心：量化策略與多因子演算法白皮書 (點此展開)", expanded=False):
-        st.markdown("""
-        #### 1. 🏦 機構級微觀結構：大單流與分點追蹤
-        系統內建 Order Flow 與分點囤貨代理模型：
-        * **🌊 特大單淨流入**：偵測日內極端爆量與價格高位收盤，抓出不計代價掃貨的法人機構。
-        * **🏦 分點集中囤貨**：計算近 5 日資金異常淨流入率，追蹤特定「贏家分點」或主力暗中吃貨的軌跡。
-
-        #### 2. 前瞻性預判：SMC 機構級起漲點偵測
-        * **🧹 流動性掠奪 (破底翻)**：偵測股價刻意跌破近 20 日低點觸發散戶停損，隨即強勢站回。代表主力洗盤完畢。
-        * **🧱 公允價值缺口 (FVG)**：偵測連續 K 線間留下的價格真空區，代表大戶強勢建倉不留空隙。
-
-        #### 3. RSI 動態背離掃描 (左側抄底指標)
-        當股價創下近期新低，但 RSI 指標卻「沒有」創低反而墊高時，觸發 **🟢 底背離** 訊號。代表殺跌動能枯竭。
-
-        #### 4. Squeeze 波動率收斂突破 (右側發動機)
-        布林通道被包進肯特納通道內時，稱為「極度擠壓 (Squeeze)」。此時若帶量突破，往往是暴賺主升段的起點。
-
-        #### 5. AI 多因子評分矩陣 (滿分 100 分)
-        1. **技術與動能 (10分)**：站上月線(5分) + MACD 金叉(5分)。
-        2. **大盤相對強度 RS (10分)**：近 20 日報酬率戰勝大盤。
-        3. **週線共振 (10分)**：大週期週線 MACD 為多頭。
-        4. **壓縮突破 (10分)**：Squeeze 狀態解除並向上突破。
-        5. **底部背離發動 (10分)**：價格破底但 RSI 墊高。
-        6. **SMC 主力建倉 (20分)**：流動性掠奪(10分) + FVG 缺口(10分)。
-        7. **微觀大單籌碼 (20分)**：特大單敲進(10分) + 分點高度集中(10分)。
-        """)
             
     st.markdown("---")
     tab1, tab2, tab3, tab4 = st.tabs(["📊 板塊實時監控", "⚡ 條件設定全市場雷達", "🎯 多因子 AI 評分 (含籌碼)", "🕸️ 產業鏈資金共振 (精選)"])
@@ -354,18 +357,19 @@ else:
             tickers = list(set(custom + (csv_df['Ticker'].tolist() if "全市場" in scan_mode and not csv_df.empty else [])))
             p_bar, s_text = st.progress(0), st.empty()
             
-            res = run_robust_market_scan(tickers, conds, p_bar, s_text, st.session_state.stock_names, get_market_index_data(), "radar")
+            res = run_robust_market_scan(tickers, conds, p_bar, s_text, st.session_state.stock_names, get_precalculated_market_ret(), "radar")
             s_text.empty(); p_bar.empty()
             if res: st.dataframe(pd.DataFrame(res), use_container_width=True, hide_index=True)
             else: st.warning("⚠️ 查無符合標的，請嘗試放寬條件。")
 
     with tab3:
-        st.markdown("#### 🎯 多因子演算法綜合評分排行榜 (TOP 20)")
+        st.markdown("#### 🎯 多因子 AI 評分與戰術預選 (TOP 20)")
+        st.caption("請從下方高分榜中，挑選呈現「買進建議」的標的，點擊『單股掃描』取得精確的進出場價格。")
         if st.button("🔮 執行全權重深度矩陣運算", type="primary"):
             custom = [t for g in st.session_state.stock_clusters.values() for t in g]
             tickers = list(set(custom + (csv_df['Ticker'].tolist() if not csv_df.empty else [])))
             p_bar, s_text = st.progress(0), st.empty()
-            res = run_robust_market_scan(tickers, {}, p_bar, s_text, st.session_state.stock_names, get_market_index_data(), "score")
+            res = run_robust_market_scan(tickers, {}, p_bar, s_text, st.session_state.stock_names, get_precalculated_market_ret(), "score")
             s_text.empty(); p_bar.empty()
             if res: 
                 df_res = pd.DataFrame(res).sort_values("量化總分", ascending=False).head(20)
@@ -380,7 +384,7 @@ else:
         if st.button("🚀 啟動產業鏈深度掃描", type="primary"):
             all_chain_tickers = [ticker for sublist in chain_data.values() for ticker in sublist]
             p_bar, s_text = st.progress(0), st.empty()
-            res = run_robust_market_scan(list(set(all_chain_tickers)), {}, p_bar, s_text, st.session_state.stock_names, get_market_index_data(), "score")
+            res = run_robust_market_scan(list(set(all_chain_tickers)), {}, p_bar, s_text, st.session_state.stock_names, get_precalculated_market_ret(), "score")
             s_text.empty(); p_bar.empty()
             
             if res:
@@ -410,7 +414,7 @@ else:
                 st.markdown("---")
                 st.markdown("### 🌟 AI 產業鏈精選建議標的")
                 if recommendations:
-                    st.success("🎯 以下標的為該產業鏈中，具備「微觀籌碼流入、SMC前瞻訊號與技術面突破」的高分強勢股，建議優先列入波段觀察清單：")
+                    st.success("🎯 以下標的為該產業鏈中，具備「微觀籌碼流入、SMC前瞻訊號與技術面突破」的高分強勢股。請將代號輸入上方『單股掃描』以取得精確買賣點：")
                     for rec in recommendations:
                         st.markdown(f"- {rec}")
                 else:
