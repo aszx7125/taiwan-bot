@@ -32,6 +32,9 @@ jobs:
     - name: 🚀 執行全市場多時區深度運算
       run: |
         python backend_updater.py
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
     # 🚀 修復：加入 git pull --rebase，讓機器人在上傳前自動同步您的最新程式碼，避免版本衝突
     - name: 💾 將運算結果 (JSON) 寫回儲存庫
