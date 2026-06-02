@@ -43,11 +43,12 @@ def run_backend_update():
             except Exception as e:
                 pass
 
-    # 3. 將龐大的運算結果過濾、排序，並儲存為極輕量的 JSON 快取檔
+   # 3. 將龐大的運算結果過濾、排序，並儲存為極輕量的 JSON 快取檔
     if results:
         df_res = pd.DataFrame(results)
-        # 只保留分數大於 50 的標的以節省空間
-        df_res = df_res[df_res['量化總分'] >= 50].sort_values("量化總分", ascending=False)
+        
+        # 🚀 修復：移除 50 分過濾限制，保留全市場資料，確保產業鏈共振能完整對應！
+        df_res = df_res.sort_values("量化總分", ascending=False)
         
         output_data = {
             "update_time": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
@@ -57,7 +58,7 @@ def run_backend_update():
         with open("market_snapshot.json", "w", encoding="utf-8") as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
             
-        print(f"✅ 更新成功！共萃取 {len(df_res)} 檔高潛力標的，已儲存至 market_snapshot.json")
+        print(f"✅ 更新成功！共萃取 {len(df_res)} 檔標的，已儲存至 market_snapshot.json")
     else:
         print("⚠️ 運算完成，但無有效結果。")
 
