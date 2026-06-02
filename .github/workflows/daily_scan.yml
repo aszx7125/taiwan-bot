@@ -33,7 +33,6 @@ jobs:
       run: |
         python backend_updater.py
 
-    # 🚀 修復：加入 git pull --rebase，讓機器人在上傳前自動同步您的最新程式碼，避免版本衝突
     - name: 💾 將運算結果 (JSON) 寫回儲存庫
       run: |
         git config --local user.email "action@github.com"
@@ -41,10 +40,14 @@ jobs:
         
         if [ -f market_snapshot.json ]; then
           git add market_snapshot.json
+          
+          # 使用 --porcelain 檢查檔案狀態，確保有變更才進行 Commit
           if [ -n "$(git status --porcelain market_snapshot.json)" ]; then
             git commit -m "🤖 自動更新全市場量化快取 [skip ci]"
-            # 在推播前，先拉取最新的 main 分支並將自己的 commit 疊加在頂端
+            
+            # 🚀 關鍵防護：自動同步您的最新程式碼以避免 Push 被拒絕
             git pull --rebase origin main
+            
             git push
             echo "✅ 資料已成功推送到倉庫！"
           else

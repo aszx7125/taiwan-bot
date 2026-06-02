@@ -27,7 +27,7 @@ if not csv_df.empty:
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
-# 🚀 雲端背景快取載入器 (無 @st.cache_data 封印)
+# 🚀 雲端背景快取載入器 (無 @st.cache_data 封印，確保隨時讀取最新檔案)
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
         try:
@@ -458,7 +458,11 @@ else:
         if snapshot:
             st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
             df_res = pd.DataFrame(snapshot['data'])
-            if '代號' in df_res.columns: df_res['代號'] = df_res['代號'].astype(str)
+            
+            # 🚀 終極防呆：強制轉字串、清除小數點幽靈、清除空白
+            if '代號' in df_res.columns: 
+                df_res['代號'] = df_res['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
+                
             st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
         else:
             st.warning("⚠️ 預算快取準備中，請先至 GitHub 觸發首次 Actions 運算...")
@@ -471,14 +475,18 @@ else:
         snapshot = load_market_snapshot()
         if snapshot:
             res_df = pd.DataFrame(snapshot['data'])
-            if '代號' in res_df.columns: res_df['代號'] = res_df['代號'].astype(str)
+            
+            # 🚀 終極防呆：強制轉字串、清除小數點幽靈、清除空白
+            if '代號' in res_df.columns: 
+                res_df['代號'] = res_df['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
             
             st.markdown("---")
             cols = st.columns(len(chain_data))
             
             for idx, (sub_name, tickers) in enumerate(chain_data.items()):
                 with cols[idx]:
-                    sub_codes = [t.split('.')[0] for t in tickers]
+                    # 同時確保字典裡的來源陣列也是乾淨字串
+                    sub_codes = [str(t).split('.')[0].strip() for t in tickers]
                     sub_res = res_df[res_df['代號'].isin(sub_codes)].copy()
                     
                     if not sub_res.empty:
@@ -488,6 +496,6 @@ else:
                         st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
                         st.dataframe(sub_res[['名稱', '現價', '量化總分']].sort_values('量化總分', ascending=False), hide_index=True, use_container_width=True)
                     else:
-                        st.markdown(f"**{sub_name}**\n查無高分數據")
+                        st.markdown(f"**{sub_name}**\n暫無高分數據")
         else:
             st.warning("⚠️ 系統快取準備中...")

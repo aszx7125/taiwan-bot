@@ -27,7 +27,8 @@ def run_backend_update():
     completed = 0
     print(f"📊 預計掃描 {total} 檔標的...")
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=60) as executor:
+    # 🚀 將併發數降至 10，避免觸發 Yahoo 的 DDoS 防火牆而導致全盤斷線
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_ret_20, {}, names_dict, "score"): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
             completed += 1
@@ -39,9 +40,9 @@ def run_backend_update():
             except Exception as e:
                 pass
 
-    # 🛡️ 裝甲防護：如果被 Yahoo 阻擋導致抓不到資料，我們保留舊資料，避免覆蓋成空白
     final_data = []
-    if len(results) < 10:
+    # 🛡️ 容錯防護：如果抓取到的資料太少（例如小於 50 檔），直接沿用前一天的快取
+    if len(results) < 50:
         print("⚠️ 抓取到的有效標的過少 (可能遭 Yahoo 防火牆短暫限流)。嘗試保留舊有快取資料...")
         if os.path.exists("market_snapshot.json"):
             try:
