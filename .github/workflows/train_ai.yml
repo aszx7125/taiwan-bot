@@ -1,0 +1,56 @@
+name: 台股量化戰情室 - 🧠 AI 大腦雲端訓練所
+
+on:
+  workflow_dispatch: # 允許您在 GitHub 網頁上手動按按鈕觸發訓練
+  schedule:
+    - cron: '0 18 * * 6' # 每週六晚上 6:00 (台灣時間週日凌晨 2:00) 自動重新訓練
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  train-model:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 取得最新程式碼
+      uses: actions/checkout@v4
+
+    - name: 🐍 設定 Python 環境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: 📦 安裝機器學習與量化套件
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        # 雙重保險，確保機器學習套件有安裝
+        pip install scikit-learn joblib
+
+    - name: 🧠 啟動機器學習深度訓練 (連線 Supabase)
+      run: python ai_trainer.py
+      env:
+        # 🔑 從 GitHub Secrets 自動抓取金鑰
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+    - name: 💾 將進化後的 AI 大腦 (.joblib) 封裝回儲存庫
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "AI Trainer Bot"
+        
+        # 將訓練產出的模型檔案加入 Git
+        git add quant_model.joblib model_features.joblib
+        
+        # 檢查檔案是否有變動，有的話才 Commit 並 Push
+        if [ -n "$(git status --porcelain quant_model.joblib)" ]; then
+          git commit -m "🧠 AI 模型自動重訓與權重更新 [skip ci]"
+          git push origin main
+          echo "✅ 新版 AI 大腦已成功部署至倉庫！"
+        else
+          echo "✅ 模型權重無顯著變化，無需更新。"
+        fi

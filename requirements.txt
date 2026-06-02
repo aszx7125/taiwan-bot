@@ -4,3 +4,5 @@ numpy
 cloudscraper
 requests
 supabase
+scikit-learn
+joblib
