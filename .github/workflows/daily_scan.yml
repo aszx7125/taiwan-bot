@@ -8,16 +8,22 @@ on:
     - cron: '30 6 * * 1-5'
   workflow_dispatch: # 允許您在 GitHub 網頁上手動點擊執行
 
+# 🛡️ 關鍵修復 1：賦予機器人寫入專案檔案的最高權限
+permissions:
+  contents: write
+
 jobs:
   update-data:
     runs-on: ubuntu-latest
 
     steps:
+    # 🚀 關鍵修復 2：升級套件至 v4，消滅 Node.js 警告
     - name: 📥 取得最新程式碼
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
+    # 🚀 關鍵修復 3：升級套件至 v5，消滅 Node.js 警告
     - name: 🐍 設定 Python 環境
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
@@ -35,5 +41,5 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "Quant Bot"
         git add market_snapshot.json
-        # 如果檔案有更新才 commit
+        # 如果檔案有更新才 commit，避免空 commit 報錯
         git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 自動更新全市場量化快取 [skip ci]" && git push)

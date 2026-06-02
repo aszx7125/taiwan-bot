@@ -1,14 +1,23 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import datetime
 import random 
 import concurrent.futures
+import json
+import os
+
+# 在 app.py 中新增一個讀取快取的函數
+@st.cache_data(ttl=600) # 快取 10 分鐘
+def load_market_snapshot():
+    if os.path.exists("market_snapshot.json"):
+        with open("market_snapshot.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES, INDUSTRY_CHAINS
 from data_fetcher import (
     load_all_market_tickers, get_market_index_data, get_market_summary, 
-    get_kline_with_fugle, get_stock_news, get_macro_news, run_robust_market_scan, get_precalculated_market_ret
+    get_kline_with_fugle, get_stock_news, get_macro_news, run_robust_market_scan
 )
 
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
@@ -23,6 +32,9 @@ if not csv_df.empty:
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
+# ==========================================
+# 📱 側邊欄控制
+# ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
@@ -47,6 +59,9 @@ with st.sidebar:
                 st.session_state.stock_clusters[new_cluster_name] = [t if '.TW' in t or '.TWO' in t else f"{t}.TW" for t in new_cluster_tickers.split(',')]
                 st.success("配置成功！"); st.rerun()
 
+# ==========================================
+# 🖥️ 主路由
+# ==========================================
 st.title("⚡ 台股戰情分析終端")
 col1, col2 = st.columns([3, 1])
 with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed")
@@ -59,290 +74,171 @@ if target_ticker:
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
-    with st.spinner(f"正在分析 {target_ticker}... 多維度時區運算中"):
-        df_daily, df_hourly, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
+    with st.spinner(f"正在分析 {target_ticker}... 提取深度資料中"):
+        df, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
         
-        if df_daily.empty or len(df_daily) < 40: 
-            st.error("❌ 該標的數據深度不足，無法執行複雜演算法。")
+        if df.empty or len(df) < 40: 
+            st.error("❌ 該標的數據深度不足，無法執行複雜演算法。可能原因：代號錯誤、剛上市、或暫停交易。")
         else:
             news_s = get_stock_news(c_name)
             news_m = get_macro_news()
 
-            today, yesterday = df_daily.iloc[-1], df_daily.iloc[-2]
+            today, yesterday = df.iloc[-1], df.iloc[-2]
+            vol_ratio = (today['Volume'] / today['Vol_SMA5']) if today['Vol_SMA5'] > 0 else 1.0
+            p_change = ((today['Close'] - yesterday['Close']) / yesterday['Close']) * 100
             
-            # 🛡️ 裝甲防護層 
-            try:
-                entry_price = float(today.get('Close', 0.0))
-                t_high = float(today.get('High', entry_price))
-                t_low = float(today.get('Low', entry_price))
-                y_close = float(yesterday.get('Close', entry_price))
-                
-                if pd.isna(entry_price): entry_price = 0.0
-                if pd.isna(y_close) or y_close == 0: y_close = entry_price if entry_price > 0 else 1.0
-                
-                vol_sma5 = float(today.get('Vol_SMA5', 1.0))
-                if pd.isna(vol_sma5) or vol_sma5 <= 0: vol_sma5 = 1.0
-                vol_ratio = float(today.get('Volume', 0.0)) / vol_sma5
-                p_change = ((entry_price - y_close) / y_close) * 100
-                
-                res_level = float(today.get('Res_20', entry_price * 1.05))
-                sup_level = float(today.get('Sup_20', entry_price * 0.95))
-                if pd.isna(res_level): res_level = entry_price * 1.05
-                if pd.isna(sup_level): sup_level = entry_price * 0.95
-                box_height = max(res_level - sup_level, 0.01)
-                
-                atr_14 = float(yesterday.get('ATR_14', entry_price * 0.05))
-                if pd.isna(atr_14) or atr_14 == 0: atr_14 = entry_price * 0.05
-                
-                recent_20_df = df_daily.iloc[-21:-1]
-                res_tests = int(len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])) if not recent_20_df.empty else 0
-                sup_tests = int(len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])) if not recent_20_df.empty else 0
-                    
-                ai_score = int(today.get('Score', 0))
-                rs_index = float(today.get('RS_Index', 0.0))
-                broker_conc = float(today.get('Broker_Concentration', 0.0))
-                if pd.isna(rs_index): rs_index = 0.0
-                if pd.isna(broker_conc): broker_conc = 0.0
-            except Exception as e:
-                entry_price, y_close, t_high, t_low, vol_ratio, p_change = 0.0, 1.0, 0.0, 0.0, 1.0, 0.0
-                res_level, sup_level, box_height, atr_14 = 0.0, 0.0, 0.0, 0.0
-                res_tests, sup_tests, ai_score, rs_index, broker_conc = 0, 0, 0, 0.0, 0.0
+            res_level, sup_level = today['Res_20'], today['Sup_20']
+            box_height = res_level - sup_level
             
-            # 日線巨觀狀態提取
+            recent_20_df = df.iloc[-21:-1]
+            res_tests = len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])
+            sup_tests = len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])
+            
             bull_div = bool(today.get('Bullish_Div', False))
             bear_div = bool(today.get('Bearish_Div', False))
-            div_status = "🟢 底背離 (空頭力竭，準備反轉)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
-
+            div_status = "🟢 底背離 (空頭力竭，醞釀反彈)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
+            
+            # 🚀 提取 SMC 狀態
             liq_sweep = bool(today.get('Liquidity_Sweep_Bull', False))
-            low_vol_pb = bool(today.get('Low_Vol_Pullback', False))
-            squeeze_on = bool(today.get('Squeeze_On', False))
+            fvg_bull = bool(today.get('FVG_Bull', False))
+            smc_status = []
+            if liq_sweep: smc_status.append("🌊 流動性掠奪 (破底翻洗盤結束)")
+            if fvg_bull: smc_status.append("🧱 公允價值缺口 (主力強勢建倉)")
+            smc_text = " + ".join(smc_status) if smc_status else "無觸發"
             
-            # 提取小時區 (1h) 微觀狙擊狀態
-            micro_trigger = False
-            micro_status_text = "數據不足"
-            if not df_hourly.empty and len(df_hourly) >= 2:
-                last_hour = df_hourly.iloc[-1]
-                micro_trigger = bool(last_hour.get('Micro_Sniper_Trigger', False))
-                h_macd_cross = bool(last_hour.get('MACD_Cross_Up', False))
-                h_vol_surge = bool(last_hour.get('Vol_Surge_1h', False))
-                
-                if micro_trigger: micro_status_text = "🔥 帶量突破 1h 均線 (強烈買點)"
-                elif h_macd_cross: micro_status_text = "📈 1h MACD 金叉發動"
-                elif h_vol_surge: micro_status_text = "🌊 1h 微觀異常爆量"
-                elif last_hour['Close'] > last_hour.get('SMA_20_1h', entry_price): micro_status_text = "🟢 站穩 1h 均線 (短線強勢)"
-                else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
-            
-            # ==========================================
-            # 🎯 多時區 AI 動態測幅與勝率期望值計算
-            # ==========================================
-            atr_stop = entry_price - (1.5 * atr_14)
-            structural_stop = sup_level * 0.985 
-            stop_loss = round(min(atr_stop, structural_stop), 2)
-            if entry_price > res_level: stop_loss = round(res_level * 0.985, 2)
-            risk_per_share = max(entry_price - stop_loss, 0.01)
+            breakout_status, target_proj, breakout_prob = "區間震盪 (未突破)", "無明確突破方向", "中立"
+            if today['Close'] > res_level:
+                breakout_status, target_proj, breakout_prob = "🚀 向上突破前高", f"目標上看 **{round(res_level + box_height, 1)}**", "強勢發動"
+            elif today['Close'] < sup_level:
+                breakout_status, target_proj, breakout_prob = "⚠️ 向下摜破前低", f"下看 **{round(sup_level - box_height, 1)}**", "弱勢探底"
+            elif today['Close'] >= res_level * 0.98:
+                breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
+                if vol_ratio > 1.3 and today['Close'] > today['Open']:
+                    breakout_prob, target_proj = "高機率突破", f"目標上看 **{round(res_level + box_height, 1)}**"
+                else:
+                    breakout_prob, target_proj = "機率中等 (量縮)", f"壓力位 {round(res_level, 1)} 附近震盪"
+            elif today['Close'] <= sup_level * 1.02:
+                breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
+                if vol_ratio > 1.3 and today['Close'] < today['Open']:
+                    breakout_prob, target_proj = "高機率破底", f"下測 **{round(sup_level - box_height, 1)}**"
+                else:
+                    breakout_prob, target_proj = "機率中等 (量縮)", f"支撐位 {round(sup_level, 1)} 防守戰"
 
-            if entry_price > res_level:
-                take_profit = round(res_level + box_height, 2)
-                profit_reason = "🚀 噴發目標：等距測幅擴展位"
-            elif low_vol_pb or liq_sweep or bull_div:
-                take_profit = round(res_level, 2)
-                profit_reason = "🎯 潛伏目標：前高/箱頂壓力區"
-            else:
-                take_profit = round(res_level + (atr_14 * 1.0), 2)
-                profit_reason = "⚔️ 波段目標：前高波動擴張位"
-                
-            real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
-            
-            # 三重濾網最終判定
-            if ai_score >= 65 and micro_trigger and real_rr_ratio >= 1.0:
-                trade_action = f"🎯 多時區共振狙擊！(期待值80%+)"
-                box_color = "#ff4b4b" 
-            elif ai_score >= 70 and real_rr_ratio >= 1.2:
-                trade_action = f"✅ 極高勝率潛伏區間"
-                box_color = "#00cc96"
-            elif ai_score >= 55 and real_rr_ratio >= 1.0:
-                trade_action = "⚠️ 溫和試單 (等待小時區發動)"
-                box_color = "#ffc107"
-            else:
-                trade_action = "⏸️ 勝率偏低或追高風險，強制觀望"
-                box_color = "#555555"
-
-            st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
-            
-            st.markdown(f"""
-            <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
-                <h4 style="color: {box_color}; margin-top: 0;">🎯 三重濾網戰術計畫 (日線 x 小時線)</h4>
-                <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
-                    <div style="flex: 1; min-width: 180px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">1. 最終戰術指令</span><br>
-                        <b style="font-size: 18px; color: {box_color};">{trade_action}</b><br>
-                        <span style="font-size: 14px;">日K分數: {ai_score} | 1h狀態: {micro_status_text.split(' ')[0]}</span>
-                    </div>
-                    <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">2. 狙擊進場價格</span><br>
-                        <b style="font-size: 22px;">{entry_price:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(現貨/限價單)</span>
-                    </div>
-                    <div style="flex: 1; min-width: 200px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">3. 盤面合理獲利點</span><br>
-                        <b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br>
-                        <span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br>
-                        <span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span>
-                    </div>
-                    <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">4. 嚴格止損防禦價</span><br>
-                        <b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(日K微觀防守點)</span>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
+            st.subheader(f"🧬 {target_ticker} {c_name} 深度量化診斷報告")
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
-            m2.metric("日K 巨觀潛伏分數", f"{ai_score} 分")
-            m3.metric("1h 小時區微觀狀態", micro_status_text)
-            m4.metric("機構囤貨集中度", f"{broker_conc*100:.1f}%")
+            m1.metric("當前現價", f"{today['Close']:.2f}", f"{p_change:+.2f}%")
+            m2.metric("即時量比", f"{vol_ratio:.1f}x", f"今日成交 {int(today['Volume']):,} 張", delta_color="off")
+            m3.metric("AI 綜合評分", f"{int(today.get('Score', 0))} 分")
+            m4.metric("大盤相對強度", f"{today.get('RS_Index', 0)*100:+.2f}%")
             
             st.markdown("---")
-            t1, t2, t3, t4 = st.tabs(["🧱 多時區結構解析", "🔍 策略回測對撞", "🏦 大單流與分點籌碼", "📰 專屬新聞動態"])
+            t1, t2, t3, t4 = st.tabs(["🧱 測幅與前瞻策略推演", "🔍 前向策略回測", "🕵️‍♂️ 籌碼動向矩陣", "📰 專屬新聞動態"])
             
             with t1:
                 c_l, c_r = st.columns(2)
                 with c_l:
-                    st.markdown("#### 📐 日K與1h共振狀態")
-                    st.write(f"- **前高壓力 (近20日):** {res_level:.2f}")
-                    st.write(f"- **前低支撐 (近20日):** {sup_level:.2f}")
-                    st.markdown(f"- **大週期(日K)潛伏型態:** <span style='color:{'#ffc107' if low_vol_pb or squeeze_on or liq_sweep else 'gray'}; font-weight:bold;'>{'量縮回踩/極度壓縮' if low_vol_pb or squeeze_on else '破底翻' if liq_sweep else '常態震盪'}</span>", unsafe_allow_html=True)
-                    st.markdown(f"- **小週期(1h)板機狀態:** <span style='color:{'#ff4b4b' if micro_trigger else '#00cc96' if '站穩' in micro_status_text else 'gray'}; font-weight:bold;'>{micro_status_text}</span>", unsafe_allow_html=True)
+                    st.markdown("#### 📐 關鍵結構與前瞻預判")
+                    st.write(f"- **前高壓力 (近20日):** {res_level:.2f} | **已測試:** {res_tests} 次")
+                    st.write(f"- **前低支撐 (近20日):** {sup_level:.2f} | **已測試:** {sup_tests} 次")
+                    st.write(f"- **盤勢型態判定:** {breakout_status}")
+                    st.markdown(f"- **RSI 動能背離偵測:** <span style='color:{'#00cc96' if bull_div else ('#ff4b4b' if bear_div else 'gray')}; font-weight:bold;'>{div_status}</span>", unsafe_allow_html=True)
+                    st.markdown(f"- **SMC 機構級微觀結構:** <span style='color:{'#ffc107' if smc_status else 'gray'}; font-weight:bold;'>{smc_text}</span>", unsafe_allow_html=True)
+                    st.write(f"- **波動壓縮狀態:** {'⚠️ 極度擠壓收斂 (Squeeze)' if today.get('Squeeze_On', False) else '🟢 波動度常態分佈'}")
+                    st.write(f"- **大週期週線共振:** {'📈 週線處於波段多頭保護期' if today.get('Weekly_Trend_Up', False) else '📉 週線空頭趨勢壓制'}")
                 with c_r:
-                    st.markdown("#### 💡 三重濾網實戰解析")
-                    if ai_score >= 65 and micro_trigger:
-                        st.error("🎯 **【狙擊點確認】** 日K線大格局處於安全潛伏區，且小時區突然爆發突破訊號！這是極高勝率的多時區共振買點，建議立刻佈局。")
-                    elif ai_score >= 65 and not micro_trigger:
-                        st.success("👀 **【耐心埋伏】** 大格局非常漂亮，勝率極高，但小時區動能尚未發動。您可以先建立基本底倉，等待小時區金叉再加碼。")
-                    elif ai_score < 50 and micro_trigger:
-                        st.warning("🚨 **【假突破陷阱】** 小時區雖然大漲，但大週期(日K)不支援，追高套牢風險極大！建議嚴格觀望。")
+                    st.markdown("#### 💡 操作劇本規劃")
+                    st.write(f"**🔴 漲停極限:** {round(yesterday['Close'] * 1.10, 1)} | **🟢 跌停極限:** {round(yesterday['Close'] * 0.90, 1)}")
+                    st.write(f"**等距測幅 (目標):** {target_proj}")
+                    
+                    if "破底翻" in smc_text or "底背離" in div_status:
+                        st.success("🎯 **【起漲潛力】** 出現左側底背離或主力洗盤結束訊號！若確認站穩支撐，此處為風報比極佳的低價試單區間。")
+                    elif "突破前高" in breakout_status: 
+                        st.success("🚀 **【右側追隨】** 型態正式帶量向上突破！屬強勢追隨訊號，防守點位移至前高。")
+                    elif "挑戰前高" in breakout_status: 
+                        st.warning("⚔️ **【突破預備】** 兵臨城下，即將挑戰壓力！若帶量突破布林上軌可試單。")
+                    elif "回測前低" in breakout_status: 
+                        st.warning("🛡️ **【支撐保衛】** 測試底部支撐，若跌破前低應果斷停損。")
+                    elif "摜破前低" in breakout_status: 
+                        st.error("⚠️ **【破底危機】** 嚴格執行停損，切勿攤平。")
                     else: 
-                        st.info("⏸️ **【動能休眠】** 大小週期皆無明顯發動跡象，屬於機構垃圾時間。")
+                        st.info("⏸️ **【箱體觀望】** 股價處於箱體內部結構震盪，採取下軌附近低吸、上軌調節之區間策略。")
             
             with t2:
-                st.markdown("### 🔍 多週期策略回測與實況對撞")
-                # 🌟 完整修復：保留三大週期的極值對比與勝率回撤計算
-                sub_t1, sub_t2, sub_t3 = st.tabs(["1️⃣ 昨日對撞 (1日)", "5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
+                st.markdown("### 🔍 歷史預測與實況對撞 (Forward Testing)")
+                sub_t1, sub_t2 = st.tabs(["1️⃣ 昨日預測 (近 1 日)", "5️⃣ 一週波段 (近 5 日)"])
                 
                 with sub_t1:
-                    y_target = res_level + atr_14
-                    col_r1, col_r2 = st.columns(2)
-                    with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{res_level:.2f}**\n- 支撐位: **{sup_level:.2f}**\n- 測幅目標: **{y_target:.2f}**")
-                    with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{t_high:.2f}**\n- 最低價: **{t_low:.2f}**\n- 收盤現價: **{entry_price:.2f}**")
+                    y_res, y_sup, y_atr = today['Res_20'], today['Sup_20'], yesterday['ATR_14']
+                    y_target = y_res + y_atr
 
-                    if entry_price > res_level:
-                        if t_high >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位，並成功觸及波動測幅目標！")
-                        else: st.success(f"⭐⭐ **突破確認**：今日收盤站上壓力位，多頭防線推進。")
-                    elif entry_price < sup_level:
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{y_res:.2f}**\n- 支撐位: **{y_sup:.2f}**\n- 測幅目標: **{y_target:.2f}**")
+                    with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{today['High']:.2f}**\n- 最低價: **{today['Low']:.2f}**\n- 收盤現價: **{today['Close']:.2f}**")
+
+                    if today['Close'] > y_res:
+                        if today['High'] >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位，並成功觸及等距測幅目標！")
+                        else: st.success(f"⭐⭐ **突破確認**：今日收盤站上壓力位，多頭正式發動。")
+                    elif today['Close'] < y_sup:
                         st.error(f"⚠️ **跌破防線**：今日收盤跌破支撐位，觸發停損機制。")
-                    elif t_high >= res_level and entry_price <= res_level:
+                    elif today['High'] >= y_res and today['Close'] <= y_res:
                         st.warning(f"👀 **假突破 / 壓力沉重**：今日盤中突破壓力，但收盤未能站穩。")
-                    elif t_low <= sup_level and entry_price >= sup_level:
+                    elif today['Low'] <= y_sup and today['Close'] >= y_sup:
                         st.info(f"🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
                     else:
-                        st.write(f"⏸️ **區間震盪**：今日走勢在預設箱體內震盪，符合潛伏觀望預期。")
-                
-                with sub_t2:
-                    if len(df_daily) >= 26:
-                        d_base = df_daily.iloc[-6]
-                        d_5_days = df_daily.iloc[-5:]
-                        try:
-                            w_res = float(d_base.get('Res_20', entry_price))
-                            w_sup = float(d_base.get('Sup_20', entry_price))
-                            w_atr = float(d_base.get('ATR_14', 1.0))
-                            w_target = w_res + w_atr
-                            max_h_5d = float(d_5_days['High'].max())
-                            min_l_5d = float(d_5_days['Low'].min())
-                            d_base_close = float(d_base.get('Close', 1.0))
-                            
-                            col_w1, col_w2 = st.columns(2)
-                            with col_w1: st.info(f"**5 天前預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
-                            with col_w2: st.warning(f"**本週實況極值 (近5日)**\n- 波段最高: **{max_h_5d:.2f}**\n- 波段最低: **{min_l_5d:.2f}**\n- 目前收盤: **{entry_price:.2f}**")
-                            
-                            max_gain = ((max_h_5d - d_base_close) / d_base_close) * 100
-                            max_loss = ((min_l_5d - d_base_close) / d_base_close) * 100
-                            st.markdown(f"**📈 本週最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain:.2f}%</span> | **📉 本週最大潛在回撤:** <span style='color:#00cc96;'>{max_loss:.2f}%</span>", unsafe_allow_html=True)
-                        except: st.warning("⚠️ 此區間資料存在空值，無法計算。")
-                    else:
-                        st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
-
-                with sub_t3:
-                    if len(df_daily) >= 45:
-                        d_base_m = df_daily.iloc[-21] 
-                        d_20_days = df_daily.iloc[-20:]
-                        try:
-                            m_res = float(d_base_m.get('Res_20', entry_price))
-                            m_sup = float(d_base_m.get('Sup_20', entry_price))
-                            m_atr = float(d_base_m.get('ATR_14', 1.0))
-                            m_target = m_res + m_atr
-                            max_h_20d = float(d_20_days['High'].max())
-                            min_l_20d = float(d_20_days['Low'].min())
-                            d_base_m_close = float(d_base_m.get('Close', 1.0))
-                            
-                            col_m1, col_m2 = st.columns(2)
-                            with col_m1: st.info(f"**20 天前預測基準**\n- 當時壓力: **{m_res:.2f}**\n- 當時支撐: **{m_sup:.2f}**\n- 測幅目標: **{m_target:.2f}**")
-                            with col_m2: st.warning(f"**本月實況極值 (近20日)**\n- 波段最高: **{max_h_20d:.2f}**\n- 波段最低: **{min_l_20d:.2f}**\n- 目前收盤: **{entry_price:.2f}**")
-                            
-                            max_gain_m = ((max_h_20d - d_base_m_close) / d_base_m_close) * 100
-                            max_loss_m = ((min_l_20d - d_base_m_close) / d_base_m_close) * 100
-                            st.markdown(f"**📈 本月最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain_m:.2f}%</span> | **📉 本月最大潛在回撤:** <span style='color:#00cc96;'>{max_loss_m:.2f}%</span>", unsafe_allow_html=True)
-                        except: st.warning("⚠️ 此區間資料存在空值，無法計算。")
-                    else:
-                        st.warning("⚠️ 歷史數據深度不足，無法進行單月回測。")
-                with t3:
-                        st.markdown("#### 🎯 潛伏型 AI 勝率期望值排行 (TOP 20)")
-                        st.caption("以下數據由雲端背景運算引擎於每日盤後自動解算，達成 0 延遲載入。")
-        
-                        snapshot = load_market_snapshot()
-                        if snapshot:
-                            st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
-                            df_res = pd.DataFrame(snapshot['data'])
-                            st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
-                        else:
-                         st.warning("⚠️ 尚未生成快取資料，請等待 GitHub Actions 執行完畢，或手動觸發運算。")
-
-                with t4:
-                    st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
-                    selected_chain = st.selectbox("選擇要檢視的產業鏈", list(INDUSTRY_CHAINS.keys()))
-                    chain_data = INDUSTRY_CHAINS[selected_chain]
-        
-                    snapshot = load_market_snapshot()
-                    if snapshot:
-                        res_df = pd.DataFrame(snapshot['data'])
-                        st.markdown("---")
-                        cols = st.columns(len(chain_data))
-                        recommendations = []
-            
-                        for idx, (sub_name, tickers) in enumerate(chain_data.items()):
-                            with cols[idx]:
-                                sub_codes = [t.split('.')[0] for t in tickers]
-                                # 秒速從預先算好的 JSON 中篩選出該產業的標的，不用再爬蟲！
-                                sub_res = res_df[res_df['代號'].isin(sub_codes)].copy()
-                    
-                                if not sub_res.empty:
-                                    avg_score = int(sub_res['量化總分'].mean())
-                                    heat_color = "#ff4b4b" if avg_score >= 65 else ("#ffc107" if avg_score >= 45 else "#00cc96")
+                        st.write(f"⏸️ **區間震盪**：走勢在預設箱體內震盪，符合觀望預期。")
                         
-                                    st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
-                                    st.dataframe(sub_res[['名稱', '現價', '量化總分']].sort_values('量化總分', ascending=False), hide_index=True, use_container_width=True)
-                                else:
-                                    st.markdown(f"**{sub_name}**\n查無高分數據")
-                        else:
-                            st.warning("⚠️ 系統快取準備中...")            
+                with sub_t2:
+                    if len(df) >= 26:
+                        d_base = df.iloc[-6]
+                        d_5_days = df.iloc[-5:]
+                        w_res, w_sup, w_atr = d_base['Res_20'], d_base['Sup_20'], d_base['ATR_14']
+                        w_target = w_res + w_atr
+                        max_h_5d = d_5_days['High'].max()
+                        min_l_5d = d_5_days['Low'].min()
+                        c_now = today['Close']
+                        
+                        col_w1, col_w2 = st.columns(2)
+                        with col_w1: st.info(f"**5 天前預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
+                        with col_w2: st.warning(f"**本週實況極值 (近5日)**\n- 波段最高: **{max_h_5d:.2f}**\n- 波段最低: **{min_l_5d:.2f}**\n- 目前收盤: **{c_now:.2f}**")
+                        
+                        max_gain = ((max_h_5d - d_base['Close']) / d_base['Close']) * 100
+                        max_loss = ((min_l_5d - d_base['Close']) / d_base['Close']) * 100
+                        st.markdown(f"**📈 本週最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain:.2f}%</span> | **📉 本週最大潛在回撤:** <span style='color:#00cc96;'>{max_loss:.2f}%</span>", unsafe_allow_html=True)
+                        
+                        if max_h_5d >= w_target: st.success("⭐⭐⭐ **波段達標**：本週內曾成功突破並觸及一週前的等距測幅目標！")
+                        elif max_h_5d > w_res: st.success("⭐⭐ **波段突破**：本週內曾成功突破壓力位，啟動多頭行情。")
+                        elif min_l_5d < w_sup: st.error("⚠️ **波段破底**：本週內曾跌破一週前的關鍵支撐，若未停損可能擴大虧損。")
+                        else: st.info("⏸️ **大型箱體**：這 5 天內始終在一週前的壓力與支撐區間內震盪洗盤。")
+                    else:
+                        st.warning("⚠️ 數據不足 26 天，無法進行一週歷史回測。")
             
+            with t3:
+                st.markdown("#### 🕵️‍♂️ 法人大戶籌碼控盤度矩陣")
+                sm = int(today.get('Smart_Money_Trend', 0))
+                chip_txt = "👽 外資/大戶積極建倉中 (價漲量增)" if sm >= 1 else ("🚶 散戶接盤/大戶出貨 (價跌量增)" if sm <= -1 else "⚖️ 籌碼無明確方向，量能萎縮")
+                st.info(f"**智能籌碼動向判定:** {chip_txt}")
+                st.progress(int(today.get('Score', 0)), text=f"量化綜合控盤度：{int(today.get('Score', 0))}%")
+                st.caption("基於價量背離、RS 指標與週線多時區共振加權推算。分數越高，代表法蘭與大戶資金沉澱度越高。")
+            
+            with t4:
+                nl, nr = st.columns(2)
+                with nl:
+                    st.markdown("#### 🎯 個股專屬新聞")
+                    if news_s:
+                        for n in news_s[:5]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
+                    else: st.info("無相關新聞")
+                with nr:
+                    st.markdown("#### 🌍 總經大盤焦點")
+                    if news_m:
+                        for n in news_m[:5]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
+                    else: st.info("無大盤新聞")
                     
         if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
             st.session_state.analyze_trigger = None
             st.rerun()
 
 else:
+    # ─── 【模組 B】主頁儀表板 ───
     st.markdown("### 🌍 台股大盤與情緒摘要")
     summary = get_market_summary()
     if summary:
@@ -365,26 +261,41 @@ else:
                 <div style="width: 100%; background-color: #333; border-radius: 10px; height: 10px; margin-top: 5px;">
                   <div style="width: {greed_index}%; background-color: {bar_color}; height: 100%; border-radius: 10px;"></div>
                 </div>
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: gray; margin-top: 5px;">
+                    <span>0 (恐懼)</span><span>100 (貪婪)</span>
+                </div>
             """, unsafe_allow_html=True)
 
-    with st.expander("🧠 系統核心：多時區三重濾網策略白皮書 (點此展開)", expanded=False):
+    # 🌟 重點修復：系統核心白皮書強勢回歸！
+    with st.expander("🧠 系統核心：量化策略與多因子演算法白皮書 (點此展開)", expanded=False):
         st.markdown("""
-        #### 1. 宏觀濾網 (日線巨觀潛伏)
-        摒棄追高風險。系統在日K級別專注尋找：
-        * **📉 量縮回踩**：趨勢偏多，但今日量縮下跌。主力洗盤最安全的買點。
-        * **🛡️ 區間壓縮 (Squeeze)**：布林通道收斂，等待爆發。
+        #### 1. 前瞻性預判：SMC 機構級微觀結構 (起漲點偵測)
+        有別於落後的均線指標，本系統內建 **Smart Money Concepts (聰明錢概念)** 演算法，專抓主力發動前的細微痕跡：
+        * **🌊 流動性掠奪 (破底翻)**：偵測股價刻意跌破近 20 日低點觸發散戶停損，卻在收盤強勢站回。這代表主力洗盤完畢，準備拉升。
+        * **🧱 公允價值缺口 (FVG)**：偵測連續 K 線間留下的價格真空區，代表大戶不計代價的強勢建倉。
 
-        #### 2. 微觀濾網 (小時線精確狙擊)
-        大週期確定潛伏後，系統會啟用 1 小時 (1h) 線的微觀狙擊雷達。只有當 1h K線突然出現「帶量突破均線且MACD金叉」時，系統才會觸發極限買點，幫您過濾掉盤中假突破的騙線。
+        #### 2. RSI 動態背離掃描 (左側抄底指標)
+        系統內建波峰波谷比對演算法：當股價創下近期新低，但 RSI 指標卻「沒有」創低反而墊高時，觸發 **🟢 底背離** 訊號。代表殺跌動能枯竭，是極佳的低接訊號。
 
-        #### 3. AI 聯動判定指令
-        * **🎯 多時區共振狙擊！**：日K分數高 + 1h突破確認 (可重倉)。
-        * **✅ 極高勝率潛伏區間**：日K分數高 + 1h未發動 (可佈局底倉)。
-        * **🚨 假突破陷阱**：日K分數低 + 1h突然大漲 (嚴格觀望，不要被騙上車)。
+        #### 3. 產業鏈資金共振 (Top-Down 法人視角)
+        系統將市場熱門標的嚴格劃分為「上、中、下游」。當資金灌入時，熱度會從上游（如：晶片）蔓延至下游（如：組裝）。透過觀察各區塊的平均 AI 評分，精準捕捉資金外溢效應。
+
+        #### 4. Squeeze 波動率收斂突破 (右側主升段發動機)
+        當布林通道縮口並完全被包進肯特納通道內時，稱為「極度擠壓 (Squeeze)」。這代表大風暴前的寧靜，此時若發生帶量突破，往往是暴賺主升段的起點。
+
+        #### 5. AI 多因子評分矩陣 (滿分 100 分)
+        為了強化「買在起漲前」的能力，我們降低了落後指標的權重，大幅提升了前瞻性指標的配分：
+        1. **趨勢與動能 (10分)**：站上月線(5分) + MACD 金叉(5分)。
+        2. **大盤相對強度 RS (15分)**：近 20 日報酬率戰勝大盤，抗跌飆股。
+        3. **週線共振 (15分)**：大週期週線 MACD 為多頭，長線保護短線。
+        4. **大戶籌碼動能 (10分)**：近 5 日「價漲量增」天數多於「價跌量增」。
+        5. **量能與壓縮突破 (20分)**：爆發量(10分) + Squeeze 突破(10分)。
+        6. **前瞻 - 底部背離發動 (10分)**：價格破底但 RSI 墊高，強烈反轉訊號。
+        7. **前瞻 - SMC 主力建倉 (20分)**：流動性掠奪(10分) + FVG 缺口(10分)。
         """)
             
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📊 自選即時流", "🎯 潛伏型 AI 評分 (勝率排行)", "🕸️ 產業鏈資金共振 (精選)"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 板塊實時監控", "⚡ 條件設定全市場雷達", "🎯 多因子 AI 評分 (含SMC)", "🕸️ 產業鏈資金共振 (精選)"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -397,7 +308,7 @@ else:
             rows = []
             for t in cluster_stocks:
                 try:
-                    df, _, _ = get_kline_with_fugle(t.split('.')[0], FUGLE_API_KEY)
+                    df, _ = get_kline_with_fugle(t.split('.')[0], FUGLE_API_KEY)
                     if len(df) >= 3:
                         c, p = df.iloc[-1], df.iloc[-2]
                         change_amt = c['Close'] - p['Close']
@@ -433,61 +344,61 @@ else:
         render_rt()
 
     with tab2:
-        st.markdown("#### 🎯 潛伏型 AI 勝率期望值排行 (TOP 20)")
-        st.caption("AI 已經排除追高風險。下方高分榜為正處於『量縮回踩、籌碼集中或準備發動』的高勝率標的，請點擊『單股掃描』取得小時區計畫。")
-        if st.button("🔮 執行潛伏型深度矩陣運算", type="primary"):
+        st.markdown("#### ⚡ 條件設定全市場雷達")
+        c1, c2 = st.columns(2)
+        conds = {
+            'vol': c1.checkbox("🔥 量能異常 (> 1.5倍)", value=True), 'rsi': c1.checkbox("📉 RSI谷底 (< 35)", value=False),
+            'ma': c2.checkbox("📈 均線多頭 (> 月線)", value=True), 'macd': c2.checkbox("📊 MACD剛金叉", value=True)
+        }
+        scan_mode = st.radio("範圍", ["自選群組", "全市場 (需 CSV)"], horizontal=True)
+        
+        if st.button("🚀 啟動條件掃描", type="primary"):
             custom = [t for g in st.session_state.stock_clusters.values() for t in g]
-            tickers = list(set(custom + (csv_df['Ticker'].tolist() if not csv_df.empty else [])))
+            tickers = list(set(custom + (csv_df['Ticker'].tolist() if "全市場" in scan_mode and not csv_df.empty else [])))
             p_bar, s_text = st.progress(0), st.empty()
-            res = run_robust_market_scan(tickers, {}, p_bar, s_text, st.session_state.stock_names, get_precalculated_market_ret(), "score")
+            
+            res = run_robust_market_scan(tickers, conds, p_bar, s_text, st.session_state.stock_names, get_market_index_data(), "radar")
             s_text.empty(); p_bar.empty()
-            if res: 
-                df_res = pd.DataFrame(res).sort_values("量化總分", ascending=False).head(20)
-                st.dataframe(df_res, column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
-            else: st.warning("⚠️ 運算失敗。")
+            if res: st.dataframe(pd.DataFrame(res), use_container_width=True, hide_index=True)
+            else: st.warning("⚠️ 查無符合標的，請嘗試放寬條件。")
 
     with tab3:
+        st.markdown("#### 🎯 潛伏型 AI 勝率期望值排行 (TOP 20)")
+        st.caption("以下數據由雲端背景運算引擎於每日盤後自動解算，達成 0 延遲載入。")
+        
+        snapshot = load_market_snapshot()
+        if snapshot:
+            st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
+            df_res = pd.DataFrame(snapshot['data'])
+            st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
+        else:
+            st.warning("⚠️ 尚未生成快取資料，請等待 GitHub Actions 執行完畢，或手動觸發運算。")
+
+    with tab4:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
-        selected_chain = st.selectbox("選擇要掃描的產業鏈", list(INDUSTRY_CHAINS.keys()))
+        selected_chain = st.selectbox("選擇要檢視的產業鏈", list(INDUSTRY_CHAINS.keys()))
         chain_data = INDUSTRY_CHAINS[selected_chain]
         
-        if st.button("🚀 啟動產業鏈深度掃描", type="primary"):
-            all_chain_tickers = [ticker for sublist in chain_data.values() for ticker in sublist]
-            p_bar, s_text = st.progress(0), st.empty()
-            res = run_robust_market_scan(list(set(all_chain_tickers)), {}, p_bar, s_text, st.session_state.stock_names, get_precalculated_market_ret(), "score")
-            s_text.empty(); p_bar.empty()
+        snapshot = load_market_snapshot()
+        if snapshot:
+            res_df = pd.DataFrame(snapshot['data'])
+            st.markdown("---")
+            cols = st.columns(len(chain_data))
+            recommendations = []
             
-            if res:
-                res_df = pd.DataFrame(res)
-                st.markdown("---")
-                cols = st.columns(len(chain_data))
-                recommendations = []
-                
-                for idx, (sub_name, tickers) in enumerate(chain_data.items()):
-                    with cols[idx]:
-                        sub_codes = [t.split('.')[0] for t in tickers]
-                        sub_res = res_df[res_df['代號'].isin(sub_codes)].copy()
+            for idx, (sub_name, tickers) in enumerate(chain_data.items()):
+                with cols[idx]:
+                    sub_codes = [t.split('.')[0] for t in tickers]
+                    # 秒速從預先算好的 JSON 中篩選出該產業的標的，不用再爬蟲！
+                    sub_res = res_df[res_df['代號'].isin(sub_codes)].copy()
+                    
+                    if not sub_res.empty:
+                        avg_score = int(sub_res['量化總分'].mean())
+                        heat_color = "#ff4b4b" if avg_score >= 65 else ("#ffc107" if avg_score >= 45 else "#00cc96")
                         
-                        if not sub_res.empty:
-                            avg_score = int(sub_res['量化總分'].mean())
-                            heat_color = "#ff4b4b" if avg_score >= 65 else ("#ffc107" if avg_score >= 45 else "#00cc96")
-                            
-                            st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
-                            st.dataframe(sub_res[['名稱', '現價', '量化總分']].sort_values('量化總分', ascending=False), hide_index=True, use_container_width=True)
-                            
-                            high_scorers = sub_res[sub_res['量化總分'] >= 70]
-                            for _, r in high_scorers.iterrows():
-                                recommendations.append(f"**{r['名稱']} ({r['代號']})** - 潛伏分數: {r['量化總分']} 分 _(位於 {sub_name})_")
-                        else:
-                            st.markdown(f"**{sub_name}**\n查無數據")
-                
-                st.markdown("---")
-                st.markdown("### 🌟 AI 產業鏈最佳潛伏標的")
-                if recommendations:
-                    st.success("🎯 以下標的為該產業鏈中，目前正處於『量縮回踩或壓縮整理』的低風險股。建議輸入上方『單股掃描』以 1h 線狙擊進場：")
-                    for rec in recommendations:
-                        st.markdown(f"- {rec}")
-                else:
-                    st.info("⏸️ 目前該產業鏈中，尚無綜合潛伏評分大於 70 分的安全標的，建議觀望。")
-            else:
-                st.warning("掃描失敗，請稍後再試。")
+                        st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
+                        st.dataframe(sub_res[['名稱', '現價', '量化總分']].sort_values('量化總分', ascending=False), hide_index=True, use_container_width=True)
+                    else:
+                        st.markdown(f"**{sub_name}**\n查無高分數據")
+        else:
+            st.warning("⚠️ 系統快取準備中...")
