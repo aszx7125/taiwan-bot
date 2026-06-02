@@ -5,14 +5,15 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import concurrent.futures
 import cloudscraper
-from indicators import add_advanced_indicators
+from indicators import add_advanced_indicators, add_intraday_indicators
 
 stealth_scraper = cloudscraper.create_scraper(
     browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
 )
 
-def fetch_yahoo_robust(symbol, period="6mo"):
-    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval=1d"
+def fetch_yahoo_robust(symbol, period="6mo", interval="1d"):
+    # 🚀 動態支援多時區請求
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval={interval}"
     try:
         res = stealth_scraper.get(url, timeout=5)
         if res.status_code == 200:
@@ -29,7 +30,7 @@ def fetch_yahoo_robust(symbol, period="6mo"):
                     'Close': quote.get('close', []),
                     'Volume': quote.get('volume', [])
                 }, index=pd.to_datetime(timestamps, unit='s', utc=True))
-                df.index = df.index.tz_convert('Asia/Taipei').tz_localize(None).normalize()
+                df.index = df.index.tz_convert('Asia/Taipei').tz_localize(None)
                 return df.dropna(subset=['Close', 'Volume'])
     except Exception:
         pass
@@ -42,20 +43,19 @@ def load_all_market_tickers():
 
 @st.cache_data(ttl=120)
 def get_market_index_data():
-    return fetch_yahoo_robust("^TWII", "6mo")
+    return fetch_yahoo_robust("^TWII", "6mo", "1d")
 
 @st.cache_data(ttl=120)
 def get_market_summary():
     indices = {"加權指數": "^TWII", "櫃買指數": "^TWOTC", "台灣50": "0050.TW"}
     res = {}
     for name, t in indices.items():
-        df = fetch_yahoo_robust(t, "5d")
+        df = fetch_yahoo_robust(t, "5d", "1d")
         if len(df) >= 2: 
             p_now, p_prev = df['Close'].iloc[-1], df['Close'].iloc[-2]
             res[name] = {"price": p_now, "change": p_now - p_prev, "pct": ((p_now - p_prev) / p_prev) * 100}
     return res
 
-# 🚀 極速優化 3：萃取並預計算大盤報酬率，供全市場雷達統一調用
 def get_precalculated_market_ret():
     market_df = get_market_index_data()
     if not market_df.empty:
@@ -66,18 +66,25 @@ def get_precalculated_market_ret():
 
 @st.cache_data(ttl=30) 
 def get_kline_with_fugle(ticker_code, fugle_api_key=""):
-    market_ret_20 = get_precalculated_market_ret() # 使用輕量化大盤參數
+    market_ret_20 = get_precalculated_market_ret()
     clean_ticker = ticker_code.split('.')[0]
     
-    df = fetch_yahoo_robust(f"{clean_ticker}.TW")
+    # 1. 抓取巨觀日線 (Daily)
+    df_daily = fetch_yahoo_robust(f"{clean_ticker}.TW", "6mo", "1d")
     actual_symbol = f"{clean_ticker}.TW"
-    if df.empty or len(df) < 20:
-        df = fetch_yahoo_robust(f"{clean_ticker}.TWO")
+    if df_daily.empty or len(df_daily) < 20:
+        df_daily = fetch_yahoo_robust(f"{clean_ticker}.TWO", "6mo", "1d")
         actual_symbol = f"{clean_ticker}.TWO"
 
-    if df.empty or len(df) < 20: 
-        return pd.DataFrame(), actual_symbol 
+    # 2. 抓取微觀小時線 (Hourly) - 限制 1個月 避免 Yahoo 阻擋
+    df_hourly = pd.DataFrame()
+    if not df_daily.empty:
+        df_hourly = fetch_yahoo_robust(actual_symbol, "1mo", "1h")
 
+    if df_daily.empty or len(df_daily) < 20: 
+        return pd.DataFrame(), pd.DataFrame(), actual_symbol 
+
+    # Fugle 即時資料輔助更新日線最後一根 K 棒
     if fugle_api_key:
         try:
             res = stealth_scraper.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": fugle_api_key}, timeout=3)
@@ -86,18 +93,20 @@ def get_kline_with_fugle(ticker_code, fugle_api_key=""):
                 rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
                 rt_vol = data.get('total', {}).get('tradeVolume', 0)
                 tz_tw = datetime.timezone(datetime.timedelta(hours=8))
-                today_date, last_candle_date = datetime.datetime.now(tz_tw).date(), df.index[-1].date()
+                today_date, last_candle_date = datetime.datetime.now(tz_tw).date(), df_daily.index[-1].date()
                 if last_candle_date < today_date and rt_price:
-                    new_row = df.iloc[-1].copy()
+                    new_row = df_daily.iloc[-1].copy()
                     new_row.name = pd.Timestamp(today_date)
-                    df = pd.concat([df, pd.DataFrame([new_row])])
-                if rt_price: df.iloc[-1, df.columns.get_loc('Close')] = float(rt_price)
-                if rt_vol > 0: df.iloc[-1, df.columns.get_loc('Volume')] = float(rt_vol)
+                    df_daily = pd.concat([df_daily, pd.DataFrame([new_row])])
+                if rt_price: df_daily.iloc[-1, df_daily.columns.get_loc('Close')] = float(rt_price)
+                if rt_vol > 0: df_daily.iloc[-1, df_daily.columns.get_loc('Volume')] = float(rt_vol)
         except Exception:
             pass
         
-    df = add_advanced_indicators(df, market_ret_20)
-    return df, actual_symbol
+    df_daily = add_advanced_indicators(df_daily, market_ret_20)
+    df_hourly = add_intraday_indicators(df_hourly)
+    
+    return df_daily, df_hourly, actual_symbol
 
 @st.cache_data(ttl=300)
 def get_stock_news(keyword):
@@ -117,14 +126,13 @@ def get_macro_news():
 
 def _fetch_and_score_sync(symbol, market_ret_20, conds, names_dict, mode):
     try:
-        df = fetch_yahoo_robust(symbol)
-        if df.empty or len(df) < 35: return None
+        df_daily = fetch_yahoo_robust(symbol, "6mo", "1d")
+        if df_daily.empty or len(df_daily) < 35: return None
         
-        # 傳入預先算好的輕量化大盤指標
-        df = add_advanced_indicators(df, market_ret_20)
-        if 'Score' not in df.columns: return None
+        df_daily = add_advanced_indicators(df_daily, market_ret_20)
+        if 'Score' not in df_daily.columns: return None
         
-        last = df.iloc[-1]
+        last = df_daily.iloc[-1]
         code = symbol.split('.')[0]
         name = names_dict.get(code, "市場焦點")
         
@@ -133,45 +141,29 @@ def _fetch_and_score_sync(symbol, market_ret_20, conds, names_dict, mode):
         rsi_val = float(last.get('RSI', 50)) if pd.notna(last.get('RSI')) else 50.0
         
         liq_sweep = bool(last.get('Liquidity_Sweep_Bull', False))
-        fvg = bool(last.get('FVG_Bull', False))
-        block_trade = bool(last.get('Block_Trade_Inflow', False))
+        low_vol_pb = bool(last.get('Low_Vol_Pullback', False))
         broker_conc = float(last.get('Broker_Concentration', 0.0))
         
         pattern_list = []
-        if block_trade: pattern_list.append("🌊 大單狂敲")
+        if low_vol_pb: pattern_list.append("📉 量縮回踩")
         if broker_conc > 0.3: pattern_list.append("🏦 分點囤貨")
         if liq_sweep: pattern_list.append("🧹 破底翻")
-        if fvg: pattern_list.append("🧱 FVG缺口")
-        if df['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']: pattern_list.append("💥 壓縮突破")
+        if df_daily['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']: pattern_list.append("💥 壓縮突破")
         
         if not pattern_list: pattern_list.append("多頭" if last['Close'] > last['SMA_20'] else "空頭")
         pattern_str = " + ".join(pattern_list[:3]) 
         
-        if mode == "radar":
-            f_vol = (last['Volume'] > last['Vol_SMA5'] * 1.5) if conds.get('vol') else True
-            f_ma = (last['Close'] > last['SMA_20']) if conds.get('ma') else True
-            f_rsi = (last['RSI'] < 35) if conds.get('rsi') else True
-            f_macd = (last['MACD'] > last['Signal'] and df['MACD'].iloc[-2] <= df['Signal'].iloc[-2]) if conds.get('macd') else True
-            
-            if f_vol and f_ma and f_rsi and f_macd:
-                pct = ((last['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
-                vol_ratio = last['Volume'] / last['Vol_SMA5'] if last['Vol_SMA5'] > 0 else 1.0
-                return {"代號": code, "名稱": name, "現價": f"{last['Close']:.2f}", "今日漲跌": f"{pct:+.2f}%", "量比": f"{vol_ratio:.1f}x", "RSI": f"{rsi_val:.1f}", "型態特徵": pattern_str}
-        
-        elif mode == "score":
+        if mode == "score":
             return {"代號": code, "名稱": name, "量化總分": score, "機構籌碼/型態": pattern_str, "大盤相對強度": f"{rs_val*100:+.2f}%", "現價": f"{last['Close']:.2f}"}
     except: pass
     return None
 
-def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_data_raw, mode="radar"):
+def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_data_raw, mode="score"):
     results = []
     total = len(tickers)
     completed = 0
-    
-    # 在進入多執行緒掃描前，先將大盤報酬率算好，只傳遞這個輕量的 pandas Series！
     market_ret_20 = get_precalculated_market_ret()
     
-    # 將執行緒調高至 25 條，因為現在 CPU 負擔已經極小化
     with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_ret_20, conds, names_dict, mode): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):

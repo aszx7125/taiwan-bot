@@ -25,7 +25,7 @@ def add_advanced_indicators(df, market_ret_20=None):
     df['TR'] = np.maximum(df['High'] - df['Low'], np.maximum((df['High'] - prev_close).abs(), (df['Low'] - prev_close).abs()))
     df['ATR_14'] = df['TR'].rolling(14).mean()
 
-    # 1. 波動率收斂突破 (Squeeze) - 獎勵「正在壓縮」，而非已經突破
+    # 1. 波動率收斂突破 (Squeeze)
     df['BB_Mid'] = df['SMA_20']
     df['BB_Std'] = df['Close'].rolling(20).std()
     df['BB_Upper'] = df['BB_Mid'] + (2 * df['BB_Std'])
@@ -34,7 +34,7 @@ def add_advanced_indicators(df, market_ret_20=None):
     df['KC_Lower'] = df['BB_Mid'] - (1.5 * df['ATR_14'])
     df['Squeeze_On'] = (df['BB_Upper'] < df['KC_Upper']) & (df['BB_Lower'] > df['KC_Lower'])
 
-    # 2. RSI 動態波段背離掃描 (尋找跌無可跌的左側)
+    # 2. RSI 動態波段背離
     df['Price_Min_5'] = df['Close'].rolling(window=5).min()
     df['RSI_Min_5'] = df['RSI'].rolling(window=5).min()
     df['Prev_Price_Min'] = df['Price_Min_5'].shift(5).rolling(window=15).min()
@@ -52,8 +52,7 @@ def add_advanced_indicators(df, market_ret_20=None):
     df['Liquidity_Sweep_Bull'] = (df['Low'] < df['Swing_Low_20']) & (df['Close'] > df['Swing_Low_20'])
     df['FVG_Bull'] = (df['Low'] > df['High'].shift(2)) & (df['Close'] > df['Open'])
     
-    # 🌟 4. 新增：量縮回踩支撐 (Low Volume Pullback) - 最完美的安全進場點
-    # 邏輯：維持在月線之上(趨勢偏多)，今日價格下跌，且成交量顯著萎縮(小於5日均量80%)
+    # 4. 量縮回踩支撐 (Low Volume Pullback)
     df['Price_Drop'] = df['Close'] < prev_close
     df['Low_Vol_Pullback'] = (df['Close'] > df['SMA_20']) & df['Price_Drop'] & (df['Volume'] < df['Vol_SMA5'] * 0.8)
 
@@ -75,33 +74,45 @@ def add_advanced_indicators(df, market_ret_20=None):
     w_macd = w_ema12 - w_ema26
     df['Weekly_Trend_Up'] = w_macd > w_macd.ewm(span=45, adjust=False).mean()
 
-    # ==========================================
-    # 🎯 終極優化：潛伏型 AI 評分矩陣 (滿分 100)
-    # 取消大漲與爆量追高的分數，將分數配給「潛伏壓縮」與「量縮回踩」
-    # ==========================================
+    # 🎯 潛伏型 AI 評分矩陣 (滿分 100)
     df['Score'] = 0
-    # A. 基礎防護 (20分)
-    df.loc[df['Close'] > df['SMA_20'], 'Score'] += 10                 # 站穩月線 (長線保護)
-    df.loc[df['RS_Index'] > 0.0, 'Score'] += 10                       # 跑贏大盤 (相對強勢)
+    df.loc[df['Close'] > df['SMA_20'], 'Score'] += 10                 
+    df.loc[df['RS_Index'] > 0.0, 'Score'] += 10                       
+    df.loc[df['Broker_Concentration'] > 0.2, 'Score'] += 15           
+    df.loc[df['Squeeze_On'] == True, 'Score'] += 15                   
+    df.loc[df['Low_Vol_Pullback'] == True, 'Score'] += 20             
+    df.loc[df['Bullish_Div'] == True, 'Score'] += 15                  
+    df.loc[df['Liquidity_Sweep_Bull'] == True, 'Score'] += 15         
     
-    # B. 主力暗中建倉痕跡 (30分)
-    df.loc[df['Broker_Concentration'] > 0.2, 'Score'] += 15           # 贏家分點持續囤貨
-    df.loc[df['Squeeze_On'] == True, 'Score'] += 15                   # 🌟 正在極度壓縮中 (尚未爆發，適合潛伏)
-    
-    # C. 完美左側/回測進場點 (50分) - 這決定了勝率期待值
-    df.loc[df['Low_Vol_Pullback'] == True, 'Score'] += 20             # 🌟 量縮回踩 (最好、最安全的進場點)
-    df.loc[df['Bullish_Div'] == True, 'Score'] += 15                  # RSI底背離 (跌無可跌)
-    df.loc[df['Liquidity_Sweep_Bull'] == True, 'Score'] += 15         # 破底翻 (主力剛洗盤完畢)
-
-    # 🚨 懲罰機制 (過熱降溫)
-    # 如果今天已經噴出大於 5%，或者成交量大於均量 2.5 倍，強制扣 15 分，防止追高
+    # 懲罰過熱追高
     df.loc[(df['Close'] - prev_close) / prev_close > 0.05, 'Score'] -= 15
     df.loc[df['Volume'] > df['Vol_SMA5'] * 2.5, 'Score'] -= 15
-
-    # 確保分數在 0~100 之間
     df['Score'] = df['Score'].clip(0, 100)
 
     df['Res_20'] = df['High'].shift(1).rolling(20).max()
     df['Sup_20'] = df['Low'].shift(1).rolling(20).min()
+    
+    return df
+
+# 🚀 全新擴充：小時區 (1h) 微觀動能演算法
+def add_intraday_indicators(df):
+    df = df.dropna(subset=['Close', 'Volume']).copy()
+    if df.empty or len(df) < 10: 
+        return df
+    
+    # 1. 小時區均線與成交量
+    df['SMA_20_1h'] = df['Close'].rolling(20).mean()
+    df['Vol_SMA5_1h'] = df['Volume'].rolling(5).mean()
+    
+    # 2. 小時區 MACD (捕捉極短線轉折)
+    df['MACD_1h'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+    df['Signal_1h'] = df['MACD_1h'].ewm(span=9, adjust=False).mean()
+    
+    # 3. 🎯 微觀狙擊板機判定 (Micro-Structure Breakout Trigger)
+    # 邏輯：小時 K 線收盤站上小時均線，且 MACD 剛發生金叉，且量能放大
+    df['MACD_Cross_Up'] = (df['MACD_1h'] > df['Signal_1h']) & (df['MACD_1h'].shift(1) <= df['Signal_1h'].shift(1))
+    df['Vol_Surge_1h'] = df['Volume'] > (df['Vol_SMA5_1h'] * 1.5)
+    
+    df['Micro_Sniper_Trigger'] = (df['Close'] > df['SMA_20_1h']) & (df['MACD_Cross_Up'] | df['Vol_Surge_1h'])
     
     return df
