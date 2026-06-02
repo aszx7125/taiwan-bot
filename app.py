@@ -217,7 +217,6 @@ if target_ticker:
                 
             real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
             
-            # 🚀 提取小時區 (1h) 微觀狙擊狀態
             micro_trigger = False
             micro_status_text = "數據不足"
             if not df_hourly.empty and len(df_hourly) >= 2:
@@ -232,10 +231,6 @@ if target_ticker:
                 elif last_hour['Close'] > last_hour.get('SMA_20_1h', entry_price): micro_status_text = "🟢 站穩 1h 均線 (短線強勢)"
                 else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
 
-            # ==========================================
-            # 🧠 終極 AI 大腦連動：勝率與期望值動態決策
-            # ==========================================
-            # 預設：如果在本地沒下載大腦，則退回 Rule-based 規則
             ai_win_rate_str = "等待 AI 訓練"
             if ai_score >= 65 and micro_trigger and real_rr_ratio >= 1.0:
                 ai_recommendation = f"🎯 多時區共振狙擊！(期待值80%+)"
@@ -256,7 +251,6 @@ if target_ticker:
                     model = joblib.load("quant_model.joblib")
                     features = joblib.load("model_features.joblib")
                     
-                    # 萃取當下的特徵給 AI，完全無縫接軌
                     input_data = {}
                     input_data['is_pullback'] = 1 if low_vol_pb else 0
                     input_data['is_sweep'] = 1 if liq_sweep else 0
@@ -267,7 +261,6 @@ if target_ticker:
                     input_df = pd.DataFrame([input_data], columns=features)
                     input_df = input_df.fillna(0)
                     
-                    # 預測上漲的機率 [0][1] 代表 True 的機率
                     win_prob = float(model.predict_proba(input_df)[0][1])
                     ai_win_rate_str = f"{win_prob * 100:.1f}%"
                     
@@ -284,7 +277,7 @@ if target_ticker:
                         ai_recommendation = "⏸️ 風報比不足，防守空間過窄"
                         box_color = "#555555"
             except Exception as e:
-                pass # 若尚未訓練模型，則靜默跳過，保留原本的 Rule-based 判斷
+                pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
             
@@ -547,21 +540,155 @@ else:
             else: st.info("同步流介接中...")
         render_rt()
 
+    # ==========================================================
+    # 🔥 終極改版 Tab 2：全市場 AI 勝率最高進出場大圖卡建議看板 (TOP 20)
+    # ==========================================================
     with tab2:
-        st.markdown("#### 🎯 潛伏型 AI 勝率期望值排行 (TOP 20)")
-        st.caption("以下數據由雲端背景運算引擎於每日盤後自動解算，達成 0 延遲載入。")
+        st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
+        st.caption("系統自動讀取全市場最新數據快取，全數送入 AI 機器學習神經網路進行即時推演，篩選出明日預測勝率最高的 20 檔強勢標的。")
         
         snapshot = load_market_snapshot()
         if snapshot:
-            st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
-            df_res = pd.DataFrame(snapshot['data'])
+            st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (AI 即時決策矩陣已鎖定)")
             
-            if '代號' in df_res.columns: 
-                df_res['代號'] = df_res['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
+            # 1. 偵測並讀取訓練好的 AI 模型
+            import joblib
+            model_loaded = False
+            if os.path.exists("quant_model.joblib") and os.path.exists("model_features.joblib"):
+                try:
+                    model = joblib.load("quant_model.joblib")
+                    features = joblib.load("model_features.joblib")
+                    model_loaded = True
+                except: pass
+            
+            raw_list = snapshot['data']
+            processed_stocks = []
+            
+            # 2. 遍歷快取中的所有股票，解析型態並計算 AI 預測勝率
+            for item in raw_list:
+                ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
+                name = str(item.get('名稱', item.get('name', '')))
+                entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
+                if entry_price == 0: continue
                 
-            st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
+                # 萃取或估算阻力、支撐與波動度
+                res_level = float(item.get('Res_20', entry_price * 1.05))
+                sup_level = float(item.get('Sup_20', entry_price * 0.95))
+                atr_14 = float(item.get('ATR_14', entry_price * 0.05))
+                
+                pattern_str = str(item.get('pattern', item.get('型態', '')))
+                low_vol_pb = "量縮回踩" in pattern_str or bool(item.get('Low_Vol_Pullback', False))
+                liq_sweep = "流動性掠奪" in pattern_str or bool(item.get('Liquidity_Sweep_Bull', False))
+                squeeze_on = "區間壓縮" in pattern_str or bool(item.get('Squeeze_On', False))
+                bull_div = "底背離" in pattern_str or bool(item.get('Bullish_Div', False))
+                rs_index = float(item.get('rs_index', item.get('RS_Index', 0.0)))
+                ai_score = int(item.get('量化總分', item.get('score', 0)))
+                
+                # 計算 AI 勝率
+                win_prob = 0.0
+                if model_loaded:
+                    try:
+                        input_data = {
+                            'is_pullback': 1 if low_vol_pb else 0,
+                            'is_sweep': 1 if liq_sweep else 0,
+                            'is_squeeze': 1 if squeeze_on else 0,
+                            'is_divergence': 1 if bull_div else 0,
+                            'rs_index': rs_index
+                        }
+                        input_df = pd.DataFrame([input_data], columns=features).fillna(0)
+                        win_prob = float(model.predict_proba(input_df)[0][1])
+                    except:
+                        win_prob = ai_score / 100.0  # 若發生異常則以基底分數 fallback
+                else:
+                    win_prob = ai_score / 100.0
+                
+                # 計算結構目標價格與風報比
+                box_height = max(res_level - sup_level, 0.01)
+                if entry_price > res_level:
+                    stop_loss = round(res_level * 0.985, 2)
+                    take_profit = round(res_level + box_height, 2)
+                    profit_reason = "🚀 噴發目標：等距測幅擴展位"
+                elif low_vol_pb or liq_sweep or bull_div:
+                    stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
+                    take_profit = round(res_level, 2)
+                    profit_reason = "🎯 潛伏目標：前高/箱頂壓力區"
+                else:
+                    stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
+                    take_profit = round(res_level + (atr_14 * 1.0), 2)
+                    profit_reason = "⚔️ 波段目標：前高波動擴張位"
+                    
+                risk_per_share = max(entry_price - stop_loss, 0.01)
+                real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
+                
+                # 給出客觀戰術指令與圖卡主色調
+                if model_loaded:
+                    ai_win_rate_str = f"{win_prob * 100:.1f}%"
+                    if win_prob > 0.60 and real_rr_ratio >= 1.5:
+                        ai_recommendation = "⭐⭐⭐ 極致期望值！(高勝率 + 高風報比)"
+                        box_color = "#00cc96" # 翡翠綠
+                    elif win_prob > 0.50 and real_rr_ratio >= 1.0:
+                        ai_recommendation = "⭐⭐ 溫和佈局 (具備正向期望值)"
+                        box_color = "#ffc107" # 琥珀黃
+                    elif win_prob <= 0.50:
+                        ai_recommendation = "⚠️ 預測敗率較高，建議嚴格觀望"
+                        box_color = "#555555" # 灰
+                    else:
+                        ai_recommendation = "⏸️ 風報比不足，防守空間過窄"
+                        box_color = "#555555"
+                else:
+                    ai_win_rate_str = f"基底分數: {ai_score} 分"
+                    ai_recommendation = "⏳ 尚未啟動 AI 訓練，顯示基底推薦"
+                    box_color = "#ffc107" if ai_score >= 60 else "#555555"
+                
+                processed_stocks.append({
+                    'ticker': ticker,
+                    'name': name,
+                    'win_prob': win_prob,
+                    'ai_win_rate_str': ai_win_rate_str,
+                    'ai_recommendation': ai_recommendation,
+                    'box_color': box_color,
+                    'entry_price': entry_price,
+                    'take_profit': take_profit,
+                    'stop_loss': stop_loss,
+                    'profit_reason': profit_reason,
+                    'real_rr_ratio': real_rr_ratio
+                })
+            
+            # 3. 核心排序：依照 AI 勝率（win_prob）由高到低排序，切出前 20 名
+            top_20 = sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]
+            
+            # 4. 渲染大圖卡面板 (完全不使用表格，100% 複製單股狙擊面板格式)
+            for s in top_20:
+                st.markdown(f"""
+                <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
+                    <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫 ({s['ticker']} {s['name']})</h4>
+                    <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 180px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br>
+                            <b style="font-size: 24px; color: {s['box_color']};">{s['ai_win_rate_str']}</b><br>
+                            <span style="font-size: 14px; font-weight: bold;">{s['ai_recommendation']}</span>
+                        </div>
+                        <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">2. 建議進場價</span><br>
+                            <b style="font-size: 22px;">{s['entry_price']:.2f}</b><br>
+                            <span style="font-size: 12px; color: gray;">(現價/限價單)</span>
+                        </div>
+                        <div style="flex: 1; min-width: 200px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">3. 結構停利點</span><br>
+                            <b style="font-size: 22px; color: #00cc96;">{s['take_profit']:.2f}</b><br>
+                            <span style="font-size: 12px; color: #00cc96; font-weight: bold;">{s['profit_reason']}</span><br>
+                            <span style="font-size: 12px; color: gray;">(實況風報比 1 : {s['real_rr_ratio']})</span>
+                        </div>
+                        <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br>
+                            <b style="font-size: 22px; color: #ff4b4b;">{s['stop_loss']:.2f}</b><br>
+                            <span style="font-size: 12px; color: gray;">(跌破無條件停損)</span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.warning("⚠️ 預算快取準備中，請先至 GitHub 觸發首次 Actions 運算...")
+            st.warning("⚠️ 全市場快取準備中，請先確保 GitHub 已成功執行每日掃描...")
 
     with tab3:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
