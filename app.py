@@ -60,7 +60,6 @@ if target_ticker:
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
     with st.spinner(f"正在分析 {target_ticker}... 多維度時區運算中"):
-        # 🚀 接收日線與小時線的雙重回傳
         df_daily, df_hourly, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
         
         if df_daily.empty or len(df_daily) < 40: 
@@ -71,7 +70,7 @@ if target_ticker:
 
             today, yesterday = df_daily.iloc[-1], df_daily.iloc[-2]
             
-            # 🛡️ 裝甲防護層 (確保渲染安全)
+            # 🛡️ 裝甲防護層 
             try:
                 entry_price = float(today.get('Close', 0.0))
                 t_high = float(today.get('High', entry_price))
@@ -111,11 +110,14 @@ if target_ticker:
             
             # 日線巨觀狀態提取
             bull_div = bool(today.get('Bullish_Div', False))
+            bear_div = bool(today.get('Bearish_Div', False))
+            div_status = "🟢 底背離 (空頭力竭，準備反轉)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
+
             liq_sweep = bool(today.get('Liquidity_Sweep_Bull', False))
             low_vol_pb = bool(today.get('Low_Vol_Pullback', False))
             squeeze_on = bool(today.get('Squeeze_On', False))
             
-            # 🚀 提取小時區 (1h) 微觀狙擊狀態
+            # 提取小時區 (1h) 微觀狙擊狀態
             micro_trigger = False
             micro_status_text = "數據不足"
             if not df_hourly.empty and len(df_hourly) >= 2:
@@ -151,10 +153,10 @@ if target_ticker:
                 
             real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
             
-            # 🌟 三重濾網最終判定：結合日線大週期(分數)與小時線小週期(板機)
+            # 三重濾網最終判定
             if ai_score >= 65 and micro_trigger and real_rr_ratio >= 1.0:
                 trade_action = f"🎯 多時區共振狙擊！(期待值80%+)"
-                box_color = "#ff4b4b" # 紅色警戒表示極度確定的買點
+                box_color = "#ff4b4b" 
             elif ai_score >= 70 and real_rr_ratio >= 1.2:
                 trade_action = f"✅ 極高勝率潛伏區間"
                 box_color = "#00cc96"
@@ -226,6 +228,7 @@ if target_ticker:
             
             with t2:
                 st.markdown("### 🔍 多週期策略回測與實況對撞")
+                # 🌟 完整修復：保留三大週期的極值對比與勝率回撤計算
                 sub_t1, sub_t2, sub_t3 = st.tabs(["1️⃣ 昨日對撞 (1日)", "5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
                 
                 with sub_t1:
@@ -233,6 +236,18 @@ if target_ticker:
                     col_r1, col_r2 = st.columns(2)
                     with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{res_level:.2f}**\n- 支撐位: **{sup_level:.2f}**\n- 測幅目標: **{y_target:.2f}**")
                     with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{t_high:.2f}**\n- 最低價: **{t_low:.2f}**\n- 收盤現價: **{entry_price:.2f}**")
+
+                    if entry_price > res_level:
+                        if t_high >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位，並成功觸及波動測幅目標！")
+                        else: st.success(f"⭐⭐ **突破確認**：今日收盤站上壓力位，多頭防線推進。")
+                    elif entry_price < sup_level:
+                        st.error(f"⚠️ **跌破防線**：今日收盤跌破支撐位，觸發停損機制。")
+                    elif t_high >= res_level and entry_price <= res_level:
+                        st.warning(f"👀 **假突破 / 壓力沉重**：今日盤中突破壓力，但收盤未能站穩。")
+                    elif t_low <= sup_level and entry_price >= sup_level:
+                        st.info(f"🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
+                    else:
+                        st.write(f"⏸️ **區間震盪**：今日走勢在預設箱體內震盪，符合潛伏觀望預期。")
                 
                 with sub_t2:
                     if len(df_daily) >= 26:
@@ -241,7 +256,8 @@ if target_ticker:
                         try:
                             w_res = float(d_base.get('Res_20', entry_price))
                             w_sup = float(d_base.get('Sup_20', entry_price))
-                            w_target = w_res + float(d_base.get('ATR_14', 1.0))
+                            w_atr = float(d_base.get('ATR_14', 1.0))
+                            w_target = w_res + w_atr
                             max_h_5d = float(d_5_days['High'].max())
                             min_l_5d = float(d_5_days['Low'].min())
                             d_base_close = float(d_base.get('Close', 1.0))
@@ -249,6 +265,10 @@ if target_ticker:
                             col_w1, col_w2 = st.columns(2)
                             with col_w1: st.info(f"**5 天前預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
                             with col_w2: st.warning(f"**本週實況極值 (近5日)**\n- 波段最高: **{max_h_5d:.2f}**\n- 波段最低: **{min_l_5d:.2f}**\n- 目前收盤: **{entry_price:.2f}**")
+                            
+                            max_gain = ((max_h_5d - d_base_close) / d_base_close) * 100
+                            max_loss = ((min_l_5d - d_base_close) / d_base_close) * 100
+                            st.markdown(f"**📈 本週最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain:.2f}%</span> | **📉 本週最大潛在回撤:** <span style='color:#00cc96;'>{max_loss:.2f}%</span>", unsafe_allow_html=True)
                         except: st.warning("⚠️ 此區間資料存在空值，無法計算。")
                     else:
                         st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
@@ -260,7 +280,8 @@ if target_ticker:
                         try:
                             m_res = float(d_base_m.get('Res_20', entry_price))
                             m_sup = float(d_base_m.get('Sup_20', entry_price))
-                            m_target = m_res + float(d_base_m.get('ATR_14', 1.0))
+                            m_atr = float(d_base_m.get('ATR_14', 1.0))
+                            m_target = m_res + m_atr
                             max_h_20d = float(d_20_days['High'].max())
                             min_l_20d = float(d_20_days['Low'].min())
                             d_base_m_close = float(d_base_m.get('Close', 1.0))
@@ -268,6 +289,10 @@ if target_ticker:
                             col_m1, col_m2 = st.columns(2)
                             with col_m1: st.info(f"**20 天前預測基準**\n- 當時壓力: **{m_res:.2f}**\n- 當時支撐: **{m_sup:.2f}**\n- 測幅目標: **{m_target:.2f}**")
                             with col_m2: st.warning(f"**本月實況極值 (近20日)**\n- 波段最高: **{max_h_20d:.2f}**\n- 波段最低: **{min_l_20d:.2f}**\n- 目前收盤: **{entry_price:.2f}**")
+                            
+                            max_gain_m = ((max_h_20d - d_base_m_close) / d_base_m_close) * 100
+                            max_loss_m = ((min_l_20d - d_base_m_close) / d_base_m_close) * 100
+                            st.markdown(f"**📈 本月最大潛在獲利:** <span style='color:#ff4b4b;'>+{max_gain_m:.2f}%</span> | **📉 本月最大潛在回撤:** <span style='color:#00cc96;'>{max_loss_m:.2f}%</span>", unsafe_allow_html=True)
                         except: st.warning("⚠️ 此區間資料存在空值，無法計算。")
                     else:
                         st.warning("⚠️ 歷史數據深度不足，無法進行單月回測。")
