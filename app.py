@@ -27,7 +27,6 @@ if not csv_df.empty:
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
-# 🚀 雲端背景快取載入器
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
         try:
@@ -37,14 +36,11 @@ def load_market_snapshot():
             return None
     return None
 
-# 🚀 策略回測實驗室：自動從 Supabase 拉取歷史記憶並運算期望值 (支援雙重金鑰)
-@st.cache_data(ttl=3600*6) # 每 6 小時重新抓取，確保網頁效能
+@st.cache_data(ttl=3600*6) 
 def fetch_and_calculate_backtest(holding_period=5, threshold=60):
     try:
         from supabase import create_client
-        import os
         
-        # 兼容本地端與 Streamlit Cloud 金鑰
         url = os.environ.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_KEY")
         if not url or not key:
@@ -133,7 +129,7 @@ if target_ticker:
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
-    with st.spinner(f"正在分析 {target_ticker}... 多維度時區運算中"):
+    with st.spinner(f"正在分析 {target_ticker}... 多維度時區運算與 AI 預測中"):
         df_daily, df_hourly, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
         
         if df_daily.empty or len(df_daily) < 40: 
@@ -190,9 +186,9 @@ if target_ticker:
             squeeze_on = bool(today.get('Squeeze_On', False))
             
             smc_status = []
-            if low_vol_pb: smc_status.append("📉 量縮回踩 (絕佳佈局點)")
-            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮 (暴風雨前夕)")
-            if liq_sweep: smc_status.append("🌊 流動性掠奪 (主力洗盤完畢)")
+            if low_vol_pb: smc_status.append("📉 量縮回踩")
+            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮")
+            if liq_sweep: smc_status.append("🌊 流動性掠奪")
             smc_text = " + ".join(smc_status) if smc_status else "一般常態震盪"
             
             block_trade = bool(today.get('Block_Trade_Inflow', False))
@@ -236,45 +232,86 @@ if target_ticker:
                 elif last_hour['Close'] > last_hour.get('SMA_20_1h', entry_price): micro_status_text = "🟢 站穩 1h 均線 (短線強勢)"
                 else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
 
+            # ==========================================
+            # 🧠 終極 AI 大腦連動：勝率與期望值動態決策
+            # ==========================================
+            # 預設：如果在本地沒下載大腦，則退回 Rule-based 規則
+            ai_win_rate_str = "等待 AI 訓練"
             if ai_score >= 65 and micro_trigger and real_rr_ratio >= 1.0:
-                trade_action = f"🎯 多時區共振狙擊！(期待值80%+)"
+                ai_recommendation = f"🎯 多時區共振狙擊！(期待值80%+)"
                 box_color = "#ff4b4b" 
             elif ai_score >= 70 and real_rr_ratio >= 1.2:
-                trade_action = f"✅ 極高勝率潛伏區間"
+                ai_recommendation = f"✅ 極高勝率潛伏區間"
                 box_color = "#00cc96"
             elif ai_score >= 55 and real_rr_ratio >= 1.0:
-                trade_action = "⚠️ 溫和試單 (等待小時區發動)"
+                ai_recommendation = "⚠️ 溫和試單 (等待小時區發動)"
                 box_color = "#ffc107"
             else:
-                trade_action = "⏸️ 勝率偏低或追高風險，強制觀望"
+                ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
                 box_color = "#555555"
+
+            try:
+                import joblib
+                if os.path.exists("quant_model.joblib") and os.path.exists("model_features.joblib"):
+                    model = joblib.load("quant_model.joblib")
+                    features = joblib.load("model_features.joblib")
+                    
+                    # 萃取當下的特徵給 AI，完全無縫接軌
+                    input_data = {}
+                    input_data['is_pullback'] = 1 if low_vol_pb else 0
+                    input_data['is_sweep'] = 1 if liq_sweep else 0
+                    input_data['is_squeeze'] = 1 if squeeze_on else 0
+                    input_data['is_divergence'] = 1 if bull_div else 0
+                    input_data['rs_index'] = float(rs_index) if not pd.isna(rs_index) else 0.0
+                    
+                    input_df = pd.DataFrame([input_data], columns=features)
+                    input_df = input_df.fillna(0)
+                    
+                    # 預測上漲的機率 [0][1] 代表 True 的機率
+                    win_prob = float(model.predict_proba(input_df)[0][1])
+                    ai_win_rate_str = f"{win_prob * 100:.1f}%"
+                    
+                    if win_prob > 0.60 and real_rr_ratio >= 1.5:
+                        ai_recommendation = "⭐⭐⭐ 極致期望值！(高勝率 + 高風報比)"
+                        box_color = "#00cc96"
+                    elif win_prob > 0.50 and real_rr_ratio >= 1.0:
+                        ai_recommendation = "⭐⭐ 溫和佈局 (具備正向期望值)"
+                        box_color = "#ffc107"
+                    elif win_prob <= 0.50:
+                        ai_recommendation = "⚠️ 預測敗率較高，建議嚴格觀望"
+                        box_color = "#555555"
+                    else:
+                        ai_recommendation = "⏸️ 風報比不足，防守空間過窄"
+                        box_color = "#555555"
+            except Exception as e:
+                pass # 若尚未訓練模型，則靜默跳過，保留原本的 Rule-based 判斷
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
             
             st.markdown(f"""
             <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
-                <h4 style="color: {box_color}; margin-top: 0;">🎯 三重濾網戰術計畫 (日線 x 小時線)</h4>
+                <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4>
                 <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
                     <div style="flex: 1; min-width: 180px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">1. 最終戰術指令</span><br>
-                        <b style="font-size: 18px; color: {box_color};">{trade_action}</b><br>
-                        <span style="font-size: 14px;">日K分數: {ai_score} | 1h狀態: {micro_status_text.split(' ')[0]}</span>
+                        <span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br>
+                        <b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br>
+                        <span style="font-size: 14px; font-weight: bold;">{ai_recommendation}</span>
                     </div>
                     <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">2. 狙擊進場價格</span><br>
+                        <span style="color: gray; font-size: 14px;">2. 建議進場價</span><br>
                         <b style="font-size: 22px;">{entry_price:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(現貨/限價單)</span>
+                        <span style="font-size: 12px; color: gray;">(現價/限價單)</span>
                     </div>
                     <div style="flex: 1; min-width: 200px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">3. 盤面合理獲利點</span><br>
+                        <span style="color: gray; font-size: 14px;">3. 結構停利點</span><br>
                         <b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br>
                         <span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br>
                         <span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span>
                     </div>
                     <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">4. 嚴格止損防禦價</span><br>
+                        <span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br>
                         <b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(日K微觀防守點)</span>
+                        <span style="font-size: 12px; color: gray;">(跌破無條件停損)</span>
                     </div>
                 </div>
             </div>
@@ -561,7 +598,6 @@ else:
         st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
         st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
         
-        # 🚀 互動式門檻滑桿 (預設 50 分以確保第一時間能看到數據)
         test_threshold = st.slider("🎚️ 設定 AI 分數進場門檻 (若無數據，請嘗試調低分數)", min_value=20, max_value=100, value=50, step=5)
         
         b_col1, b_col2 = st.columns([1, 1])
