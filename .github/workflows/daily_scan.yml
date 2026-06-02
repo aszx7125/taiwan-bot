@@ -5,7 +5,6 @@ on:
     - cron: '30 6 * * 1-5'
   workflow_dispatch:
 
-# 🚀 修復 1：強制使用 Node.js 24，消滅系統廢棄警告
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -34,9 +33,14 @@ jobs:
       run: |
         python backend_updater.py
 
+    # 🛡️ 裝甲防護：加入檔案存在檢查，避免 git add 找不到檔案而觸發 Exit code 1
     - name: 💾 將運算結果 (JSON) 寫回儲存庫
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "Quant Bot"
-        git add market_snapshot.json
-        git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 自動更新全市場量化快取 [skip ci]" && git push)
+        if [ -f market_snapshot.json ]; then
+          git config --local user.email "action@github.com"
+          git config --local user.name "Quant Bot"
+          git add market_snapshot.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 自動更新全市場量化快取 [skip ci]" && git push)
+        else
+          echo "⚠️ market_snapshot.json 檔案未生成，跳過 Commit。"
+        fi

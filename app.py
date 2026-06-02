@@ -4,13 +4,15 @@ import numpy as np
 import datetime
 import random 
 import concurrent.futures
-import requests  # 導入原生請求，供富果即時流量調用
+import requests
+import json
+import os
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES, INDUSTRY_CHAINS
 from data_fetcher import (
     load_all_market_tickers, get_market_index_data, get_market_summary, 
     get_kline_with_fugle, get_stock_news, get_macro_news, run_robust_market_scan, 
-    get_precalculated_market_ret, fetch_yahoo_robust  # 🚀 關鍵：導入輕量爬蟲核心
+    get_precalculated_market_ret, fetch_yahoo_robust
 )
 
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
@@ -24,9 +26,6 @@ if not csv_df.empty:
     for index, row in csv_df.iterrows():
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
-
-import json
-import os
 
 # 🚀 雲端背景快取載入器
 def load_market_snapshot():
@@ -381,58 +380,56 @@ else:
         def render_rt():
             rows = []
             
-            def fetch_single_rt(t):
-                clean_ticker = t.split('.')[0]
-                name_str = f"<b>{st.session_state.stock_names.get(clean_ticker, clean_ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>"
-                
-                # 🚀 終極解法：繞過 Yahoo，直接呼叫富果原生即時報價 API (極速、不限流)
-                if FUGLE_API_KEY:
-                    try:
-                        res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
-                        if res.status_code == 200:
-                            data = res.json()
-                            
-                            # 提取即時現價 (若無 closePrice 則取盤中 lastTrade)
-                            rt_price = data.get('closePrice')
-                            if not rt_price and data.get('lastTrade'):
-                                rt_price = data.get('lastTrade').get('price')
-                                
-                            # 提取昨收價與今日總量
-                            prev_close = data.get('previousClose') or data.get('referencePrice')
-                            rt_vol = data.get('total', {}).get('tradeVolume', 0)
-                            
-                            if rt_price and prev_close:
-                                rt_price, prev_close = float(rt_price), float(prev_close)
-                                change_amt = rt_price - prev_close
-                                change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
-                                
-                                price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
-                                change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                                
-                                return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
-                    except: pass
-
-                # 備用方案：若無 Fugle Key 或是 Fugle 斷線，才回去找 Yahoo
+            # 🚀 修復：在主執行緒先把字典複製出來，避免背景執行緒無法讀取 st.session_state
+            current_names = st.session_state.stock_names.copy()
+            
+            def fetch_single_rt(t, names_dict):
                 try:
-                    df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
-                    if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
-                    if not df.empty and len(df) >= 2:
-                        c, p = df.iloc[-1], df.iloc[-2]
-                        rt_price, prev_close = float(c['Close']), float(p['Close'])
-                        rt_vol = float(c['Volume'])
-                        change_amt = rt_price - prev_close
-                        change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
-                        
-                        price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
-                        change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                        return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
+                    clean_ticker = t.split('.')[0]
+                    # 安全地使用剛剛複製出來的靜態字典
+                    name_str = f"<b>{names_dict.get(clean_ticker, clean_ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>"
+                    
+                    if FUGLE_API_KEY:
+                        try:
+                            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
+                            if res.status_code == 200:
+                                data = res.json()
+                                rt_price = data.get('closePrice')
+                                if not rt_price and data.get('lastTrade'): rt_price = data.get('lastTrade').get('price')
+                                prev_close = data.get('previousClose') or data.get('referencePrice')
+                                rt_vol = data.get('total', {}).get('tradeVolume', 0)
+                                
+                                if rt_price and prev_close:
+                                    rt_price, prev_close = float(rt_price), float(prev_close)
+                                    change_amt = rt_price - prev_close
+                                    change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
+                                    
+                                    price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
+                                    change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
+                                    return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
+                        except: pass
+
+                    # 備用：若無法使用富果，呼叫輕量級的 Yahoo 5日數據
+                    try:
+                        df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
+                        if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
+                        if not df.empty and len(df) >= 2:
+                            c, p = df.iloc[-1], df.iloc[-2]
+                            rt_price, prev_close = float(c['Close']), float(p['Close'])
+                            rt_vol = float(c['Volume'])
+                            change_amt = rt_price - prev_close
+                            change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
+                            
+                            price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
+                            change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
+                            return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
+                    except: pass
                 except: pass
-                
                 return None
 
-            # 🛠️ 15 條快線併發
+            # 🛠️ 15 條快線併發，並將 current_names 參數安全地傳入子執行緒
             with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-                futures = [executor.submit(fetch_single_rt, t) for t in cluster_stocks]
+                futures = [executor.submit(fetch_single_rt, t, current_names) for t in cluster_stocks]
                 for future in concurrent.futures.as_completed(futures):
                     res = future.result()
                     if res: rows.append(res)
