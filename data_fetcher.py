@@ -164,7 +164,7 @@ def run_robust_market_scan(tickers, conds, p_bar, s_text, names_dict, market_dat
     completed = 0
     market_ret_20 = get_precalculated_market_ret()
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=60) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_ret_20, conds, names_dict, mode): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
             completed += 1
