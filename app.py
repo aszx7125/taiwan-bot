@@ -37,13 +37,22 @@ def load_market_snapshot():
             return None
     return None
 
-# 🚀 策略回測實驗室：自動從 Supabase 拉取歷史記憶並運算期望值
-@st.cache_data(ttl=3600*6) # 每 6 小時才重新回測一次，確保網頁光速載入
-def fetch_and_calculate_backtest(holding_period=5, threshold=70):
+# 🚀 策略回測實驗室：自動從 Supabase 拉取歷史記憶並運算期望值 (支援雙重金鑰)
+@st.cache_data(ttl=3600*6) # 每 6 小時重新抓取，確保網頁效能
+def fetch_and_calculate_backtest(holding_period=5, threshold=60):
     try:
         from supabase import create_client
-        url = st.secrets.get("SUPABASE_URL")
-        key = st.secrets.get("SUPABASE_KEY")
+        import os
+        
+        # 兼容本地端與 Streamlit Cloud 金鑰
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            try:
+                url = st.secrets["SUPABASE_URL"]
+                key = st.secrets["SUPABASE_KEY"]
+            except: pass
+            
         if not url or not key: return {"status": "no_key"}
         
         supabase = create_client(url, key)
@@ -419,7 +428,6 @@ else:
         """)
             
     st.markdown("---")
-    # 🚀 擴充為 4 個主分頁，包含策略回測實驗室
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 潛伏型 AI 評分 (勝率排行)", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     with tab1:
@@ -463,10 +471,10 @@ else:
                         if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
                         if not df.empty and len(df) >= 2:
                             c, p = df.iloc[-1], df.iloc[-2]
-                            rt_price, prev_close = float(c['Close']), float(p['Close'])
+                            rt_price, float_p = float(c['Close']), float(p['Close'])
                             rt_vol = float(c['Volume'])
-                            change_amt = rt_price - prev_close
-                            change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
+                            change_amt = rt_price - float_p
+                            change_pct = (change_amt / float_p) * 100 if float_p > 0 else 0
                             
                             price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
                             change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
@@ -511,7 +519,6 @@ else:
             st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
             df_res = pd.DataFrame(snapshot['data'])
             
-            # 🚀 終極防呆：強制轉字串、清除小數點幽靈、清除空白
             if '代號' in df_res.columns: 
                 df_res['代號'] = df_res['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
                 
@@ -554,15 +561,22 @@ else:
         st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
         st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
         
+        # 🚀 互動式門檻滑桿 (預設 50 分以確保第一時間能看到數據)
+        test_threshold = st.slider("🎚️ 設定 AI 分數進場門檻 (若無數據，請嘗試調低分數)", min_value=20, max_value=100, value=50, step=5)
+        
         b_col1, b_col2 = st.columns([1, 1])
         with b_col1:
             st.markdown("##### ⏳ 短波段策略 (持倉 5 天)")
-            res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=70)
+            res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=test_threshold)
             
             if res_5d["status"] == "no_key":
-                st.warning("⚠️ 請至 Streamlit Secrets 設定 SUPABASE 金鑰以解鎖回測功能。")
+                st.error("⚠️ 找不到資料庫金鑰。如果您在本地端執行，請確保設定了環境變數。")
+            elif res_5d["status"] == "empty":
+                st.warning("⚠️ Supabase 資料庫完全是空的，請先執行 historical_injector.py。")
             elif res_5d["status"] == "pending":
-                st.info(f"⏸️ 歷史資料庫正在累積中。目前有 **{res_5d['pending_count']}** 筆訊號正在等待 5 天後的真實市場開獎。")
+                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。\n*(提示：若數量為 0，代表過去兩年沒有股票達到 {test_threshold} 分，請往左拉動滑桿)*")
+            elif res_5d["status"] == "error":
+                st.error(f"❌ 運算發生錯誤: {res_5d['msg']}")
             elif res_5d["status"] == "ready":
                 rr_ratio = abs(res_5d['avg_win'] / res_5d['avg_loss']) if res_5d['avg_loss'] != 0 else 0
                 st.markdown(f"""
@@ -578,10 +592,12 @@ else:
 
         with b_col2:
             st.markdown("##### 🈷️ 長波段策略 (持倉 20 天)")
-            res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=70)
+            res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=test_threshold)
             
             if res_20d["status"] == "pending":
-                st.info(f"⏸️ 歷史資料庫正在累積中。目前有 **{res_20d['pending_count']}** 筆訊號正在等待 20 天後的真實市場開獎。")
+                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待 20 天後的開獎。")
+            elif res_20d["status"] == "error":
+                st.error(f"❌ 運算發生錯誤: {res_20d['msg']}")
             elif res_20d["status"] == "ready":
                 rr_ratio = abs(res_20d['avg_win'] / res_20d['avg_loss']) if res_20d['avg_loss'] != 0 else 0
                 st.markdown(f"""
