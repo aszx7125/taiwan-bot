@@ -27,7 +27,7 @@ if not csv_df.empty:
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
-# 🚀 雲端背景快取載入器
+# 🚀 雲端背景快取載入器 (無 @st.cache_data 封印)
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
         try:
@@ -379,14 +379,11 @@ else:
         @st.fragment(run_every=datetime.timedelta(seconds=15))
         def render_rt():
             rows = []
-            
-            # 🚀 修復：在主執行緒先把字典複製出來，避免背景執行緒無法讀取 st.session_state
             current_names = st.session_state.stock_names.copy()
             
             def fetch_single_rt(t, names_dict):
                 try:
                     clean_ticker = t.split('.')[0]
-                    # 安全地使用剛剛複製出來的靜態字典
                     name_str = f"<b>{names_dict.get(clean_ticker, clean_ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>"
                     
                     if FUGLE_API_KEY:
@@ -409,7 +406,6 @@ else:
                                     return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
                         except: pass
 
-                    # 備用：若無法使用富果，呼叫輕量級的 Yahoo 5日數據
                     try:
                         df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
                         if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
@@ -427,7 +423,6 @@ else:
                 except: pass
                 return None
 
-            # 🛠️ 15 條快線併發，並將 current_names 參數安全地傳入子執行緒
             with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
                 futures = [executor.submit(fetch_single_rt, t, current_names) for t in cluster_stocks]
                 for future in concurrent.futures.as_completed(futures):
@@ -463,6 +458,7 @@ else:
         if snapshot:
             st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
             df_res = pd.DataFrame(snapshot['data'])
+            if '代號' in df_res.columns: df_res['代號'] = df_res['代號'].astype(str)
             st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
         else:
             st.warning("⚠️ 預算快取準備中，請先至 GitHub 觸發首次 Actions 運算...")
@@ -475,6 +471,8 @@ else:
         snapshot = load_market_snapshot()
         if snapshot:
             res_df = pd.DataFrame(snapshot['data'])
+            if '代號' in res_df.columns: res_df['代號'] = res_df['代號'].astype(str)
+            
             st.markdown("---")
             cols = st.columns(len(chain_data))
             
