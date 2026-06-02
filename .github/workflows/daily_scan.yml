@@ -36,19 +36,26 @@ jobs:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-    # 🚀 修復：加入 git pull --rebase，讓機器人在上傳前自動同步您的最新程式碼，避免版本衝突
+   # 🚀 終極修復：使用 Fetch + Reset 策略，徹底繞過 JSON 的合併衝突
     - name: 💾 將運算結果 (JSON) 寫回儲存庫
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "Quant Bot"
         
         if [ -f market_snapshot.json ]; then
+          # 1. 抓取遠端最新進度 (包含您可能剛剛 Push 的任何程式碼)
+          git fetch origin main
+          
+          # 2. 將本地時間線對齊遠端最新，但『保留』我們剛剛算好的最新 JSON 檔案
+          git reset origin/main
+          
+          # 3. 重新將覆蓋好的 JSON 加入提交序列
           git add market_snapshot.json
+          
           if [ -n "$(git status --porcelain market_snapshot.json)" ]; then
             git commit -m "🤖 自動更新全市場量化快取 [skip ci]"
-            # 在推播前，先拉取最新的 main 分支並將自己的 commit 疊加在頂端
-            git pull --rebase origin main
-            git push
+            # 4. 毫無衝突地將結果推播上去
+            git push origin main
             echo "✅ 資料已成功推送到倉庫！"
           else
             echo "✅ JSON 檔案無變更，無需 Commit。"
