@@ -72,12 +72,16 @@ if target_ticker:
             
             # ==========================================
             # 🛡️ 裝甲防護層：強制濾除 NaN 與安全轉型
-            # 確保 API 回傳缺失值時，UI 渲染不會崩潰
             # ==========================================
             try:
                 entry_price = float(today.get('Close', 0.0))
+                t_high = float(today.get('High', entry_price))
+                t_low = float(today.get('Low', entry_price))
                 y_close = float(yesterday.get('Close', entry_price))
+                
                 if pd.isna(entry_price): entry_price = 0.0
+                if pd.isna(t_high): t_high = entry_price
+                if pd.isna(t_low): t_low = entry_price
                 if pd.isna(y_close) or y_close == 0: y_close = entry_price if entry_price > 0 else 1.0
                 
                 vol_sma5 = float(today.get('Vol_SMA5', 1.0))
@@ -108,12 +112,10 @@ if target_ticker:
                 if pd.isna(broker_conc): broker_conc = 0.0
                 
             except Exception as e:
-                # 若發生極端資料格式錯誤，給予安全預設值
-                entry_price, y_close, vol_ratio, p_change = 0.0, 1.0, 1.0, 0.0
+                entry_price, y_close, t_high, t_low, vol_ratio, p_change = 0.0, 1.0, 0.0, 0.0, 1.0, 0.0
                 res_level, sup_level, box_height, atr_14 = 0.0, 0.0, 0.0, 0.0
                 res_tests, sup_tests, ai_score, rs_index, broker_conc = 0, 0, 0, 0.0, 0.0
             
-            # 型態標籤提取 (布林值不會產生 NaN 問題)
             bull_div = bool(today.get('Bullish_Div', False))
             bear_div = bool(today.get('Bearish_Div', False))
             div_status = "🟢 底背離 (空頭力竭，準備反轉)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
@@ -130,16 +132,12 @@ if target_ticker:
             
             block_trade = bool(today.get('Block_Trade_Inflow', False))
             
-            # 型態判定
             breakout_status = "區間震盪 (未突破)"
             if entry_price > res_level: breakout_status = "🚀 向上突破前高"
             elif entry_price < sup_level: breakout_status = "⚠️ 向下摜破前低"
             elif entry_price >= res_level * 0.98: breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
             elif entry_price <= sup_level * 1.02: breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
 
-            # ==========================================
-            # 🎯 AI 動態測幅與勝率期望值計算
-            # ==========================================
             atr_stop = entry_price - (1.5 * atr_14)
             structural_stop = sup_level * 0.985 
             stop_loss = round(min(atr_stop, structural_stop), 2)
@@ -230,8 +228,28 @@ if target_ticker:
             
             with t2:
                 st.markdown("### 🔍 多週期策略回測與實況對撞")
-                sub_t1, sub_t2 = st.tabs(["5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
+                # 🌟 修復核心：補回 1日、5日、20日 三大週期頁籤
+                sub_t1, sub_t2, sub_t3 = st.tabs(["1️⃣ 昨日對撞 (1日)", "5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
+                
                 with sub_t1:
+                    y_target = res_level + atr_14
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{res_level:.2f}**\n- 支撐位: **{sup_level:.2f}**\n- 測幅目標: **{y_target:.2f}**")
+                    with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{t_high:.2f}**\n- 最低價: **{t_low:.2f}**\n- 收盤現價: **{entry_price:.2f}**")
+
+                    if entry_price > res_level:
+                        if t_high >= y_target: st.success(f"⭐⭐⭐ **超前達標**：今日強勢突破壓力位，並成功觸及波動測幅目標！")
+                        else: st.success(f"⭐⭐ **突破確認**：今日收盤站上壓力位，多頭防線推進。")
+                    elif entry_price < sup_level:
+                        st.error(f"⚠️ **跌破防線**：今日收盤跌破支撐位，觸發停損機制。")
+                    elif t_high >= res_level and entry_price <= res_level:
+                        st.warning(f"👀 **假突破 / 壓力沉重**：今日盤中突破壓力，但收盤未能站穩。")
+                    elif t_low <= sup_level and entry_price >= sup_level:
+                        st.info(f"🛡️ **支撐有守 (破底翻)**：今日下探支撐，但獲得買盤承接拉回。")
+                    else:
+                        st.write(f"⏸️ **區間震盪**：今日走勢在預設箱體內震盪，符合潛伏觀望預期。")
+                
+                with sub_t2:
                     if len(df) >= 26:
                         d_base = df.iloc[-6]
                         d_5_days = df.iloc[-5:]
@@ -255,7 +273,7 @@ if target_ticker:
                     else:
                         st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
 
-                with sub_t2:
+                with sub_t3:
                     if len(df) >= 45:
                         d_base_m = df.iloc[-21] 
                         d_20_days = df.iloc[-20:]
