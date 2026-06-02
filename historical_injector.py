@@ -1,5 +1,6 @@
 import pandas as pd
 import json
+import numpy as np
 import datetime
 import os
 import concurrent.futures
@@ -33,6 +34,8 @@ def process_single_ticker(t, days_back, market_ret_20, names_dict, start_date):
         
         # 3. 篩選出我們需要回補的目標天數範圍
         df = df[df.index >= start_date]
+        # 🚀 神級防護罩：清除所有的 NaN 與 Infinity，強制轉換為 JSON 看得懂的 0
+        df = df.replace([np.inf, -np.inf], 0).fillna(0)
         
         # 4. 將每一天的特徵打包成資料庫格式
         for date_timestamp, row in df.iterrows():
