@@ -296,32 +296,47 @@ if target_ticker:
                         except: st.warning("⚠️ 此區間資料存在空值，無法計算。")
                     else:
                         st.warning("⚠️ 歷史數據深度不足，無法進行單月回測。")
+                with t3:
+                        st.markdown("#### 🎯 潛伏型 AI 勝率期望值排行 (TOP 20)")
+                        st.caption("以下數據由雲端背景運算引擎於每日盤後自動解算，達成 0 延遲載入。")
+        
+                        snapshot = load_market_snapshot()
+                        if snapshot:
+                            st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
+                            df_res = pd.DataFrame(snapshot['data'])
+                            st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
+                        else:
+                         st.warning("⚠️ 尚未生成快取資料，請等待 GitHub Actions 執行完畢，或手動觸發運算。")
+
+                with t4:
+                    st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
+                    selected_chain = st.selectbox("選擇要檢視的產業鏈", list(INDUSTRY_CHAINS.keys()))
+                    chain_data = INDUSTRY_CHAINS[selected_chain]
+        
+                    snapshot = load_market_snapshot()
+                    if snapshot:
+                        res_df = pd.DataFrame(snapshot['data'])
+                        st.markdown("---")
+                        cols = st.columns(len(chain_data))
+                        recommendations = []
             
-            with t3:
-                st.markdown("#### 🏦 微觀結構：特大單與贏家分點籌碼追蹤")
-                c_flow1, c_flow2 = st.columns(2)
-                with c_flow1:
-                    st.markdown("##### 🌊 盤中特大單淨流入")
-                    if today.get('Block_Trade_Inflow', False): st.success("🚨 **異常大單狂敲**\n今日成交量大，價格強勢推升，機構不計代價掃貨。")
-                    else: st.info("📉 **無明顯大單流入**\n量能平穩，屬自然換手。")
-                with c_flow2:
-                    st.markdown("##### 🏦 贏家分點集中囤貨")
-                    if broker_conc > 0.3: st.success(f"🔥 **高度集中 ({broker_conc*100:.1f}%)**\n近 5 日資金異常淨流入，極可能有主力分點暗中大舉囤貨！")
-                    elif broker_conc > 0: st.warning(f"🔍 **溫和吃貨 ({broker_conc*100:.1f}%)**\n籌碼緩步集中。")
-                    else: st.info(f"⚖️ **籌碼發散 ({broker_conc*100:.1f}%)**\n近期無特定分點囤貨跡象。")
+                        for idx, (sub_name, tickers) in enumerate(chain_data.items()):
+                            with cols[idx]:
+                                sub_codes = [t.split('.')[0] for t in tickers]
+                                # 秒速從預先算好的 JSON 中篩選出該產業的標的，不用再爬蟲！
+                                sub_res = res_df[res_df['代號'].isin(sub_codes)].copy()
+                    
+                                if not sub_res.empty:
+                                    avg_score = int(sub_res['量化總分'].mean())
+                                    heat_color = "#ff4b4b" if avg_score >= 65 else ("#ffc107" if avg_score >= 45 else "#00cc96")
+                        
+                                    st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
+                                    st.dataframe(sub_res[['名稱', '現價', '量化總分']].sort_values('量化總分', ascending=False), hide_index=True, use_container_width=True)
+                                else:
+                                    st.markdown(f"**{sub_name}**\n查無高分數據")
+                        else:
+                            st.warning("⚠️ 系統快取準備中...")            
             
-            with t4:
-                nl, nr = st.columns(2)
-                with nl:
-                    st.markdown("#### 🎯 個股專屬新聞")
-                    if news_s:
-                        for n in news_s[:5]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
-                    else: st.info("無相關新聞")
-                with nr:
-                    st.markdown("#### 🌍 總經大盤焦點")
-                    if news_m:
-                        for n in news_m[:5]: st.markdown(f"**[{n['title']}]({n['link']})**\n<span style='color:gray;font-size:14px;'>🕒 {n['date'].replace(' GMT','')}</span>", unsafe_allow_html=True)
-                    else: st.info("無大盤新聞")
                     
         if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
             st.session_state.analyze_trigger = None
