@@ -6,12 +6,14 @@ import concurrent.futures
 import json
 import os
 
-# 在 app.py 中新增一個讀取快取的函數
-@st.cache_data(ttl=600) # 快取 10 分鐘
+
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
-        with open("market_snapshot.json", "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open("market_snapshot.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
     return None
 
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES, INDUSTRY_CHAINS
@@ -306,9 +308,11 @@ else:
         @st.fragment(run_every=datetime.timedelta(seconds=15))
         def render_rt():
             rows = []
-            for t in cluster_stocks:
+            
+            # 🚀 修復 3：將單股抓取獨立成函數，以利多執行緒調用
+            def fetch_single_rt(t):
                 try:
-                    df, _ = get_kline_with_fugle(t.split('.')[0], FUGLE_API_KEY)
+                    df, _, _ = get_kline_with_fugle(t.split('.')[0], FUGLE_API_KEY)
                     if len(df) >= 3:
                         c, p = df.iloc[-1], df.iloc[-2]
                         change_amt = c['Close'] - p['Close']
@@ -319,8 +323,16 @@ else:
                         name_str = f"<b>{st.session_state.stock_names.get(t.split('.')[0], t)}</b><br><span style='font-size:0.8em;color:gray;'>{t.split('.')[0]}</span>"
                         change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%){gap}</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%){gap}</span>" if change_amt < 0 else "0.00")
                         
-                        rows.append({"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct})
+                        return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
                 except: pass
+                return None
+
+            # 🔥 啟動 15 條執行緒，瞬間把自選股清單的資料抓回來，解決串流卡死！
+            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+                futures = [executor.submit(fetch_single_rt, t) for t in cluster_stocks]
+                for future in concurrent.futures.as_completed(futures):
+                    res = future.result()
+                    if res: rows.append(res)
                 
             if rows:
                 sorted_by_pct = sorted(rows, key=lambda x: x['raw_pct'], reverse=True)
