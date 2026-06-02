@@ -27,7 +27,7 @@ if not csv_df.empty:
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
-# 🚀 雲端背景快取載入器 (無 @st.cache_data 封印)
+# 🚀 雲端背景快取載入器
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
         try:
@@ -36,6 +36,57 @@ def load_market_snapshot():
         except Exception:
             return None
     return None
+
+# 🚀 策略回測實驗室：自動從 Supabase 拉取歷史記憶並運算期望值
+@st.cache_data(ttl=3600*6) # 每 6 小時才重新回測一次，確保網頁光速載入
+def fetch_and_calculate_backtest(holding_period=5, threshold=70):
+    try:
+        from supabase import create_client
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY")
+        if not url or not key: return {"status": "no_key"}
+        
+        supabase = create_client(url, key)
+        all_data = []
+        offset, limit = 0, 1000
+        while True:
+            res = supabase.table("quant_history").select("date, ticker, close_price, score").range(offset, offset+limit-1).execute()
+            if not res.data: break
+            all_data.extend(res.data)
+            offset += limit
+
+        if not all_data: return {"status": "empty"}
+        
+        df = pd.DataFrame(all_data)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
+
+        df[f'future_close_{holding_period}d'] = df.groupby('ticker')['close_price'].shift(-holding_period)
+        df[f'return_{holding_period}d'] = (df[f'future_close_{holding_period}d'] - df['close_price']) / df['close_price']
+
+        signals = df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].notna())].copy()
+        total_signals = len(signals)
+        
+        if total_signals == 0:
+            pending = len(df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].isna())])
+            return {"status": "pending", "pending_count": pending}
+
+        signals['is_win'] = signals[f'return_{holding_period}d'] > 0
+        win_rate = len(signals[signals['is_win']]) / total_signals
+        avg_win = signals[signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[signals['is_win']]) > 0 else 0
+        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win']]) > 0 else 0
+        expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+
+        return {
+            "status": "ready",
+            "total": total_signals,
+            "win_rate": win_rate,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "expectancy": expectancy
+        }
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
 
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -368,7 +419,8 @@ else:
         """)
             
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📊 自選即時流", "🎯 潛伏型 AI 評分 (勝率排行)", "🕸️ 產業鏈資金共振 (精選)"])
+    # 🚀 擴充為 4 個主分頁，包含策略回測實驗室
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 潛伏型 AI 評分 (勝率排行)", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -458,7 +510,11 @@ else:
         if snapshot:
             st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
             df_res = pd.DataFrame(snapshot['data'])
-            if '代號' in df_res.columns: df_res['代號'] = df_res['代號'].astype(str)
+            
+            # 🚀 終極防呆：強制轉字串、清除小數點幽靈、清除空白
+            if '代號' in df_res.columns: 
+                df_res['代號'] = df_res['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
+                
             st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
         else:
             st.warning("⚠️ 預算快取準備中，請先至 GitHub 觸發首次 Actions 運算...")
@@ -471,14 +527,16 @@ else:
         snapshot = load_market_snapshot()
         if snapshot:
             res_df = pd.DataFrame(snapshot['data'])
-            if '代號' in res_df.columns: res_df['代號'] = res_df['代號'].astype(str)
+            
+            if '代號' in res_df.columns: 
+                res_df['代號'] = res_df['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
             
             st.markdown("---")
             cols = st.columns(len(chain_data))
             
             for idx, (sub_name, tickers) in enumerate(chain_data.items()):
                 with cols[idx]:
-                    sub_codes = [t.split('.')[0] for t in tickers]
+                    sub_codes = [str(t).split('.')[0].strip() for t in tickers]
                     sub_res = res_df[res_df['代號'].isin(sub_codes)].copy()
                     
                     if not sub_res.empty:
@@ -488,6 +546,51 @@ else:
                         st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
                         st.dataframe(sub_res[['名稱', '現價', '量化總分']].sort_values('量化總分', ascending=False), hide_index=True, use_container_width=True)
                     else:
-                        st.markdown(f"**{sub_name}**\n查無高分數據")
+                        st.markdown(f"**{sub_name}**\n暫無高分數據")
         else:
             st.warning("⚠️ 系統快取準備中...")
+
+    with tab4:
+        st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
+        st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
+        
+        b_col1, b_col2 = st.columns([1, 1])
+        with b_col1:
+            st.markdown("##### ⏳ 短波段策略 (持倉 5 天)")
+            res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=70)
+            
+            if res_5d["status"] == "no_key":
+                st.warning("⚠️ 請至 Streamlit Secrets 設定 SUPABASE 金鑰以解鎖回測功能。")
+            elif res_5d["status"] == "pending":
+                st.info(f"⏸️ 歷史資料庫正在累積中。目前有 **{res_5d['pending_count']}** 筆訊號正在等待 5 天後的真實市場開獎。")
+            elif res_5d["status"] == "ready":
+                rr_ratio = abs(res_5d['avg_win'] / res_5d['avg_loss']) if res_5d['avg_loss'] != 0 else 0
+                st.markdown(f"""
+                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #00cc96;">
+                    <h3 style="margin-top: 0; color: #00cc96;">期望值: {res_5d['expectancy']*100:+.2f}%</h3>
+                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_5d['total']} 次</p>
+                    <b>勝率:</b> {res_5d['win_rate']*100:.1f}%<br>
+                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_5d['avg_win']*100:.2f}%</span><br>
+                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_5d['avg_loss']*100:.2f}%</span><br>
+                    <b>盈虧比:</b> {rr_ratio:.2f}
+                </div>
+                """, unsafe_allow_html=True)
+
+        with b_col2:
+            st.markdown("##### 🈷️ 長波段策略 (持倉 20 天)")
+            res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=70)
+            
+            if res_20d["status"] == "pending":
+                st.info(f"⏸️ 歷史資料庫正在累積中。目前有 **{res_20d['pending_count']}** 筆訊號正在等待 20 天後的真實市場開獎。")
+            elif res_20d["status"] == "ready":
+                rr_ratio = abs(res_20d['avg_win'] / res_20d['avg_loss']) if res_20d['avg_loss'] != 0 else 0
+                st.markdown(f"""
+                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #ffc107;">
+                    <h3 style="margin-top: 0; color: #ffc107;">期望值: {res_20d['expectancy']*100:+.2f}%</h3>
+                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_20d['total']} 次</p>
+                    <b>勝率:</b> {res_20d['win_rate']*100:.1f}%<br>
+                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_20d['avg_win']*100:.2f}%</span><br>
+                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_20d['avg_loss']*100:.2f}%</span><br>
+                    <b>盈虧比:</b> {rr_ratio:.2f}
+                </div>
+                """, unsafe_allow_html=True)

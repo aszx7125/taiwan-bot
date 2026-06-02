@@ -31,6 +31,7 @@ def run_backend_update():
     completed = 0
     print(f"📊 預計掃描 {total} 檔標的...")
     
+    # 🚀 將併發數降至 10，避免觸發 Yahoo 防火牆
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_ret_20, {}, names_dict, "score"): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
@@ -76,14 +77,12 @@ def run_backend_update():
     supabase_key = os.environ.get("SUPABASE_KEY")
     
     if supabase_url and supabase_key:
-        print("🔗 偵測到資料庫金鑰，開始上傳歷史記憶...")
+        print(f"🔗 偵測到資料庫金鑰 (URL: {supabase_url[:15]}...)，開始連線與上傳...")
         try:
             supabase: Client = create_client(supabase_url, supabase_key)
             
-            # 準備要寫入資料庫的格式
             db_records = []
             for item in final_data:
-                # 安全地轉換欄位格式
                 try: rs_val = float(str(item.get("大盤相對強度", "0")).replace("%", ""))
                 except: rs_val = 0.0
                 
@@ -97,16 +96,23 @@ def run_backend_update():
                     "rs_index": rs_val
                 })
             
-            # 因為 Supabase 一次寫入太多筆可能會報錯，我們分批寫入 (Batch Insert)
-            batch_size = 500
-            for i in range(0, len(db_records), batch_size):
-                batch = db_records[i:i + batch_size]
-                response = supabase.table("quant_history").insert(batch).execute()
-                print(f"   ⬆️ 成功上傳批次 {i} ~ {i+len(batch)} 筆資料。")
+            if db_records:
+                print(f"   ⬆️ 嘗試寫入首批資料...")
+                response = supabase.table("quant_history").insert(db_records[:10]).execute()
                 
-            print("✅ 歷史記憶已成功封裝入 Supabase 資料庫！")
+                if len(db_records) > 10:
+                    batch_size = 500
+                    for i in range(10, len(db_records), batch_size):
+                        batch = db_records[i:i + batch_size]
+                        supabase.table("quant_history").insert(batch).execute()
+                
+                print(f"✅ 歷史記憶已成功封裝入 Supabase 資料庫！共寫入 {len(db_records)} 筆。")
+            else:
+                print("⚠️ 沒有有效資料可供寫入。")
+                
         except Exception as e:
-            print(f"❌ 寫入 Supabase 失敗: {e}")
+            print(f"❌ 嚴重錯誤：寫入 Supabase 失敗！詳細原因：{str(e)}")
+            raise e 
     else:
         print("⚠️ 未設定 SUPABASE_URL 或 SUPABASE_KEY，跳過資料庫寫入。")
 
