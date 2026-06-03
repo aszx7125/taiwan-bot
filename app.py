@@ -36,22 +36,13 @@ def load_market_snapshot():
     return None
 
 def get_snapshot_dict(snapshot):
+    """將大盤快取轉為 O(1) 字典，確保全站讀取同一份歷史基準特徵"""
     if snapshot and 'data' in snapshot:
         return {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
     return {}
 
-# ==========================================================
-# 🧠 防線一：Streamlit 快取解毒劑 (時間戳記自動破壞重載機制)
-# ==========================================================
-def get_model_mtime():
-    """動態監測大腦檔案在硬碟上的實體修改時間"""
-    if os.path.exists("quant_model.joblib"):
-        return os.path.getmtime("quant_model.joblib")
-    return 0
-
 @st.cache_resource
-def load_ai_model_from_disk(mtime):
-    """當且僅當 mtime 改變時，才會強迫 Streamlit 清空底層記憶體重新讀取檔案"""
+def get_ai_model():
     if os.path.exists("quant_model.joblib") and os.path.exists("model_features.joblib"):
         try:
             import joblib
@@ -59,16 +50,11 @@ def load_ai_model_from_disk(mtime):
         except: pass
     return None, None
 
-def get_ai_model():
-    """中央調用接口：完美解決雲端 Actions 更新大腦後網頁端不釋放快取的惡性 Bug"""
-    mtime = get_model_mtime()
-    return load_ai_model_from_disk(mtime)
-
 # ==========================================================
-# 🚀 防線二：中央特徵錨定引擎 (Inference Anchor)
-# 隔離盤中跳動現價，推論特徵完全鎖死在同一個基準線上，達成 100% 同步
+# 🚀 終極對齊核心：中央報價引擎與特徵萃取器 (已修復參數順序 Bug)
 # ==========================================================
 def get_realtime_quote(clean_ticker):
+    """確保全站呼叫同一套報價邏輯，防堵 API 延遲錯亂"""
     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
     if FUGLE_API_KEY:
         try:
@@ -95,24 +81,25 @@ def get_realtime_quote(clean_ticker):
         except: pass
     return rt_price, rt_vol, prev_close
 
-def extract_ai_features(clean_ticker, snapshot_dict, fallback_price=0.0, fallback_rs=0.0, fallback_atr=None, fallback_pattern="", fallback_vol=0.0):
-    """終極特徵對齊：強制全站統一使用 Snapshot 靜態基準價進行 AI 推論，完美鎖死決策樹邊界"""
+def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=0.0, fallback_rs=0.0, fallback_atr=None, fallback_pattern="", fallback_vol=0.0):
+    """終極特徵對齊：修復引數順序錯亂，完美防堵盤中殘缺成交量欺騙 AI"""
     rs_idx = fallback_rs
     pat = fallback_pattern
     
-    # 預設使用傳入值
-    anchor_price = fallback_price
-    base_vol = fallback_vol
+    anchor_price = current_price
+    base_vol = fallback_vol 
     atr = fallback_atr if fallback_atr else (anchor_price * 0.05)
 
-    # 💎 如果大盤快取存在，強制用快取數據覆蓋所有推論變數，將特徵凍結
+    # 💎 強制從快取中抽取昨天的「全日完整成交量」與「基準型態」
     if snapshot_dict and clean_ticker in snapshot_dict:
         item = snapshot_dict[clean_ticker]
         
-        # 統一錨定基準價 (昨收或快取生成時的現價)
         anchor_price = float(item.get('現價', item.get('close_price', item.get('Close', anchor_price))))
-        base_vol = float(item.get('成交量', item.get('Volume', item.get('volume', base_vol))))
-        
+        vol_raw = item.get('成交量', item.get('Volume', item.get('volume', None)))
+        if vol_raw is not None:
+            try: base_vol = float(vol_raw)
+            except: pass
+            
         pat_raw = item.get('pattern', item.get('Pattern', item.get('型態', pat)))
         if pat_raw: pat = str(pat_raw)
         
@@ -126,7 +113,10 @@ def extract_ai_features(clean_ticker, snapshot_dict, fallback_price=0.0, fallbac
             try: atr = float(atr_raw)
             except: pass
 
-    # 確保特徵計算分母安全
+    # 若快取遺失且無基準量，才用當下真實即時量
+    if base_vol <= 0 and current_vol > 0:
+        base_vol = current_vol
+
     if anchor_price <= 0: anchor_price = 1.0
 
     volatility = float(atr / anchor_price)
@@ -238,7 +228,6 @@ if target_ticker:
                 y_close = float(yesterday.get('Close', entry_price))
                 vol_sma5 = float(today.get('Vol_SMA5', today.get('Volume', 1.0)))
                 
-                # UI 上依然擷取最新的盤中價格展現即時報價
                 rt_p, rt_v, _ = get_realtime_quote(base_ticker)
                 if rt_p > 0: entry_price = rt_p
 
@@ -281,7 +270,7 @@ if target_ticker:
             
             if model:
                 try:
-                    # 🚀 中央錨定：完全屏蔽盤中波動干擾，與快取 100% 同步
+                    # 🚀 中央錨定：對齊引數順序，消滅漂移與崩潰風險
                     input_data = extract_ai_features(
                         base_ticker, entry_price, snapshot_dict, current_vol=rt_v,
                         fallback_rs=float(today.get('RS_Index', 0.0)), fallback_atr=atr_14, 
@@ -299,7 +288,7 @@ if target_ticker:
                 except: pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
-            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold;">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b><br><span style="font-size: 12px; color: gray;">(現價/限價單)</span></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br><span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b><br><span style="font-size: 12px; color: gray;">(跌破無條件停損)</span></div></div></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold;">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br><span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
             
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
@@ -354,7 +343,7 @@ else:
                     
                     if model and clean_ticker in snapshot_dict:
                         try:
-                            # 🚀 中央錨定：傳入同樣的字典進行運算
+                            # 🚀 中央錨定：對齊引數順序
                             input_data = extract_ai_features(clean_ticker, rt_price, snapshot_dict, current_vol=rt_vol)
                             input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                             win_prob = float(model.predict_proba(input_df)[0][1])
@@ -400,7 +389,7 @@ else:
                 valid_items.append(item)
                 if model:
                     vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
-                    # 🚀 中央錨定：矩陣批量打包
+                    # 🚀 中央錨定：修正此處的引數對齊，徹底消除崩潰 Bug
                     bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
 
             all_probs = []
