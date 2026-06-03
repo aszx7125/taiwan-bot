@@ -89,7 +89,7 @@ def fetch_and_calculate_backtest(holding_period=5, threshold=60):
         signals['is_win'] = signals[f'return_{holding_period}d'] > 0
         win_rate = len(signals[signals['is_win']]) / total_signals
         avg_win = signals[signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[signals['is_win']]) > 0 else 0
-        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win'] orbit]) > 0 else 0
+        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win']]) > 0 else 0
         expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
 
         return {
