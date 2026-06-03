@@ -36,7 +36,7 @@ def load_market_snapshot():
             return None
     return None
 
-# 🚀 將 AI 大腦鎖進常駐記憶體，避免重複讀取硬碟榨乾效能
+# 🧠 將全新的 LightGBM 大腦鎖進常駐記憶體，避免重複讀取硬碟榨乾效能
 @st.cache_resource
 def get_ai_model():
     if os.path.exists("quant_model.joblib") and os.path.exists("model_features.joblib"):
@@ -89,7 +89,7 @@ def fetch_and_calculate_backtest(holding_period=5, threshold=60):
         signals['is_win'] = signals[f'return_{holding_period}d'] > 0
         win_rate = len(signals[signals['is_win']]) / total_signals
         avg_win = signals[signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[signals['is_win']]) > 0 else 0
-        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win']]) > 0 else 0
+        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win'] orbit]) > 0 else 0
         expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
 
         return {
@@ -242,20 +242,10 @@ if target_ticker:
                 else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
 
             ai_win_rate_str = "等待 AI 訓練"
-            if ai_score >= 65 and micro_trigger and real_rr_ratio >= 1.0:
-                ai_recommendation = f"🎯 多時區共振狙擊！(期待值80%+)"
-                box_color = "#ff4b4b" 
-            elif ai_score >= 70 and real_rr_ratio >= 1.2:
-                ai_recommendation = f"✅ 極高勝率潛伏區間"
-                box_color = "#00cc96"
-            elif ai_score >= 55 and real_rr_ratio >= 1.0:
-                ai_recommendation = "⚠️ 溫和試單 (等待小時區發動)"
-                box_color = "#ffc107"
-            else:
-                ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
-                box_color = "#555555"
+            ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
+            box_color = "#555555"
 
-            # 🚀 從快取讀取 AI 大腦 (含股性與規模特徵)
+            # 🚀 從常駐快取讀取全新的 LightGBM 大腦 (完美傳遞 7 大特徵)
             model, features = get_ai_model()
             if model:
                 try:
@@ -266,11 +256,11 @@ if target_ticker:
                     input_data['is_divergence'] = 1 if bull_div else 0
                     input_data['rs_index'] = float(rs_index) if not pd.isna(rs_index) else 0.0
                     
-                    # 🆕 傳遞股性特徵給 AI
+                    # 🚀 即時動態計算股性波動率與規模特徵，餵給 LightGBM 交叉審查
                     input_data['volatility'] = float(atr_14 / entry_price) if entry_price > 0 else 0.0
                     input_data['turnover'] = float(entry_price * today.get('Volume', 0)) if 'Volume' in today else 0.0
                     
-                    # 確保按照模型訓練時的特徵順序排列
+                    # 確保按照模型訓練時的 7 大特徵順序排列
                     input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
                     ai_win_rate_str = f"{win_prob * 100:.1f}%"
@@ -369,7 +359,6 @@ if target_ticker:
                             w_target = w_res + float(d_base.get('ATR_14', 1.0))
                             max_h_5d = float(d_5_days['High'].max())
                             min_l_5d = float(d_5_days['Low'].min())
-                            d_base_close = float(d_base.get('Close', 1.0))
                             
                             col_w1, col_w2 = st.columns(2)
                             with col_w1: st.info(f"**5 天前預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
@@ -388,7 +377,6 @@ if target_ticker:
                             m_target = m_res + float(d_base_m.get('ATR_14', 1.0))
                             max_h_20d = float(d_20_days['High'].max())
                             min_l_20d = float(d_20_days['Low'].min())
-                            d_base_m_close = float(d_base_m.get('Close', 1.0))
                             
                             col_m1, col_m2 = st.columns(2)
                             with col_m1: st.info(f"**20 天前預測基準**\n- 當時壓力: **{m_res:.2f}**\n- 當時支撐: **{m_sup:.2f}**\n- 測幅目標: **{m_target:.2f}**")
@@ -466,9 +454,12 @@ else:
     st.markdown("---")
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
+    # ==========================================================
+    # 📊 TAB 1: 自選即時流 x 完美對齊的 LightGBM 動態勝率膠囊標籤
+    # ==========================================================
     with tab1:
         c_title, c_slider = st.columns([2, 1])
-        with c_title: st.markdown(f"#### 【{selected_cluster}】即時行情流")
+        with c_title: st.markdown(f"#### 【{selected_cluster}】即時行情流 x AI 戰術標籤")
         with c_slider:
             with st.expander("⚙️ 畫幅設定"): user_font_size = st.slider("表格文字大小", 12, 40, 22, 2)
             
@@ -477,11 +468,69 @@ else:
             rows = []
             current_names = st.session_state.stock_names.copy()
             
+            # 🧠 同步加載全局新大腦與大盤快取
+            model, features = get_ai_model()
+            snapshot = load_market_snapshot()
+            snapshot_dict = {}
+            
+            # 快取矩陣轉雜湊字典，實現 O(1) 極速搜尋，防止多執行緒阻塞
+            if snapshot and 'data' in snapshot:
+                for item in snapshot['data']:
+                    tk = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
+                    snapshot_dict[tk] = item
+            
             def fetch_single_rt(t, names_dict):
                 try:
                     clean_ticker = t.split('.')[0]
-                    name_str = f"<b>{names_dict.get(clean_ticker, clean_ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>"
+                    base_name = names_dict.get(clean_ticker, clean_ticker)
                     
+                    # 🚀 核心：非同步即時為自選股打上 100% 同步的 LightGBM 勝率標籤
+                    ai_badge_html = ""
+                    if model and clean_ticker in snapshot_dict:
+                        try:
+                            match_item = snapshot_dict[clean_ticker]
+                            pattern_str = str(match_item.get('pattern', match_item.get('Pattern', match_item.get('型態', ''))))
+                            rs_val_str = str(match_item.get('RS_Index', match_item.get('rs_index', match_item.get('大盤相對強度', '0')))).replace('%', '')
+                            
+                            try: rs_index = float(rs_val_str)
+                            except: rs_index = 0.0
+                            
+                            volatility = float(match_item.get('volatility', match_item.get('Volatility', 0.0)))
+                            turnover = float(match_item.get('turnover', match_item.get('Turnover', 0.0)))
+                            
+                            # 完美對齊 7 大維度特徵
+                            input_data = {
+                                'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
+                                'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
+                                'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
+                                'is_divergence': 1 if "底背離" in pattern_str else 0,
+                                'rs_index': rs_index,
+                                'volatility': volatility,
+                                'turnover': turnover
+                            }
+                            
+                            input_df = pd.DataFrame([input_data], columns=features).fillna(0)
+                            win_prob = float(model.predict_proba(input_df)[0][1])
+                            win_rate_pct = win_prob * 100
+                            
+                            # 高質感膠囊視覺樣式
+                            if win_rate_pct >= 60:
+                                badge_style = "background-color: #00cc96; color: black; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold;"
+                                prefix = "⭐ 核心強勢"
+                            elif win_rate_pct >= 50:
+                                badge_style = "background-color: #ffc107; color: black; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold;"
+                                prefix = "⚖️ 溫和觀察"
+                            else:
+                                badge_style = "background-color: #555555; color: #bbb; padding: 2px 6px; border-radius: 4px; font-size: 12px;"
+                                prefix = "⏸️ 暫無動能"
+                                
+                            ai_badge_html = f"<br><span style='{badge_style}'>{prefix} {win_rate_pct:.1f}%</span>"
+                        except: pass
+                    
+                    # 標籤嵌入標的欄位
+                    name_str = f"<b>{base_name}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>{ai_badge_html}"
+                    
+                    # 即時報價串接 (Fugle / Yahoo Fallback)
                     if FUGLE_API_KEY:
                         try:
                             res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
@@ -547,7 +596,7 @@ else:
         render_rt()
 
     # ==========================================================
-    # 🔥 AI 全市場勝率預測 x 矩陣批量運算 (解決大小寫不對稱與新特徵問題)
+    # 🎯 TAB 2: 全市場 AI 勝率最高進出場戰術面板 (100% 矩陣批量推論)
     # ==========================================================
     with tab2:
         st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
@@ -563,7 +612,7 @@ else:
             
             model, features = get_ai_model()
             
-            # 第一階段：提取有效數據並打包成矩陣 (加入完美防呆機制與新特徵)
+            # 第一階段：提取有效數據並打包成矩陣 (支援大、小寫與新股性欄位防呆)
             for item in raw_list:
                 entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                 if entry_price == 0: continue
@@ -571,15 +620,11 @@ else:
                 valid_items.append(item)
                 
                 if model:
-                    # 🛡️ 大小寫相容防呆：支援 'pattern', 'Pattern', '型態'
                     pattern_str = str(item.get('pattern', item.get('Pattern', item.get('型態', ''))))
-                    
-                    # 🛡️ 大小寫相容防呆：支援 'rs_index', 'RS_Index', '大盤相對強度'
                     rs_val_str = str(item.get('RS_Index', item.get('rs_index', item.get('大盤相對強度', '0')))).replace('%', '')
                     try: rs_index = float(rs_val_str)
                     except: rs_index = 0.0
                     
-                    # 🚀 提取新特徵 (若快取無資料則退回 0.0)
                     volatility = float(item.get('volatility', item.get('Volatility', 0.0)))
                     turnover = float(item.get('turnover', item.get('Turnover', 0.0)))
                     
@@ -593,17 +638,15 @@ else:
                         'turnover': turnover
                     })
 
-            # 第二階段：一鍵執行全市場批量推論 (Vectorized Inference)
+            # 第二階段：一鍵執行全市場批量向量化推論 (Vectorized Inference)
             all_probs = []
             if model and bulk_features:
                 try:
-                    # 確保按照模型訓練時的欄位順序對齊
                     input_df = pd.DataFrame(bulk_features, columns=features).fillna(0)
                     all_probs = model.predict_proba(input_df)[:, 1] 
-                except:
-                    pass
+                except: pass
 
-            # 第三階段：合併預測結果與圖卡資料
+            # 第三階段：合併排序預測結果
             processed_stocks = []
             for idx, item in enumerate(valid_items):
                 ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
@@ -666,7 +709,7 @@ else:
                     'profit_reason': profit_reason, 'real_rr_ratio': real_rr_ratio
                 })
             
-            # 第四階段：一秒渲染前 20 名大圖卡
+            # 第四階段：批量渲染渲染前 20 名旗艦圖卡
             top_20 = sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]
             
             for s in top_20:
@@ -699,8 +742,11 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.warning("⚠️ 全市場快取準備中，請先確保 GitHub 已成功執行每日掃描...")
+            st.warning("⚠️ 全市場快取準備中，請先前往 GitHub Actions 觸發每日全市場掃描...")
 
+    # ==========================================================
+    # 🕸️ TAB 3: 上中下游產業鏈資金共振分析
+    # ==========================================================
     with tab3:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
         selected_chain = st.selectbox("選擇要檢視的產業鏈", list(INDUSTRY_CHAINS.keys()))
@@ -709,7 +755,6 @@ else:
         snapshot = load_market_snapshot()
         if snapshot:
             res_df = pd.DataFrame(snapshot['data'])
-            
             if '代號' in res_df.columns: 
                 res_df['代號'] = res_df['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
             
@@ -732,11 +777,14 @@ else:
         else:
             st.warning("⚠️ 系統快取準備中...")
 
+    # ==========================================================
+    # 🔬 TAB 4: 策略回測實驗室 (實盤期望值盲測)
+    # ==========================================================
     with tab4:
         st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
         st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
         
-        test_threshold = st.slider("🎚️ 設定 AI 分數進場門檻 (若無數據，請嘗試調低分數)", min_value=20, max_value=100, value=50, step=5)
+        test_threshold = st.slider("🎚️ 設定 AI 分進場門檻", min_value=20, max_value=100, value=50, step=5)
         
         b_col1, b_col2 = st.columns([1, 1])
         with b_col1:
@@ -744,11 +792,11 @@ else:
             res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=test_threshold)
             
             if res_5d["status"] == "no_key":
-                st.error("⚠️ 找不到資料庫金鑰。如果您在本地端執行，請確保設定了環境變數。")
+                st.error("⚠️ 找不到資料庫金鑰。")
             elif res_5d["status"] == "empty":
-                st.warning("⚠️ Supabase 資料庫完全是空的，請先執行 historical_injector.py。")
+                st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
             elif res_5d["status"] == "pending":
-                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。\n*(提示：若數量為 0，代表過去兩年沒有股票達到 {test_threshold} 分，請往左拉動滑桿)*")
+                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。")
             elif res_5d["status"] == "error":
                 st.error(f"❌ 運算發生錯誤: {res_5d['msg']}")
             elif res_5d["status"] == "ready":
@@ -769,7 +817,7 @@ else:
             res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=test_threshold)
             
             if res_20d["status"] == "pending":
-                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待 20 天後的開獎。")
+                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待開獎。")
             elif res_20d["status"] == "error":
                 st.error(f"❌ 運算發生錯誤: {res_20d['msg']}")
             elif res_20d["status"] == "ready":
