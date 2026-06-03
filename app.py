@@ -160,7 +160,6 @@ if target_ticker:
                 
                 vol_sma5 = float(today.get('Vol_SMA5', 1.0))
                 if pd.isna(vol_sma5) or vol_sma5 <= 0: vol_sma5 = 1.0
-                vol_ratio = float(today.get('Volume', 0.0)) / vol_sma5
                 p_change = ((entry_price - y_close) / y_close) * 100
                 
                 res_level = float(today.get('Res_20', entry_price * 1.05))
@@ -171,25 +170,16 @@ if target_ticker:
                 
                 atr_14 = float(yesterday.get('ATR_14', entry_price * 0.05))
                 if pd.isna(atr_14) or atr_14 == 0: atr_14 = entry_price * 0.05
-                
-                recent_20_df = df_daily.iloc[-21:-1]
-                res_tests = int(len(recent_20_df[recent_20_df['High'] >= res_level * 0.985])) if not recent_20_df.empty else 0
-                sup_tests = int(len(recent_20_df[recent_20_df['Low'] <= sup_level * 1.015])) if not recent_20_df.empty else 0
                     
                 ai_score = int(today.get('Score', 0))
-                rs_index = float(today.get('RS_Index', 0.0))
                 broker_conc = float(today.get('Broker_Concentration', 0.0))
-                if pd.isna(rs_index): rs_index = 0.0
                 if pd.isna(broker_conc): broker_conc = 0.0
             except Exception as e:
-                entry_price, y_close, t_high, t_low, vol_ratio, p_change = 0.0, 1.0, 0.0, 0.0, 1.0, 0.0
+                entry_price, y_close, t_high, t_low, p_change = 0.0, 1.0, 0.0, 0.0, 0.0
                 res_level, sup_level, box_height, atr_14 = 0.0, 0.0, 0.0, 0.0
-                res_tests, sup_tests, ai_score, rs_index, broker_conc = 0, 0, 0, 0.0, 0.0
+                ai_score, broker_conc = 0, 0.0
             
             bull_div = bool(today.get('Bullish_Div', False))
-            bear_div = bool(today.get('Bearish_Div', False))
-            div_status = "🟢 底背離 (空頭力竭，準備反轉)" if bull_div else ("🚨 頂背離 (多頭力竭，注意回檔)" if bear_div else "無顯著背離")
-
             liq_sweep = bool(today.get('Liquidity_Sweep_Bull', False))
             low_vol_pb = bool(today.get('Low_Vol_Pullback', False))
             squeeze_on = bool(today.get('Squeeze_On', False))
@@ -199,14 +189,6 @@ if target_ticker:
             if squeeze_on: smc_status.append("🛡️ 區間極度壓縮")
             if liq_sweep: smc_status.append("🌊 流動性掠奪")
             smc_text = " + ".join(smc_status) if smc_status else "一般常態震盪"
-            
-            block_trade = bool(today.get('Block_Trade_Inflow', False))
-            
-            breakout_status = "區間震盪 (未突破)"
-            if entry_price > res_level: breakout_status = "🚀 向上突破前高"
-            elif entry_price < sup_level: breakout_status = "⚠️ 向下摜破前低"
-            elif entry_price >= res_level * 0.98: breakout_status = "⚔️ 兵臨城下 (挑戰前高)"
-            elif entry_price <= sup_level * 1.02: breakout_status = "🛡️ 支撐保衛戰 (回測前低)"
 
             atr_stop = entry_price - (1.5 * atr_14)
             structural_stop = sup_level * 0.985 
@@ -244,21 +226,41 @@ if target_ticker:
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
             box_color = "#555555"
 
+            # 🚀 🔥 核心修復：強制讀取全市場快取，確保特徵絕對同步
             model, features = get_ai_model()
+            snapshot = load_market_snapshot()
+            snapshot_dict = {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']} if snapshot and 'data' in snapshot else {}
+            
             if model:
                 try:
-                    input_data = {}
-                    input_data['is_pullback'] = 1 if low_vol_pb else 0
-                    input_data['is_sweep'] = 1 if liq_sweep else 0
-                    input_data['is_squeeze'] = 1 if squeeze_on else 0
-                    input_data['is_divergence'] = 1 if bull_div else 0
-                    input_data['rs_index'] = float(rs_index) if not pd.isna(rs_index) else 0.0
+                    if base_ticker in snapshot_dict:
+                        # 從 Snapshot 提取基準特徵 (保證與主頁 100% 同步)
+                        match_item = snapshot_dict[base_ticker]
+                        pattern_str = str(match_item.get('pattern', match_item.get('Pattern', match_item.get('型態', ''))))
+                        rs_val_str = str(match_item.get('RS_Index', match_item.get('rs_index', '0'))).replace('%', '')
+                        try: rs_index = float(rs_val_str)
+                        except: rs_index = 0.0
+                        
+                        atr_val = float(match_item.get('ATR_14', match_item.get('atr_14', entry_price * 0.05)))
+                        # 取出昨天的全日成交量 (Shares)，避免盤中數量過少引發 AI 誤判
+                        base_vol = float(match_item.get('成交量', match_item.get('Volume', match_item.get('volume', 0.0))))
+                    else:
+                        # 備案：若該股不在全市場快取內，才使用當下計算值
+                        pattern_str = smc_text
+                        rs_index = float(today.get('RS_Index', 0.0))
+                        atr_val = float(yesterday.get('ATR_14', entry_price * 0.05))
+                        # 使用 5 日均量取代盤中即時量，還原完整的全日流動性規模
+                        base_vol = float(today.get('Vol_SMA5', today.get('Volume', 0))) 
                     
-                    input_data['volatility'] = float(atr_14 / entry_price) if entry_price > 0 else 0.0
-                    
-                    # 🔥 [單股掃描修正] 保證 AI 吃到的成交量是「股數」
-                    vol_today = float(today.get('Volume', 0))
-                    input_data['turnover'] = float(entry_price * vol_today)
+                    input_data = {
+                        'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
+                        'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
+                        'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
+                        'is_divergence': 1 if "底背離" in pattern_str else 0,
+                        'rs_index': rs_index,
+                        'volatility': float(atr_val / entry_price) if entry_price > 0 else 0.0,
+                        'turnover': float(entry_price * base_vol)
+                    }
                     
                     input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
@@ -454,7 +456,7 @@ else:
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     # ==========================================================
-    # 📊 TAB 1: 隔離 UI 顯示與 AI 算繪的單位錯亂
+    # 📊 TAB 1: 即時流面板 - 強制讀取同一份考卷算 AI 勝率
     # ==========================================================
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -470,11 +472,8 @@ else:
             model, features = get_ai_model()
             snapshot = load_market_snapshot()
             snapshot_dict = {}
-            
             if snapshot and 'data' in snapshot:
-                for item in snapshot['data']:
-                    tk = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
-                    snapshot_dict[tk] = item
+                snapshot_dict = {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
             
             def fetch_single_rt(t, names_dict):
                 try:
@@ -483,7 +482,6 @@ else:
                     
                     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
                     
-                    # 1. 抓取即時價格與數量
                     if FUGLE_API_KEY:
                         try:
                             res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
@@ -514,22 +512,17 @@ else:
                     change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
                     
                     ai_badge_html = ""
-                    # 2. 🔥 【終極修復】：從 Snapshot 提取「股數」計算大局市值規模，徹底避開盤中即時「張數」干擾
+                    # 🚀 🔥 從快取提取相同的全日基準量 (base_vol)，徹底統一計算標準
                     if model and clean_ticker in snapshot_dict:
                         try:
                             match_item = snapshot_dict[clean_ticker]
                             pattern_str = str(match_item.get('pattern', match_item.get('Pattern', match_item.get('型態', ''))))
-                            rs_val_str = str(match_item.get('RS_Index', match_item.get('rs_index', match_item.get('大盤相對強度', '0')))).replace('%', '')
-                            
+                            rs_val_str = str(match_item.get('RS_Index', match_item.get('rs_index', '0'))).replace('%', '')
                             try: rs_index = float(rs_val_str)
                             except: rs_index = 0.0
                             
-                            atr_14 = float(match_item.get('ATR_14', match_item.get('atr_14', rt_price * 0.05)))
-                            volatility = float(atr_14 / rt_price) if rt_price > 0 else 0.0
-                            
-                            # 讀取昨日完整的 Yahoo 股數成交量
+                            atr_val = float(match_item.get('ATR_14', match_item.get('atr_14', rt_price * 0.05)))
                             base_vol = float(match_item.get('成交量', match_item.get('Volume', match_item.get('volume', 0.0))))
-                            turnover = float(rt_price * base_vol)
                             
                             input_data = {
                                 'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
@@ -537,8 +530,8 @@ else:
                                 'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
                                 'is_divergence': 1 if "底背離" in pattern_str else 0,
                                 'rs_index': rs_index,
-                                'volatility': volatility,
-                                'turnover': turnover
+                                'volatility': float(atr_val / rt_price) if rt_price > 0 else 0.0,
+                                'turnover': float(rt_price * base_vol)
                             }
                             
                             input_df = pd.DataFrame([input_data], columns=features).fillna(0)
@@ -559,11 +552,8 @@ else:
                         except: pass
                         
                     name_str = f"<b>{base_name}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>{ai_badge_html}"
-                    
-                    # 3. 🔥 【視覺修復】：確保畫面上顯示的永遠是正確的「張數」
                     display_vol = int(rt_vol) if rt_vol < 2000000 else int(rt_vol / 1000)
                     price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({display_vol:,} 張)</span>"
-                    
                     change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
                     
                     return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
@@ -598,7 +588,7 @@ else:
         render_rt()
 
     # ==========================================================
-    # 🎯 TAB 2: 全市場 AI 勝率最高進出場戰術面板 
+    # 🎯 TAB 2: 全市場 AI 戰術面板 - 強制讀取同一份考卷算 AI 勝率
     # ==========================================================
     with tab2:
         st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
@@ -620,17 +610,15 @@ else:
                 
                 valid_items.append(item)
                 
+                # 🚀 🔥 與 Tab 1、單股掃描相同的絕對同步特徵代碼
                 if model:
                     pattern_str = str(item.get('pattern', item.get('Pattern', item.get('型態', ''))))
-                    rs_val_str = str(item.get('RS_Index', item.get('rs_index', item.get('大盤相對強度', '0')))).replace('%', '')
+                    rs_val_str = str(item.get('RS_Index', item.get('rs_index', '0'))).replace('%', '')
                     try: rs_index = float(rs_val_str)
                     except: rs_index = 0.0
                     
-                    vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
-                    atr_14 = float(item.get('ATR_14', item.get('atr_14', entry_price * 0.05)))
-                    
-                    volatility = float(atr_14 / entry_price) if entry_price > 0 else 0.0
-                    turnover = float(entry_price * vol_val)
+                    atr_val = float(item.get('ATR_14', item.get('atr_14', entry_price * 0.05)))
+                    base_vol = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
                     
                     bulk_features.append({
                         'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
@@ -638,8 +626,8 @@ else:
                         'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
                         'is_divergence': 1 if "底背離" in pattern_str else 0,
                         'rs_index': rs_index,
-                        'volatility': volatility,
-                        'turnover': turnover
+                        'volatility': float(atr_val / entry_price) if entry_price > 0 else 0.0,
+                        'turnover': float(entry_price * base_vol)
                     })
 
             all_probs = []
@@ -745,9 +733,6 @@ else:
         else:
             st.warning("⚠️ 全市場快取準備中，請先前往 GitHub Actions 觸發每日全市場掃描...")
 
-    # ==========================================================
-    # 🕸️ TAB 3: 上中下游產業鏈資金共振分析
-    # ==========================================================
     with tab3:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
         selected_chain = st.selectbox("選擇要檢視的產業鏈", list(INDUSTRY_CHAINS.keys()))
@@ -778,9 +763,6 @@ else:
         else:
             st.warning("⚠️ 系統快取準備中...")
 
-    # ==========================================================
-    # 🔬 TAB 4: 策略回測實驗室 (實盤期望值盲測)
-    # ==========================================================
     with tab4:
         st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
         st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
