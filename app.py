@@ -32,9 +32,14 @@ def load_market_snapshot():
         try:
             with open("market_snapshot.json", "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            return None
+        except Exception: return None
     return None
+
+def get_snapshot_dict(snapshot):
+    """將大盤快取轉為 O(1) 字典，確保全站讀取同一份歷史特徵"""
+    if snapshot and 'data' in snapshot:
+        return {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
+    return {}
 
 @st.cache_resource
 def get_ai_model():
@@ -45,19 +50,75 @@ def get_ai_model():
         except: pass
     return None, None
 
+# ==========================================================
+# 🚀 終極修復：中央即時報價引擎與中央 AI 特徵萃取器
+# 確保 Tab 1、Tab 2、單股掃描 100% 吃到完全相同的數字！
+# ==========================================================
+def get_realtime_quote(clean_ticker):
+    """中央報價引擎：統一處理 Fugle 與 Yahoo 的即時現價與成交股數"""
+    rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
+    if FUGLE_API_KEY:
+        try:
+            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
+            if res.status_code == 200:
+                data = res.json()
+                rt_price = data.get('closePrice')
+                if not rt_price and data.get('lastTrade'): rt_price = data.get('lastTrade').get('price')
+                prev_close = data.get('previousClose') or data.get('referencePrice')
+                rt_vol = data.get('total', {}).get('tradeVolume', 0)
+                if rt_price: rt_price = float(rt_price)
+                if prev_close: prev_close = float(prev_close)
+                if rt_vol: rt_vol = float(rt_vol)
+        except: pass
+
+    if not rt_price or rt_price == 0:
+        try:
+            df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
+            if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
+            if not df.empty and len(df) >= 2:
+                c, p = df.iloc[-1], df.iloc[-2]
+                rt_price, prev_close = float(c['Close']), float(p['Close'])
+                rt_vol = float(c['Volume'])
+        except: pass
+    return rt_price, rt_vol, prev_close
+
+def extract_ai_features(clean_ticker, current_price, current_vol, snapshot_dict, fallback_rs=0.0, fallback_atr=None, fallback_pattern=""):
+    """中央特徵萃取器：徹底消滅分散邏輯，保證全站送入 LightGBM 的陣列絕對相同"""
+    rs_idx = fallback_rs
+    atr = fallback_atr if fallback_atr else (current_price * 0.05)
+    pat = fallback_pattern
+
+    if snapshot_dict and clean_ticker in snapshot_dict:
+        item = snapshot_dict[clean_ticker]
+        pat = str(item.get('pattern', item.get('Pattern', item.get('型態', pat))))
+        rs_raw = item.get('RS_Index', item.get('rs_index', item.get('大盤相對強度', None)))
+        if rs_raw is not None:
+            try: rs_idx = float(str(rs_raw).replace('%', ''))
+            except: pass
+        atr_raw = item.get('ATR_14', item.get('atr_14', None))
+        if atr_raw is not None:
+            try: atr = float(atr_raw)
+            except: pass
+
+    volatility = float(atr / current_price) if current_price > 0 else 0.0
+    turnover = float(current_price * current_vol)
+
+    return {
+        'is_pullback': 1 if "量縮回踩" in pat else 0,
+        'is_sweep': 1 if "流動性掠奪" in pat else 0,
+        'is_squeeze': 1 if "區間壓縮" in pat else 0,
+        'is_divergence': 1 if "底背離" in pat else 0,
+        'rs_index': rs_idx,
+        'volatility': volatility,
+        'turnover': turnover
+    }
+
 @st.cache_data(ttl=3600*6) 
 def fetch_and_calculate_backtest(holding_period=5, threshold=60):
     try:
         from supabase import create_client
-        
-        url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_KEY")
-        if not url or not key:
-            try:
-                url = st.secrets["SUPABASE_URL"]
-                key = st.secrets["SUPABASE_KEY"]
-            except: pass
-            
+        url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
         if not url or not key: return {"status": "no_key"}
         
         supabase = create_client(url, key)
@@ -154,7 +215,13 @@ if target_ticker:
                 t_high = float(today.get('High', entry_price))
                 t_low = float(today.get('Low', entry_price))
                 y_close = float(yesterday.get('Close', entry_price))
+                vol_today = float(today.get('Volume', 0))
                 
+                # 🚀 強制對齊：呼叫中央報價引擎覆寫即時價格，確保與 Tab 1 拿到一樣的報價
+                rt_p, rt_v, _ = get_realtime_quote(base_ticker)
+                if rt_p > 0: entry_price = rt_p
+                if rt_v > 0: vol_today = rt_v
+
                 if pd.isna(entry_price): entry_price = 0.0
                 if pd.isna(y_close) or y_close == 0: y_close = entry_price if entry_price > 0 else 1.0
                 
@@ -172,12 +239,13 @@ if target_ticker:
                 if pd.isna(atr_14) or atr_14 == 0: atr_14 = entry_price * 0.05
                     
                 ai_score = int(today.get('Score', 0))
+                rs_index = float(today.get('RS_Index', 0.0))
                 broker_conc = float(today.get('Broker_Concentration', 0.0))
                 if pd.isna(broker_conc): broker_conc = 0.0
             except Exception as e:
-                entry_price, y_close, t_high, t_low, p_change = 0.0, 1.0, 0.0, 0.0, 0.0
+                entry_price, y_close, t_high, t_low, vol_today, p_change = 0.0, 1.0, 0.0, 0.0, 0.0, 0.0
                 res_level, sup_level, box_height, atr_14 = 0.0, 0.0, 0.0, 0.0
-                ai_score, broker_conc = 0, 0.0
+                ai_score, rs_index, broker_conc = 0, 0.0, 0.0
             
             bull_div = bool(today.get('Bullish_Div', False))
             liq_sweep = bool(today.get('Liquidity_Sweep_Bull', False))
@@ -226,41 +294,17 @@ if target_ticker:
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
             box_color = "#555555"
 
-            # 🚀 🔥 核心修復：強制讀取全市場快取，確保特徵絕對同步
             model, features = get_ai_model()
             snapshot = load_market_snapshot()
-            snapshot_dict = {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']} if snapshot and 'data' in snapshot else {}
+            snapshot_dict = get_snapshot_dict(snapshot)
             
             if model:
                 try:
-                    if base_ticker in snapshot_dict:
-                        # 從 Snapshot 提取基準特徵 (保證與主頁 100% 同步)
-                        match_item = snapshot_dict[base_ticker]
-                        pattern_str = str(match_item.get('pattern', match_item.get('Pattern', match_item.get('型態', ''))))
-                        rs_val_str = str(match_item.get('RS_Index', match_item.get('rs_index', '0'))).replace('%', '')
-                        try: rs_index = float(rs_val_str)
-                        except: rs_index = 0.0
-                        
-                        atr_val = float(match_item.get('ATR_14', match_item.get('atr_14', entry_price * 0.05)))
-                        # 取出昨天的全日成交量 (Shares)，避免盤中數量過少引發 AI 誤判
-                        base_vol = float(match_item.get('成交量', match_item.get('Volume', match_item.get('volume', 0.0))))
-                    else:
-                        # 備案：若該股不在全市場快取內，才使用當下計算值
-                        pattern_str = smc_text
-                        rs_index = float(today.get('RS_Index', 0.0))
-                        atr_val = float(yesterday.get('ATR_14', entry_price * 0.05))
-                        # 使用 5 日均量取代盤中即時量，還原完整的全日流動性規模
-                        base_vol = float(today.get('Vol_SMA5', today.get('Volume', 0))) 
-                    
-                    input_data = {
-                        'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
-                        'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
-                        'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
-                        'is_divergence': 1 if "底背離" in pattern_str else 0,
-                        'rs_index': rs_index,
-                        'volatility': float(atr_val / entry_price) if entry_price > 0 else 0.0,
-                        'turnover': float(entry_price * base_vol)
-                    }
+                    # 🚀 強制對齊：呼叫中央特徵引擎，消滅所有分散邏輯
+                    input_data = extract_ai_features(
+                        base_ticker, entry_price, vol_today, snapshot_dict,
+                        fallback_rs=rs_index, fallback_atr=atr_14, fallback_pattern=smc_text
+                    )
                     
                     input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
@@ -278,8 +322,7 @@ if target_ticker:
                     else:
                         ai_recommendation = "⏸️ 風報比不足，防守空間過窄"
                         box_color = "#555555"
-                except Exception as e:
-                    pass
+                except Exception as e: pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
             
@@ -343,13 +386,11 @@ if target_ticker:
             with t2:
                 st.markdown("### 🔍 多週期策略回測與實況對撞")
                 sub_t1, sub_t2, sub_t3 = st.tabs(["1️⃣ 昨日對撞 (1日)", "5️⃣ 一週波段 (5日)", "🈷️ 單月波段 (20日)"])
-                
                 with sub_t1:
                     y_target = res_level + atr_14
                     col_r1, col_r2 = st.columns(2)
                     with col_r1: st.info(f"**昨日盤後預測基準**\n- 壓力位: **{res_level:.2f}**\n- 支撐位: **{sup_level:.2f}**\n- 測幅目標: **{y_target:.2f}**")
                     with col_r2: st.warning(f"**今日實況極值**\n- 最高價: **{t_high:.2f}**\n- 最低價: **{t_low:.2f}**\n- 收盤現價: **{entry_price:.2f}**")
-                
                 with sub_t2:
                     if len(df_daily) >= 26:
                         d_base = df_daily.iloc[-6]
@@ -360,14 +401,11 @@ if target_ticker:
                             w_target = w_res + float(d_base.get('ATR_14', 1.0))
                             max_h_5d = float(d_5_days['High'].max())
                             min_l_5d = float(d_5_days['Low'].min())
-                            
                             col_w1, col_w2 = st.columns(2)
                             with col_w1: st.info(f"**5 天前預測基準**\n- 當時壓力: **{w_res:.2f}**\n- 當時支撐: **{w_sup:.2f}**\n- 測幅目標: **{w_target:.2f}**")
                             with col_w2: st.warning(f"**本週實況極值 (近5日)**\n- 波段最高: **{max_h_5d:.2f}**\n- 波段最低: **{min_l_5d:.2f}**\n- 目前收盤: **{entry_price:.2f}**")
                         except: st.warning("⚠️ 此區間資料存在空值，無法計算。")
-                    else:
-                        st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
-
+                    else: st.warning("⚠️ 數據不足，無法進行一週歷史回測。")
                 with sub_t3:
                     if len(df_daily) >= 45:
                         d_base_m = df_daily.iloc[-21] 
@@ -378,13 +416,11 @@ if target_ticker:
                             m_target = m_res + float(d_base_m.get('ATR_14', 1.0))
                             max_h_20d = float(d_20_days['High'].max())
                             min_l_20d = float(d_20_days['Low'].min())
-                            
                             col_m1, col_m2 = st.columns(2)
                             with col_m1: st.info(f"**20 天前預測基準**\n- 當時壓力: **{m_res:.2f}**\n- 當時支撐: **{m_sup:.2f}**\n- 測幅目標: **{m_target:.2f}**")
                             with col_m2: st.warning(f"**本月實況極值 (近20日)**\n- 波段最高: **{max_h_20d:.2f}**\n- 波段最低: **{min_l_20d:.2f}**\n- 目前收盤: **{entry_price:.2f}**")
                         except: st.warning("⚠️ 此區間資料存在空值，無法計算。")
-                    else:
-                        st.warning("⚠️ 歷史數據深度不足，無法進行單月回測。")
+                    else: st.warning("⚠️ 歷史數據深度不足，無法進行單月回測。")
             
             with t3:
                 st.markdown("#### 🏦 微觀結構：特大單與贏家分點籌碼追蹤")
@@ -440,23 +476,12 @@ else:
                   <div style="width: {greed_index}%; background-color: {bar_color}; height: 100%; border-radius: 10px;"></div>
                 </div>
             """, unsafe_allow_html=True)
-
-    with st.expander("🧠 系統核心：多時區三重濾網策略白皮書 (點此展開)", expanded=False):
-        st.markdown("""
-        #### 1. 宏觀濾網 (日線巨觀潛伏)
-        摒棄追高風險。系統在日K級別專注尋找：
-        * **📉 量縮回踩**：趨勢偏多，但今日量縮下跌。主力洗盤最安全的買點。
-        * **🛡️ 區間壓縮 (Squeeze)**：布林通道收斂，等待爆發。
-
-        #### 2. 微觀濾網 (小時線精確狙擊)
-        大週期確定潛伏後，系統會啟用 1 小時 (1h) 線的微觀狙擊雷達。只有當 1h K線突然出現「帶量突破均線且MACD金叉」時，系統才會觸發極限買點，幫您過濾掉盤中假突破的騙線。
-        """)
             
     st.markdown("---")
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     # ==========================================================
-    # 📊 TAB 1: 即時流面板 - 強制讀取同一份考卷算 AI 勝率
+    # 📊 TAB 1: 呼叫中央引擎
     # ==========================================================
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -471,69 +496,27 @@ else:
             
             model, features = get_ai_model()
             snapshot = load_market_snapshot()
-            snapshot_dict = {}
-            if snapshot and 'data' in snapshot:
-                snapshot_dict = {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
+            snapshot_dict = get_snapshot_dict(snapshot)
             
             def fetch_single_rt(t, names_dict):
                 try:
                     clean_ticker = t.split('.')[0]
                     base_name = names_dict.get(clean_ticker, clean_ticker)
                     
-                    rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
-                    
-                    if FUGLE_API_KEY:
-                        try:
-                            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
-                            if res.status_code == 200:
-                                data = res.json()
-                                rt_price = data.get('closePrice')
-                                if not rt_price and data.get('lastTrade'): rt_price = data.get('lastTrade').get('price')
-                                prev_close = data.get('previousClose') or data.get('referencePrice')
-                                rt_vol = data.get('total', {}).get('tradeVolume', 0)
-                                if rt_price: rt_price = float(rt_price)
-                                if prev_close: prev_close = float(prev_close)
-                                if rt_vol: rt_vol = float(rt_vol)
-                        except: pass
-
-                    if not rt_price or rt_price == 0:
-                        try:
-                            df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
-                            if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
-                            if not df.empty and len(df) >= 2:
-                                c, p = df.iloc[-1], df.iloc[-2]
-                                rt_price, prev_close = float(c['Close']), float(p['Close'])
-                                rt_vol = float(c['Volume'])
-                        except: pass
-                        
+                    # 🚀 強制對齊：呼叫中央報價引擎
+                    rt_price, rt_vol, prev_close = get_realtime_quote(clean_ticker)
                     if not rt_price or rt_price == 0: return None
                         
                     change_amt = rt_price - prev_close
                     change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
                     
                     ai_badge_html = ""
-                    # 🚀 🔥 從快取提取相同的全日基準量 (base_vol)，徹底統一計算標準
                     if model and clean_ticker in snapshot_dict:
                         try:
-                            match_item = snapshot_dict[clean_ticker]
-                            pattern_str = str(match_item.get('pattern', match_item.get('Pattern', match_item.get('型態', ''))))
-                            rs_val_str = str(match_item.get('RS_Index', match_item.get('rs_index', '0'))).replace('%', '')
-                            try: rs_index = float(rs_val_str)
-                            except: rs_index = 0.0
-                            
-                            atr_val = float(match_item.get('ATR_14', match_item.get('atr_14', rt_price * 0.05)))
-                            base_vol = float(match_item.get('成交量', match_item.get('Volume', match_item.get('volume', 0.0))))
-                            
-                            input_data = {
-                                'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
-                                'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
-                                'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
-                                'is_divergence': 1 if "底背離" in pattern_str else 0,
-                                'rs_index': rs_index,
-                                'volatility': float(atr_val / rt_price) if rt_price > 0 else 0.0,
-                                'turnover': float(rt_price * base_vol)
-                            }
-                            
+                            # 🚀 強制對齊：呼叫中央特徵引擎
+                            input_data = extract_ai_features(
+                                clean_ticker, rt_price, rt_vol, snapshot_dict
+                            )
                             input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                             win_prob = float(model.predict_proba(input_df)[0][1])
                             win_rate_pct = win_prob * 100
@@ -588,7 +571,7 @@ else:
         render_rt()
 
     # ==========================================================
-    # 🎯 TAB 2: 全市場 AI 戰術面板 - 強制讀取同一份考卷算 AI 勝率
+    # 🎯 TAB 2: 全市場 AI 戰術面板 - 呼叫中央引擎
     # ==========================================================
     with tab2:
         st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
@@ -603,32 +586,20 @@ else:
             bulk_features = []
             
             model, features = get_ai_model()
+            snapshot_dict = get_snapshot_dict(snapshot)
             
             for item in raw_list:
+                ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
                 entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                 if entry_price == 0: continue
                 
                 valid_items.append(item)
                 
-                # 🚀 🔥 與 Tab 1、單股掃描相同的絕對同步特徵代碼
                 if model:
-                    pattern_str = str(item.get('pattern', item.get('Pattern', item.get('型態', ''))))
-                    rs_val_str = str(item.get('RS_Index', item.get('rs_index', '0'))).replace('%', '')
-                    try: rs_index = float(rs_val_str)
-                    except: rs_index = 0.0
-                    
-                    atr_val = float(item.get('ATR_14', item.get('atr_14', entry_price * 0.05)))
-                    base_vol = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
-                    
-                    bulk_features.append({
-                        'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
-                        'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
-                        'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
-                        'is_divergence': 1 if "底背離" in pattern_str else 0,
-                        'rs_index': rs_index,
-                        'volatility': float(atr_val / entry_price) if entry_price > 0 else 0.0,
-                        'turnover': float(entry_price * base_vol)
-                    })
+                    vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
+                    # 🚀 強制對齊：呼叫中央特徵引擎打包成矩陣
+                    input_data = extract_ai_features(ticker, entry_price, vol_val, snapshot_dict)
+                    bulk_features.append(input_data)
 
             all_probs = []
             if model and bulk_features:
@@ -648,10 +619,8 @@ else:
                 sup_level = float(item.get('Sup_20', entry_price * 0.95))
                 atr_14 = float(item.get('ATR_14', entry_price * 0.05))
                 
-                if model and len(all_probs) > idx:
-                    win_prob = float(all_probs[idx])
-                else:
-                    win_prob = ai_score / 100.0
+                if model and len(all_probs) > idx: win_prob = float(all_probs[idx])
+                else: win_prob = ai_score / 100.0
                 
                 box_height = max(res_level - sup_level, 0.01)
                 pattern_str = str(item.get('pattern', item.get('Pattern', item.get('型態', ''))))
@@ -774,14 +743,10 @@ else:
             st.markdown("##### ⏳ 短波段策略 (持倉 5 天)")
             res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=test_threshold)
             
-            if res_5d["status"] == "no_key":
-                st.error("⚠️ 找不到資料庫金鑰。")
-            elif res_5d["status"] == "empty":
-                st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
-            elif res_5d["status"] == "pending":
-                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。")
-            elif res_5d["status"] == "error":
-                st.error(f"❌ 運算發生錯誤: {res_5d['msg']}")
+            if res_5d["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
+            elif res_5d["status"] == "empty": st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
+            elif res_5d["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。")
+            elif res_5d["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_5d['msg']}")
             elif res_5d["status"] == "ready":
                 rr_ratio = abs(res_5d['avg_win'] / res_5d['avg_loss']) if res_5d['avg_loss'] != 0 else 0
                 st.markdown(f"""
@@ -799,10 +764,8 @@ else:
             st.markdown("##### 🈷️ 長波段策略 (持倉 20 天)")
             res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=test_threshold)
             
-            if res_20d["status"] == "pending":
-                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待開獎。")
-            elif res_20d["status"] == "error":
-                st.error(f"❌ 運算發生錯誤: {res_20d['msg']}")
+            if res_20d["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待開獎。")
+            elif res_20d["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_20d['msg']}")
             elif res_20d["status"] == "ready":
                 rr_ratio = abs(res_20d['avg_win'] / res_20d['avg_loss']) if res_20d['avg_loss'] != 0 else 0
                 st.markdown(f"""
