@@ -27,7 +27,6 @@ if not csv_df.empty:
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
 
-# 🚀 雲端背景快取載入器 (無 @st.cache_data 封印，確保隨時讀取最新檔案)
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
         try:
@@ -36,6 +35,73 @@ def load_market_snapshot():
         except Exception:
             return None
     return None
+
+# 🚀 優化 1：將 AI 大腦鎖進常駐記憶體，避免重複讀取硬碟榨乾效能
+@st.cache_resource
+def get_ai_model():
+    if os.path.exists("quant_model.joblib") and os.path.exists("model_features.joblib"):
+        try:
+            import joblib
+            return joblib.load("quant_model.joblib"), joblib.load("model_features.joblib")
+        except: pass
+    return None, None
+
+@st.cache_data(ttl=3600*6) 
+def fetch_and_calculate_backtest(holding_period=5, threshold=60):
+    try:
+        from supabase import create_client
+        
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            try:
+                url = st.secrets["SUPABASE_URL"]
+                key = st.secrets["SUPABASE_KEY"]
+            except: pass
+            
+        if not url or not key: return {"status": "no_key"}
+        
+        supabase = create_client(url, key)
+        all_data = []
+        offset, limit = 0, 1000
+        while True:
+            res = supabase.table("quant_history").select("date, ticker, close_price, score").range(offset, offset+limit-1).execute()
+            if not res.data: break
+            all_data.extend(res.data)
+            offset += limit
+
+        if not all_data: return {"status": "empty"}
+        
+        df = pd.DataFrame(all_data)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
+
+        df[f'future_close_{holding_period}d'] = df.groupby('ticker')['close_price'].shift(-holding_period)
+        df[f'return_{holding_period}d'] = (df[f'future_close_{holding_period}d'] - df['close_price']) / df['close_price']
+
+        signals = df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].notna())].copy()
+        total_signals = len(signals)
+        
+        if total_signals == 0:
+            pending = len(df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].isna())])
+            return {"status": "pending", "pending_count": pending}
+
+        signals['is_win'] = signals[f'return_{holding_period}d'] > 0
+        win_rate = len(signals[signals['is_win']]) / total_signals
+        avg_win = signals[signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[signals['is_win']]) > 0 else 0
+        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win']]) > 0 else 0
+        expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+
+        return {
+            "status": "ready",
+            "total": total_signals,
+            "win_rate": win_rate,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "expectancy": expectancy
+        }
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
 
 with st.sidebar:
     st.header("📂 我的自選清單")
@@ -73,7 +139,7 @@ if target_ticker:
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
-    with st.spinner(f"正在分析 {target_ticker}... 多維度時區運算中"):
+    with st.spinner(f"正在分析 {target_ticker}... 多維度時區運算與 AI 預測中"):
         df_daily, df_hourly, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
         
         if df_daily.empty or len(df_daily) < 40: 
@@ -130,9 +196,9 @@ if target_ticker:
             squeeze_on = bool(today.get('Squeeze_On', False))
             
             smc_status = []
-            if low_vol_pb: smc_status.append("📉 量縮回踩 (絕佳佈局點)")
-            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮 (暴風雨前夕)")
-            if liq_sweep: smc_status.append("🌊 流動性掠奪 (主力洗盤完畢)")
+            if low_vol_pb: smc_status.append("📉 量縮回踩")
+            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮")
+            if liq_sweep: smc_status.append("🌊 流動性掠奪")
             smc_text = " + ".join(smc_status) if smc_status else "一般常態震盪"
             
             block_trade = bool(today.get('Block_Trade_Inflow', False))
@@ -161,7 +227,6 @@ if target_ticker:
                 
             real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
             
-            # 🚀 提取小時區 (1h) 微觀狙擊狀態
             micro_trigger = False
             micro_status_text = "數據不足"
             if not df_hourly.empty and len(df_hourly) >= 2:
@@ -176,45 +241,76 @@ if target_ticker:
                 elif last_hour['Close'] > last_hour.get('SMA_20_1h', entry_price): micro_status_text = "🟢 站穩 1h 均線 (短線強勢)"
                 else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
 
+            ai_win_rate_str = "等待 AI 訓練"
             if ai_score >= 65 and micro_trigger and real_rr_ratio >= 1.0:
-                trade_action = f"🎯 多時區共振狙擊！(期待值80%+)"
+                ai_recommendation = f"🎯 多時區共振狙擊！(期待值80%+)"
                 box_color = "#ff4b4b" 
             elif ai_score >= 70 and real_rr_ratio >= 1.2:
-                trade_action = f"✅ 極高勝率潛伏區間"
+                ai_recommendation = f"✅ 極高勝率潛伏區間"
                 box_color = "#00cc96"
             elif ai_score >= 55 and real_rr_ratio >= 1.0:
-                trade_action = "⚠️ 溫和試單 (等待小時區發動)"
+                ai_recommendation = "⚠️ 溫和試單 (等待小時區發動)"
                 box_color = "#ffc107"
             else:
-                trade_action = "⏸️ 勝率偏低或追高風險，強制觀望"
+                ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
                 box_color = "#555555"
+
+            # 🚀 從快取讀取 AI 大腦
+            model, features = get_ai_model()
+            if model:
+                try:
+                    input_data = {}
+                    input_data['is_pullback'] = 1 if low_vol_pb else 0
+                    input_data['is_sweep'] = 1 if liq_sweep else 0
+                    input_data['is_squeeze'] = 1 if squeeze_on else 0
+                    input_data['is_divergence'] = 1 if bull_div else 0
+                    input_data['rs_index'] = float(rs_index) if not pd.isna(rs_index) else 0.0
+                    
+                    input_df = pd.DataFrame([input_data], columns=features).fillna(0)
+                    win_prob = float(model.predict_proba(input_df)[0][1])
+                    ai_win_rate_str = f"{win_prob * 100:.1f}%"
+                    
+                    if win_prob > 0.60 and real_rr_ratio >= 1.5:
+                        ai_recommendation = "⭐⭐⭐ 極致期望值！(高勝率 + 高風報比)"
+                        box_color = "#00cc96"
+                    elif win_prob > 0.50 and real_rr_ratio >= 1.0:
+                        ai_recommendation = "⭐⭐ 溫和佈局 (具備正向期望值)"
+                        box_color = "#ffc107"
+                    elif win_prob <= 0.50:
+                        ai_recommendation = "⚠️ 預測敗率較高，建議嚴格觀望"
+                        box_color = "#555555"
+                    else:
+                        ai_recommendation = "⏸️ 風報比不足，防守空間過窄"
+                        box_color = "#555555"
+                except Exception as e:
+                    pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
             
             st.markdown(f"""
             <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
-                <h4 style="color: {box_color}; margin-top: 0;">🎯 三重濾網戰術計畫 (日線 x 小時線)</h4>
+                <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4>
                 <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
                     <div style="flex: 1; min-width: 180px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">1. 最終戰術指令</span><br>
-                        <b style="font-size: 18px; color: {box_color};">{trade_action}</b><br>
-                        <span style="font-size: 14px;">日K分數: {ai_score} | 1h狀態: {micro_status_text.split(' ')[0]}</span>
+                        <span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br>
+                        <b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br>
+                        <span style="font-size: 14px; font-weight: bold;">{ai_recommendation}</span>
                     </div>
                     <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">2. 狙擊進場價格</span><br>
+                        <span style="color: gray; font-size: 14px;">2. 建議進場價</span><br>
                         <b style="font-size: 22px;">{entry_price:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(現貨/限價單)</span>
+                        <span style="font-size: 12px; color: gray;">(現價/限價單)</span>
                     </div>
                     <div style="flex: 1; min-width: 200px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">3. 盤面合理獲利點</span><br>
+                        <span style="color: gray; font-size: 14px;">3. 結構停利點</span><br>
                         <b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br>
                         <span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br>
                         <span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span>
                     </div>
                     <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                        <span style="color: gray; font-size: 14px;">4. 嚴格止損防禦價</span><br>
+                        <span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br>
                         <b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b><br>
-                        <span style="font-size: 12px; color: gray;">(日K微觀防守點)</span>
+                        <span style="font-size: 12px; color: gray;">(跌破無條件停損)</span>
                     </div>
                 </div>
             </div>
@@ -360,15 +456,10 @@ else:
 
         #### 2. 微觀濾網 (小時線精確狙擊)
         大週期確定潛伏後，系統會啟用 1 小時 (1h) 線的微觀狙擊雷達。只有當 1h K線突然出現「帶量突破均線且MACD金叉」時，系統才會觸發極限買點，幫您過濾掉盤中假突破的騙線。
-
-        #### 3. AI 聯動判定指令
-        * **🎯 多時區共振狙擊！**：日K分數高 + 1h突破確認 (可重倉)。
-        * **✅ 極高勝率潛伏區間**：日K分數高 + 1h未發動 (可佈局底倉)。
-        * **🚨 假突破陷阱**：日K分數低 + 1h突然大漲 (嚴格觀望，不要被騙上車)。
         """)
             
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📊 自選即時流", "🎯 潛伏型 AI 評分 (勝率排行)", "🕸️ 產業鏈資金共振 (精選)"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 潛伏型 AI 評分 (勝率排行)", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -411,10 +502,10 @@ else:
                         if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
                         if not df.empty and len(df) >= 2:
                             c, p = df.iloc[-1], df.iloc[-2]
-                            rt_price, prev_close = float(c['Close']), float(p['Close'])
+                            rt_price, float_p = float(c['Close']), float(p['Close'])
                             rt_vol = float(c['Volume'])
-                            change_amt = rt_price - prev_close
-                            change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
+                            change_amt = rt_price - float_p
+                            change_pct = (change_amt / float_p) * 100 if float_p > 0 else 0
                             
                             price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
                             change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
@@ -450,22 +541,152 @@ else:
             else: st.info("同步流介接中...")
         render_rt()
 
+    # ==========================================================
+    # 🔥 優化 2：矩陣批量運算 (Pandas Vectorization) - 秒速載入大圖卡面板
+    # ==========================================================
     with tab2:
-        st.markdown("#### 🎯 潛伏型 AI 勝率期望值排行 (TOP 20)")
-        st.caption("以下數據由雲端背景運算引擎於每日盤後自動解算，達成 0 延遲載入。")
+        st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
+        st.caption("系統透過矩陣平行運算，將全市場數據送入神經網路推演，瞬間篩選出明日預測勝率最高的 20 檔強勢標的。")
         
         snapshot = load_market_snapshot()
         if snapshot:
-            st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (資料庫直連)")
-            df_res = pd.DataFrame(snapshot['data'])
+            st.success(f"⏱️ 數據最後更新時間: {snapshot['update_time']} (極速推演完成)")
             
-            # 🚀 終極防呆：強制轉字串、清除小數點幽靈、清除空白
-            if '代號' in df_res.columns: 
-                df_res['代號'] = df_res['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
+            raw_list = snapshot['data']
+            valid_items = []
+            bulk_features = []
+            
+            model, features = get_ai_model()
+            
+            # 第一階段：提取有效數據並打包成矩陣
+            for item in raw_list:
+                entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
+                if entry_price == 0: continue
                 
-            st.dataframe(df_res.head(20), column_config={"量化總分": st.column_config.ProgressColumn("潛伏勝率期望值", min_value=0, max_value=100, format="%d 分")}, use_container_width=True, hide_index=True)
+                valid_items.append(item)
+                
+                if model:
+                    pattern_str = str(item.get('pattern', item.get('型態', '')))
+                    rs_val_str = str(item.get('大盤相對強度', item.get('rs_index', '0'))).replace('%', '')
+                    
+                    try: rs_index = float(rs_val_str)
+                    except: rs_index = 0.0
+                    
+                    bulk_features.append({
+                        'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
+                        'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
+                        'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
+                        'is_divergence': 1 if "底背離" in pattern_str else 0,
+                        'rs_index': rs_index
+                    })
+
+            # 第二階段：一鍵執行全市場批量推論 (Vectorized Inference)
+            all_probs = []
+            if model and bulk_features:
+                try:
+                    input_df = pd.DataFrame(bulk_features, columns=features).fillna(0)
+                    all_probs = model.predict_proba(input_df)[:, 1] # 一次算出 1700 筆機率
+                except:
+                    pass
+
+            # 第三階段：合併預測結果與圖卡資料
+            processed_stocks = []
+            for idx, item in enumerate(valid_items):
+                ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
+                name = str(item.get('名稱', item.get('name', '')))
+                entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
+                ai_score = int(item.get('量化總分', item.get('score', 0)))
+                
+                res_level = float(item.get('Res_20', entry_price * 1.05))
+                sup_level = float(item.get('Sup_20', entry_price * 0.95))
+                atr_14 = float(item.get('ATR_14', entry_price * 0.05))
+                
+                # 抓取剛算好的 AI 機率
+                if model and len(all_probs) > idx:
+                    win_prob = float(all_probs[idx])
+                else:
+                    win_prob = ai_score / 100.0
+                
+                box_height = max(res_level - sup_level, 0.01)
+                pattern_str = str(item.get('pattern', item.get('型態', '')))
+                
+                if entry_price > res_level:
+                    stop_loss = round(res_level * 0.985, 2)
+                    take_profit = round(res_level + box_height, 2)
+                    profit_reason = "🚀 噴發目標：等距測幅擴展位"
+                elif "量縮回踩" in pattern_str or "流動性掠奪" in pattern_str or "底背離" in pattern_str:
+                    stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
+                    take_profit = round(res_level, 2)
+                    profit_reason = "🎯 潛伏目標：前高/箱頂壓力區"
+                else:
+                    stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
+                    take_profit = round(res_level + (atr_14 * 1.0), 2)
+                    profit_reason = "⚔️ 波段目標：前高波動擴張位"
+                    
+                risk_per_share = max(entry_price - stop_loss, 0.01)
+                real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
+                
+                if model:
+                    ai_win_rate_str = f"{win_prob * 100:.1f}%"
+                    if win_prob > 0.60 and real_rr_ratio >= 1.5:
+                        ai_recommendation = "⭐⭐⭐ 極致期望值！(高勝率 + 高風報比)"
+                        box_color = "#00cc96" 
+                    elif win_prob > 0.50 and real_rr_ratio >= 1.0:
+                        ai_recommendation = "⭐⭐ 溫和佈局 (具備正向期望值)"
+                        box_color = "#ffc107" 
+                    elif win_prob <= 0.50:
+                        ai_recommendation = "⚠️ 預測敗率較高，建議嚴格觀望"
+                        box_color = "#555555" 
+                    else:
+                        ai_recommendation = "⏸️ 風報比不足，防守空間過窄"
+                        box_color = "#555555"
+                else:
+                    ai_win_rate_str = f"基底分數: {ai_score} 分"
+                    ai_recommendation = "⏳ 尚未載入 AI 訓練大腦，顯示基底推薦"
+                    box_color = "#ffc107" if ai_score >= 60 else "#555555"
+                
+                processed_stocks.append({
+                    'ticker': ticker, 'name': name, 'win_prob': win_prob, 
+                    'ai_win_rate_str': ai_win_rate_str, 'ai_recommendation': ai_recommendation, 
+                    'box_color': box_color, 'entry_price': entry_price, 
+                    'take_profit': take_profit, 'stop_loss': stop_loss, 
+                    'profit_reason': profit_reason, 'real_rr_ratio': real_rr_ratio
+                })
+            
+            # 第四階段：一秒渲染前 20 名大圖卡
+            top_20 = sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]
+            
+            for s in top_20:
+                st.markdown(f"""
+                <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
+                    <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫 ({s['ticker']} {s['name']})</h4>
+                    <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 180px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br>
+                            <b style="font-size: 24px; color: {s['box_color']};">{s['ai_win_rate_str']}</b><br>
+                            <span style="font-size: 14px; font-weight: bold;">{s['ai_recommendation']}</span>
+                        </div>
+                        <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">2. 建議進場價</span><br>
+                            <b style="font-size: 22px;">{s['entry_price']:.2f}</b><br>
+                            <span style="font-size: 12px; color: gray;">(現價/限價單)</span>
+                        </div>
+                        <div style="flex: 1; min-width: 200px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">3. 結構停利點</span><br>
+                            <b style="font-size: 22px; color: #00cc96;">{s['take_profit']:.2f}</b><br>
+                            <span style="font-size: 12px; color: #00cc96; font-weight: bold;">{s['profit_reason']}</span><br>
+                            <span style="font-size: 12px; color: gray;">(實況風報比 1 : {s['real_rr_ratio']})</span>
+                        </div>
+                        <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
+                            <span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br>
+                            <b style="font-size: 22px; color: #ff4b4b;">{s['stop_loss']:.2f}</b><br>
+                            <span style="font-size: 12px; color: gray;">(跌破無條件停損)</span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.warning("⚠️ 預算快取準備中，請先至 GitHub 觸發首次 Actions 運算...")
+            st.warning("⚠️ 全市場快取準備中，請先確保 GitHub 已成功執行每日掃描...")
 
     with tab3:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
@@ -476,7 +697,6 @@ else:
         if snapshot:
             res_df = pd.DataFrame(snapshot['data'])
             
-            # 🚀 終極防呆：強制轉字串、清除小數點幽靈、清除空白
             if '代號' in res_df.columns: 
                 res_df['代號'] = res_df['代號'].astype(str).str.replace('.0', '', regex=False).str.strip()
             
@@ -485,7 +705,6 @@ else:
             
             for idx, (sub_name, tickers) in enumerate(chain_data.items()):
                 with cols[idx]:
-                    # 同時確保字典裡的來源陣列也是乾淨字串
                     sub_codes = [str(t).split('.')[0].strip() for t in tickers]
                     sub_res = res_df[res_df['代號'].isin(sub_codes)].copy()
                     
@@ -499,3 +718,56 @@ else:
                         st.markdown(f"**{sub_name}**\n暫無高分數據")
         else:
             st.warning("⚠️ 系統快取準備中...")
+
+    with tab4:
+        st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
+        st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
+        
+        test_threshold = st.slider("🎚️ 設定 AI 分數進場門檻 (若無數據，請嘗試調低分數)", min_value=20, max_value=100, value=50, step=5)
+        
+        b_col1, b_col2 = st.columns([1, 1])
+        with b_col1:
+            st.markdown("##### ⏳ 短波段策略 (持倉 5 天)")
+            res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=test_threshold)
+            
+            if res_5d["status"] == "no_key":
+                st.error("⚠️ 找不到資料庫金鑰。如果您在本地端執行，請確保設定了環境變數。")
+            elif res_5d["status"] == "empty":
+                st.warning("⚠️ Supabase 資料庫完全是空的，請先執行 historical_injector.py。")
+            elif res_5d["status"] == "pending":
+                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。\n*(提示：若數量為 0，代表過去兩年沒有股票達到 {test_threshold} 分，請往左拉動滑桿)*")
+            elif res_5d["status"] == "error":
+                st.error(f"❌ 運算發生錯誤: {res_5d['msg']}")
+            elif res_5d["status"] == "ready":
+                rr_ratio = abs(res_5d['avg_win'] / res_5d['avg_loss']) if res_5d['avg_loss'] != 0 else 0
+                st.markdown(f"""
+                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #00cc96;">
+                    <h3 style="margin-top: 0; color: #00cc96;">期望值: {res_5d['expectancy']*100:+.2f}%</h3>
+                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_5d['total']} 次</p>
+                    <b>勝率:</b> {res_5d['win_rate']*100:.1f}%<br>
+                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_5d['avg_win']*100:.2f}%</span><br>
+                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_5d['avg_loss']*100:.2f}%</span><br>
+                    <b>盈虧比:</b> {rr_ratio:.2f}
+                </div>
+                """, unsafe_allow_html=True)
+
+        with b_col2:
+            st.markdown("##### 🈷️ 長波段策略 (持倉 20 天)")
+            res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=test_threshold)
+            
+            if res_20d["status"] == "pending":
+                st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待 20 天後的開獎。")
+            elif res_20d["status"] == "error":
+                st.error(f"❌ 運算發生錯誤: {res_20d['msg']}")
+            elif res_20d["status"] == "ready":
+                rr_ratio = abs(res_20d['avg_win'] / res_20d['avg_loss']) if res_20d['avg_loss'] != 0 else 0
+                st.markdown(f"""
+                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #ffc107;">
+                    <h3 style="margin-top: 0; color: #ffc107;">期望值: {res_20d['expectancy']*100:+.2f}%</h3>
+                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_20d['total']} 次</p>
+                    <b>勝率:</b> {res_20d['win_rate']*100:.1f}%<br>
+                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_20d['avg_win']*100:.2f}%</span><br>
+                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_20d['avg_loss']*100:.2f}%</span><br>
+                    <b>盈虧比:</b> {rr_ratio:.2f}
+                </div>
+                """, unsafe_allow_html=True)
