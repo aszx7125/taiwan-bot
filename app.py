@@ -515,13 +515,13 @@ else:
                             
                             # 高質感膠囊視覺樣式
                             if win_rate_pct >= 60:
-                                badge_style = "background-color: #00cc96; color: black; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold;"
+                                badge_style = "background-color: #00cc96; color: black; padding: 10px 16px; border-radius: 4px; font-size: 12px; font-weight: bold;"
                                 prefix = "⭐ 核心強勢"
                             elif win_rate_pct >= 50:
-                                badge_style = "background-color: #ffc107; color: black; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold;"
+                                badge_style = "background-color: #ffc107; color: black; padding: 10px 16px; border-radius: 4px; font-size: 12px; font-weight: bold;"
                                 prefix = "⚖️ 溫和觀察"
                             else:
-                                badge_style = "background-color: #555555; color: #bbb; padding: 2px 6px; border-radius: 4px; font-size: 12px;"
+                                badge_style = "background-color: #555555; color: #bbb; padding: 10px 16px; border-radius: 4px; font-size: 12px;"
                                 prefix = "⏸️ 暫無動能"
                                 
                             ai_badge_html = f"<br><span style='{badge_style}'>{prefix} {win_rate_pct:.1f}%</span>"
