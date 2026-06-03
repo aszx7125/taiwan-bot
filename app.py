@@ -36,7 +36,6 @@ def load_market_snapshot():
     return None
 
 def get_snapshot_dict(snapshot):
-    """將大盤快取轉為 O(1) 字典，確保全站讀取同一份歷史基準特徵"""
     if snapshot and 'data' in snapshot:
         return {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
     return {}
@@ -50,11 +49,7 @@ def get_ai_model():
         except: pass
     return None, None
 
-# ==========================================================
-# 🚀 終極對齊核心：中央報價引擎與特徵萃取器 (已修復參數順序 Bug)
-# ==========================================================
 def get_realtime_quote(clean_ticker):
-    """確保全站呼叫同一套報價邏輯，防堵 API 延遲錯亂"""
     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
     if FUGLE_API_KEY:
         try:
@@ -82,18 +77,14 @@ def get_realtime_quote(clean_ticker):
     return rt_price, rt_vol, prev_close
 
 def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=0.0, fallback_rs=0.0, fallback_atr=None, fallback_pattern="", fallback_vol=0.0):
-    """終極特徵對齊：修復引數順序錯亂，完美防堵盤中殘缺成交量欺騙 AI"""
     rs_idx = fallback_rs
     pat = fallback_pattern
-    
     anchor_price = current_price
     base_vol = fallback_vol 
     atr = fallback_atr if fallback_atr else (anchor_price * 0.05)
 
-    # 💎 強制從快取中抽取昨天的「全日完整成交量」與「基準型態」
     if snapshot_dict and clean_ticker in snapshot_dict:
         item = snapshot_dict[clean_ticker]
-        
         anchor_price = float(item.get('現價', item.get('close_price', item.get('Close', anchor_price))))
         vol_raw = item.get('成交量', item.get('Volume', item.get('volume', None)))
         if vol_raw is not None:
@@ -113,7 +104,6 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
             try: atr = float(atr_raw)
             except: pass
 
-    # 若快取遺失且無基準量，才用當下真實即時量
     if base_vol <= 0 and current_vol > 0:
         base_vol = current_vol
 
@@ -122,14 +112,19 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
     volatility = float(atr / anchor_price)
     turnover = float(anchor_price * base_vol)
 
+    # 🔥 終極 MLOps 防呆：台股熱門股日成交額通常大於 1 億。
+    # 如果 Turnover 小於 1 億，高機率是 API 傳遞了「張」而非「股」，需自動校正 * 1000 避免 AI 恐慌。
+    if 0 < turnover < 100_000_000:
+        turnover *= 1000
+
     return {
-        'is_pullback': 1 if "量縮回踩" in pat else 0,
-        'is_sweep': 1 if "流動性掠奪" in pat else 0,
-        'is_squeeze': 1 if "區間壓縮" in pat else 0,
-        'is_divergence': 1 if "底背離" in pat else 0,
-        'rs_index': rs_idx,
-        'volatility': volatility,
-        'turnover': turnover
+        'is_pullback': 1.0 if "量縮回踩" in pat else 0.0,
+        'is_sweep': 1.0 if "流動性掠奪" in pat else 0.0,
+        'is_squeeze': 1.0 if "區間壓縮" in pat else 0.0,
+        'is_divergence': 1.0 if "底背離" in pat else 0.0,
+        'rs_index': float(rs_idx),
+        'volatility': float(volatility),
+        'turnover': float(turnover)
     }
 
 @st.cache_data(ttl=3600*6) 
@@ -260,6 +255,21 @@ if target_ticker:
             profit_reason = "🎯 潛伏目標：前高/箱頂壓力區" if (low_vol_pb or bull_div) else "⚔️ 波段目標：前高波動擴張位"
             real_rr_ratio = round((take_profit - entry_price) / risk_per_share, 2)
 
+            # 🚀 🔥 完整修復：尋回遺失的 1h 微觀狀態判斷邏輯
+            micro_trigger = False
+            micro_status_text = "數據不足"
+            if not df_hourly.empty and len(df_hourly) >= 2:
+                last_hour = df_hourly.iloc[-1]
+                micro_trigger = bool(last_hour.get('Micro_Sniper_Trigger', False))
+                h_macd_cross = bool(last_hour.get('MACD_Cross_Up', False))
+                h_vol_surge = bool(last_hour.get('Vol_Surge_1h', False))
+                
+                if micro_trigger: micro_status_text = "🔥 帶量突破 1h 均線 (強烈買點)"
+                elif h_macd_cross: micro_status_text = "📈 1h MACD 金叉發動"
+                elif h_vol_surge: micro_status_text = "🌊 1h 微觀異常爆量"
+                elif last_hour.get('Close', entry_price) > last_hour.get('SMA_20_1h', entry_price): micro_status_text = "🟢 站穩 1h 均線 (短線強勢)"
+                else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
+
             ai_win_rate_str = "等待 AI 訓練"
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
             box_color = "#555555"
@@ -270,13 +280,12 @@ if target_ticker:
             
             if model:
                 try:
-                    # 🚀 中央錨定：對齊引數順序，消滅漂移與崩潰風險
                     input_data = extract_ai_features(
                         base_ticker, entry_price, snapshot_dict, current_vol=rt_v,
                         fallback_rs=float(today.get('RS_Index', 0.0)), fallback_atr=atr_14, 
                         fallback_pattern=smc_text, fallback_vol=vol_sma5
                     )
-                    input_df = pd.DataFrame([input_data], columns=features).fillna(0)
+                    input_df = pd.DataFrame([input_data], columns=features).astype(float).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
                     ai_win_rate_str = f"{win_prob * 100:.1f}%"
                     
@@ -293,7 +302,7 @@ if target_ticker:
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
             m2.metric("日K 巨觀潛伏分數", f"{ai_score} 分")
-            m3.metric("1h 小時區微觀狀態", "站穩 1h 均線" if micro_trigger else "弱勢震盪")
+            m3.metric("1h 小時區微觀狀態", micro_status_text)
             m4.metric("機構囤貨集中度", f"{broker_conc*100:.1f}%")
             st.markdown("---")
             
@@ -343,9 +352,8 @@ else:
                     
                     if model and clean_ticker in snapshot_dict:
                         try:
-                            # 🚀 中央錨定：對齊引數順序
                             input_data = extract_ai_features(clean_ticker, rt_price, snapshot_dict, current_vol=rt_vol)
-                            input_df = pd.DataFrame([input_data], columns=features).fillna(0)
+                            input_df = pd.DataFrame([input_data], columns=features).astype(float).fillna(0)
                             win_prob = float(model.predict_proba(input_df)[0][1])
                             win_rate_pct = win_prob * 100
                             
@@ -389,15 +397,16 @@ else:
                 valid_items.append(item)
                 if model:
                     vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
-                    # 🚀 中央錨定：修正此處的引數對齊，徹底消除崩潰 Bug
                     bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
 
             all_probs = []
             if model and bulk_features:
                 try:
-                    input_df = pd.DataFrame(bulk_features, columns=features).fillna(0)
+                    # 強制防呆轉換為 float，避免 LightGBM 因為吃到字串而當機
+                    input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
                     all_probs = model.predict_proba(input_df)[:, 1] 
-                except: pass
+                except Exception as e: 
+                    st.error(f"⚠️ 批量推論發生錯誤，請檢查特徵格式: {e}")
 
             processed_stocks = []
             for idx, item in enumerate(valid_items):
