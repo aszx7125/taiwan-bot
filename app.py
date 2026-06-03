@@ -36,7 +36,7 @@ def load_market_snapshot():
     return None
 
 def get_snapshot_dict(snapshot):
-    """將大盤快取轉為 O(1) 字典，確保全站讀取同一份歷史特徵"""
+    """將大盤快取轉為 O(1) 字典，確保全站讀取同一份歷史基準特徵"""
     if snapshot and 'data' in snapshot:
         return {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
     return {}
@@ -51,11 +51,10 @@ def get_ai_model():
     return None, None
 
 # ==========================================================
-# 🚀 終極修復：中央即時報價引擎與中央 AI 特徵萃取器
-# 確保 Tab 1、Tab 2、單股掃描 100% 吃到完全相同的數字！
+# 🚀 終極對齊核心：中央報價引擎與特徵萃取器
 # ==========================================================
 def get_realtime_quote(clean_ticker):
-    """中央報價引擎：統一處理 Fugle 與 Yahoo 的即時現價與成交股數"""
+    """確保全站呼叫同一套報價邏輯，防堵 API 延遲錯亂"""
     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
     if FUGLE_API_KEY:
         try:
@@ -82,26 +81,42 @@ def get_realtime_quote(clean_ticker):
         except: pass
     return rt_price, rt_vol, prev_close
 
-def extract_ai_features(clean_ticker, current_price, current_vol, snapshot_dict, fallback_rs=0.0, fallback_atr=None, fallback_pattern=""):
-    """中央特徵萃取器：徹底消滅分散邏輯，保證全站送入 LightGBM 的陣列絕對相同"""
+def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=0.0, fallback_rs=0.0, fallback_atr=None, fallback_pattern="", fallback_vol=0.0):
+    """終極防線：強制統整大中小股的特徵，杜絕盤中殘缺成交量欺騙 AI"""
     rs_idx = fallback_rs
     atr = fallback_atr if fallback_atr else (current_price * 0.05)
     pat = fallback_pattern
+    base_vol = fallback_vol 
 
+    # 🔥 1. 強制從快取中抽取昨天的「全日完整成交量」與「基準型態」
     if snapshot_dict and clean_ticker in snapshot_dict:
         item = snapshot_dict[clean_ticker]
-        pat = str(item.get('pattern', item.get('Pattern', item.get('型態', pat))))
+        
+        pat_raw = item.get('pattern', item.get('Pattern', item.get('型態', pat)))
+        if pat_raw: pat = str(pat_raw)
+        
         rs_raw = item.get('RS_Index', item.get('rs_index', item.get('大盤相對強度', None)))
         if rs_raw is not None:
-            try: rs_idx = float(str(rs_raw).replace('%', ''))
+            try: rs_idx = float(str(rs_raw).replace('%', '').strip())
             except: pass
+            
         atr_raw = item.get('ATR_14', item.get('atr_14', None))
         if atr_raw is not None:
             try: atr = float(atr_raw)
             except: pass
+            
+        # 最關鍵的一步：提取完整的歷史規模，不被盤中半成品數字干擾
+        vol_raw = item.get('成交量', item.get('Volume', item.get('volume', None)))
+        if vol_raw is not None:
+            try: base_vol = float(vol_raw)
+            except: pass
+
+    # 若快取遺失且無基準量，才用當下成交量做最後墊背
+    if base_vol <= 0 and current_vol > 0:
+        base_vol = current_vol
 
     volatility = float(atr / current_price) if current_price > 0 else 0.0
-    turnover = float(current_price * current_vol)
+    turnover = float(current_price * base_vol)
 
     return {
         'is_pullback': 1 if "量縮回踩" in pat else 0,
@@ -215,18 +230,18 @@ if target_ticker:
                 t_high = float(today.get('High', entry_price))
                 t_low = float(today.get('Low', entry_price))
                 y_close = float(yesterday.get('Close', entry_price))
-                vol_today = float(today.get('Volume', 0))
                 
-                # 🚀 強制對齊：呼叫中央報價引擎覆寫即時價格，確保與 Tab 1 拿到一樣的報價
+                # 保留日 K 線取得的 5 日均量，作為 AI 的穩定基準量
+                vol_sma5 = float(today.get('Vol_SMA5', today.get('Volume', 1.0)))
+                if pd.isna(vol_sma5) or vol_sma5 <= 0: vol_sma5 = 1.0
+                
+                # 🚀 強制對齊：呼叫中央報價引擎覆寫即時價格
                 rt_p, rt_v, _ = get_realtime_quote(base_ticker)
                 if rt_p > 0: entry_price = rt_p
-                if rt_v > 0: vol_today = rt_v
 
                 if pd.isna(entry_price): entry_price = 0.0
                 if pd.isna(y_close) or y_close == 0: y_close = entry_price if entry_price > 0 else 1.0
                 
-                vol_sma5 = float(today.get('Vol_SMA5', 1.0))
-                if pd.isna(vol_sma5) or vol_sma5 <= 0: vol_sma5 = 1.0
                 p_change = ((entry_price - y_close) / y_close) * 100
                 
                 res_level = float(today.get('Res_20', entry_price * 1.05))
@@ -243,7 +258,7 @@ if target_ticker:
                 broker_conc = float(today.get('Broker_Concentration', 0.0))
                 if pd.isna(broker_conc): broker_conc = 0.0
             except Exception as e:
-                entry_price, y_close, t_high, t_low, vol_today, p_change = 0.0, 1.0, 0.0, 0.0, 0.0, 0.0
+                entry_price, y_close, t_high, t_low, vol_sma5, p_change = 0.0, 1.0, 0.0, 0.0, 1.0, 0.0
                 res_level, sup_level, box_height, atr_14 = 0.0, 0.0, 0.0, 0.0
                 ai_score, rs_index, broker_conc = 0, 0.0, 0.0
             
@@ -300,10 +315,11 @@ if target_ticker:
             
             if model:
                 try:
-                    # 🚀 強制對齊：呼叫中央特徵引擎，消滅所有分散邏輯
+                    # 🚀 強制對齊：呼叫中央特徵引擎，並將 5 日均量作為 AI Turnover 的計算備案，避免恐慌
                     input_data = extract_ai_features(
-                        base_ticker, entry_price, vol_today, snapshot_dict,
-                        fallback_rs=rs_index, fallback_atr=atr_14, fallback_pattern=smc_text
+                        base_ticker, entry_price, snapshot_dict, current_vol=rt_v,
+                        fallback_rs=rs_index, fallback_atr=atr_14, 
+                        fallback_pattern=smc_text, fallback_vol=vol_sma5
                     )
                     
                     input_df = pd.DataFrame([input_data], columns=features).fillna(0)
@@ -513,9 +529,9 @@ else:
                     ai_badge_html = ""
                     if model and clean_ticker in snapshot_dict:
                         try:
-                            # 🚀 強制對齊：呼叫中央特徵引擎
+                            # 🚀 強制對齊：呼叫中央特徵引擎，絕對不把 rt_vol 混進去干擾 AI
                             input_data = extract_ai_features(
-                                clean_ticker, rt_price, rt_vol, snapshot_dict
+                                clean_ticker, rt_price, snapshot_dict, current_vol=rt_vol
                             )
                             input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                             win_prob = float(model.predict_proba(input_df)[0][1])
@@ -535,6 +551,8 @@ else:
                         except: pass
                         
                     name_str = f"<b>{base_name}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>{ai_badge_html}"
+                    
+                    # 但在視覺 UI 上，依然如實顯示即時張數，確保您的看盤體驗不受影響
                     display_vol = int(rt_vol) if rt_vol < 2000000 else int(rt_vol / 1000)
                     price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({display_vol:,} 張)</span>"
                     change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
@@ -598,7 +616,7 @@ else:
                 if model:
                     vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
                     # 🚀 強制對齊：呼叫中央特徵引擎打包成矩陣
-                    input_data = extract_ai_features(ticker, entry_price, vol_val, snapshot_dict)
+                    input_data = extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val)
                     bulk_features.append(input_data)
 
             all_probs = []
