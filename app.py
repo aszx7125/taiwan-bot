@@ -36,7 +36,7 @@ def load_market_snapshot():
             return None
     return None
 
-# 🚀 優化 1：將 AI 大腦鎖進常駐記憶體，避免重複讀取硬碟榨乾效能
+# 🚀 將 AI 大腦鎖進常駐記憶體，避免重複讀取硬碟榨乾效能
 @st.cache_resource
 def get_ai_model():
     if os.path.exists("quant_model.joblib") and os.path.exists("model_features.joblib"):
@@ -255,7 +255,7 @@ if target_ticker:
                 ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
                 box_color = "#555555"
 
-            # 🚀 從快取讀取 AI 大腦
+            # 🚀 從快取讀取 AI 大腦 (含股性與規模特徵)
             model, features = get_ai_model()
             if model:
                 try:
@@ -266,6 +266,11 @@ if target_ticker:
                     input_data['is_divergence'] = 1 if bull_div else 0
                     input_data['rs_index'] = float(rs_index) if not pd.isna(rs_index) else 0.0
                     
+                    # 🆕 傳遞股性特徵給 AI
+                    input_data['volatility'] = float(atr_14 / entry_price) if entry_price > 0 else 0.0
+                    input_data['turnover'] = float(entry_price * today.get('Volume', 0)) if 'Volume' in today else 0.0
+                    
+                    # 確保按照模型訓練時的特徵順序排列
                     input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
                     ai_win_rate_str = f"{win_prob * 100:.1f}%"
@@ -459,7 +464,7 @@ else:
         """)
             
     st.markdown("---")
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 潛伏型 AI 評分 (勝率排行)", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -542,11 +547,11 @@ else:
         render_rt()
 
     # ==========================================================
-    # 🔥 優化 2：矩陣批量運算 (Pandas Vectorization) - 秒速載入大圖卡面板
+    # 🔥 AI 全市場勝率預測 x 矩陣批量運算 (解決大小寫不對稱與新特徵問題)
     # ==========================================================
     with tab2:
         st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
-        st.caption("系統透過矩陣平行運算，將全市場數據送入神經網路推演，瞬間篩選出明日預測勝率最高的 20 檔強勢標的。")
+        st.caption("系統透過矩陣平行運算，將全市場數據送入具備『股性與規模特徵』的神經網路推演，瞬間篩選出明日預測勝率最高的 20 檔強勢標的。")
         
         snapshot = load_market_snapshot()
         if snapshot:
@@ -558,7 +563,7 @@ else:
             
             model, features = get_ai_model()
             
-           # 第一階段：提取有效數據並打包成矩陣
+            # 第一階段：提取有效數據並打包成矩陣 (加入完美防呆機制與新特徵)
             for item in raw_list:
                 entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                 if entry_price == 0: continue
@@ -566,29 +571,35 @@ else:
                 valid_items.append(item)
                 
                 if model:
-                    # 🛡️ 終極防呆：同時支援大寫 'Pattern'、小寫 'pattern' 與中文 '型態'
+                    # 🛡️ 大小寫相容防呆：支援 'pattern', 'Pattern', '型態'
                     pattern_str = str(item.get('pattern', item.get('Pattern', item.get('型態', ''))))
                     
-                    # 🛡️ 終極防呆：同時支援 'RS_Index'、'rs_index' 與 '大盤相對強度'
+                    # 🛡️ 大小寫相容防呆：支援 'rs_index', 'RS_Index', '大盤相對強度'
                     rs_val_str = str(item.get('RS_Index', item.get('rs_index', item.get('大盤相對強度', '0')))).replace('%', '')
-                    
                     try: rs_index = float(rs_val_str)
                     except: rs_index = 0.0
+                    
+                    # 🚀 提取新特徵 (若快取無資料則退回 0.0)
+                    volatility = float(item.get('volatility', item.get('Volatility', 0.0)))
+                    turnover = float(item.get('turnover', item.get('Turnover', 0.0)))
                     
                     bulk_features.append({
                         'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
                         'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
                         'is_squeeze': 1 if "區間壓縮" in pattern_str else 0,
                         'is_divergence': 1 if "底背離" in pattern_str else 0,
-                        'rs_index': rs_index
+                        'rs_index': rs_index,
+                        'volatility': volatility,
+                        'turnover': turnover
                     })
 
             # 第二階段：一鍵執行全市場批量推論 (Vectorized Inference)
             all_probs = []
             if model and bulk_features:
                 try:
+                    # 確保按照模型訓練時的欄位順序對齊
                     input_df = pd.DataFrame(bulk_features, columns=features).fillna(0)
-                    all_probs = model.predict_proba(input_df)[:, 1] # 一次算出 1700 筆機率
+                    all_probs = model.predict_proba(input_df)[:, 1] 
                 except:
                     pass
 
@@ -604,14 +615,13 @@ else:
                 sup_level = float(item.get('Sup_20', entry_price * 0.95))
                 atr_14 = float(item.get('ATR_14', entry_price * 0.05))
                 
-                # 抓取剛算好的 AI 機率
                 if model and len(all_probs) > idx:
                     win_prob = float(all_probs[idx])
                 else:
                     win_prob = ai_score / 100.0
                 
                 box_height = max(res_level - sup_level, 0.01)
-                pattern_str = str(item.get('pattern', item.get('型態', '')))
+                pattern_str = str(item.get('pattern', item.get('Pattern', item.get('型態', ''))))
                 
                 if entry_price > res_level:
                     stop_loss = round(res_level * 0.985, 2)
