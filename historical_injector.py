@@ -65,8 +65,8 @@ def process_single_ticker(t, days_back, market_ret_20, names_dict, start_date):
                 "pattern": pattern_str,
                 "close_price": close_val,
                 "rs_index": rs_val,
-                "volatility": volatility,  # 🆕 新增存入資料庫
-                "turnover": turnover       # 🆕 新增存入資料庫
+                "volatility": volatility,
+                "turnover": turnover
             })
             
         return clean_ticker, db_records
@@ -88,6 +88,8 @@ def inject_history_data(target_tickers, days_back=730):
     start_date = end_date - datetime.timedelta(days=days_back)
     all_db_records = []
     
+    print(f"🎯 啟動全市場均衡學習！共計 {len(target_tickers)} 檔代表性標的...")
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_single_ticker, t, days_back, market_ret_20, names_dict, start_date): t for t in target_tickers}
         for future in concurrent.futures.as_completed(futures):
@@ -99,22 +101,35 @@ def inject_history_data(target_tickers, days_back=730):
 
     if not all_db_records: return
     
+    print(f"\n======================================")
+    print(f"🚀 運算完畢！準備將 {len(all_db_records)} 筆全市場均衡記憶注入資料庫...")
+    print(f"======================================")
+    
     try:
         batch_size = 500
         for i in range(0, len(all_db_records), batch_size):
             batch = all_db_records[i:i + batch_size]
             supabase.table("quant_history").insert(batch).execute()
             print(f"   ⬆️ 成功注入進度：{min(i+batch_size, len(all_db_records))} / {len(all_db_records)}")
-        print("🎉 歷史記憶大回補 完美成功！(包含全新股性特徵)")
+        print("🎉 歷史記憶大回補 完美成功！(大、中、小型股全數納入)")
     except Exception as e: print(f"❌ 寫入資料庫失敗: {e}")
 
 if __name__ == "__main__":
     auto_tickers = set()
     
-    # 🚀 強制讓 AI 見世面：硬塞入台灣市值前 50 大權值股作為學習基準
+    # ⚖️ 1. 大型權值股 (0050代表 - 教導 AI 穩健趨勢與外資邏輯)
     top_50 = ['2330.TW', '2317.TW', '2454.TW', '2382.TW', '2308.TW', '2881.TW', '2882.TW', '2891.TW', '3231.TW', '2303.TW', '2886.TW', '2884.TW', '2885.TW', '1216.TW', '2002.TW', '2892.TW', '2880.TW', '2883.TW', '2887.TW', '2912.TW', '2356.TW', '2379.TW', '2301.TW', '3045.TW', '2345.TW', '2395.TW', '2412.TW', '2890.TW', '2603.TW', '2609.TW', '2615.TW', '2207.TW', '3711.TW', '5871.TW', '4938.TW', '5880.TW', '6669.TW', '2324.TW', '3008.TW', '3034.TW', '3481.TW', '2409.TW', '2801.TW', '2812.TW', '8046.TW', '2888.TW', '2353.TW', '2352.TW', '1101.TW', '1102.TW']
-    for t in top_50: auto_tickers.add(t)
+    
+    # ⚖️ 2. 中型中堅股 (0051代表 - 教導 AI 投信作帳與強勢波段)
+    mid_50 = ['2368.TW', '2376.TW', '2377.TW', '2383.TW', '3037.TW', '2618.TW', '2610.TW', '2313.TW', '2354.TW', '2449.TW', '2373.TW', '2385.TW', '2392.TW', '2408.TW', '2458.TW', '2606.TW', '2809.TW', '2834.TW', '2845.TW', '2889.TW', '2903.TW', '2915.TW', '3044.TW', '3443.TW', '3532.TW', '3661.TW', '3702.TW', '4904.TW', '4915.TW', '5347.TWO', '5483.TWO', '6176.TW', '6239.TW', '6271.TW', '8016.TW', '8081.TW', '8112.TW', '8464.TW', '9904.TW', '9910.TW', '9914.TW', '9921.TW', '9941.TW', '9945.TW']
+    
+    # ⚖️ 3. 小型/櫃買妖股 (OTC代表 - 教導 AI 辨識隔日沖與假突破陷阱)
+    otc_50 = ['3105.TWO', '3293.TWO', '3324.TWO', '3529.TWO', '5425.TWO', '6147.TWO', '6274.TWO', '8069.TWO', '8299.TWO', '3131.TWO', '3141.TWO', '3227.TWO', '3260.TWO', '3264.TWO', '3314.TWO', '3328.TWO', '3362.TWO', '3374.TWO', '3483.TWO', '3491.TWO', '3552.TWO', '3556.TWO', '3587.TWO', '3680.TWO', '4105.TWO', '4114.TWO', '4123.TWO', '4128.TWO', '4162.TWO', '4743.TWO', '4947.TWO', '4953.TWO', '4979.TWO', '5289.TWO', '5351.TWO', '5478.TWO', '5490.TWO', '5536.TWO', '6104.TWO', '6121.TWO', '6138.TWO', '6182.TWO', '6188.TWO', '6223.TWO', '6245.TWO', '6279.TWO', '8044.TWO', '8050.TWO']
+
+    for t in top_50 + mid_50 + otc_50:
+        auto_tickers.add(t)
         
+    # 加上您原本配置在 Config 的自選清單
     for cluster_name, tickers in DEFAULT_CLUSTERS.items():
         for t in tickers: auto_tickers.add(t.strip().upper())
             
@@ -127,6 +142,5 @@ if __name__ == "__main__":
                 
     final_watchlist = sorted(list(auto_tickers))
     
-    # ⚡ 這裡請在本地端手動執行一次，讓它回補兩年資料。
-    # 之後 GitHub Actions 每天跑的時候，只要把這裡改成 days_back=1 就可以了！
+    # 執行回補：預設回補過去兩年 (730天)
     inject_history_data(final_watchlist, days_back=730)
