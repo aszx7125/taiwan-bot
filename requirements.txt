@@ -6,3 +6,4 @@ requests
 supabase
 scikit-learn
 joblib
+lightgbm
