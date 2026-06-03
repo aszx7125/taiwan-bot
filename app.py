@@ -558,7 +558,7 @@ else:
             
             model, features = get_ai_model()
             
-            # 第一階段：提取有效數據並打包成矩陣
+           # 第一階段：提取有效數據並打包成矩陣
             for item in raw_list:
                 entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                 if entry_price == 0: continue
@@ -566,8 +566,11 @@ else:
                 valid_items.append(item)
                 
                 if model:
-                    pattern_str = str(item.get('pattern', item.get('型態', '')))
-                    rs_val_str = str(item.get('大盤相對強度', item.get('rs_index', '0'))).replace('%', '')
+                    # 🛡️ 終極防呆：同時支援大寫 'Pattern'、小寫 'pattern' 與中文 '型態'
+                    pattern_str = str(item.get('pattern', item.get('Pattern', item.get('型態', ''))))
+                    
+                    # 🛡️ 終極防呆：同時支援 'RS_Index'、'rs_index' 與 '大盤相對強度'
+                    rs_val_str = str(item.get('RS_Index', item.get('rs_index', item.get('大盤相對強度', '0')))).replace('%', '')
                     
                     try: rs_index = float(rs_val_str)
                     except: rs_index = 0.0
