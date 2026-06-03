@@ -36,7 +36,6 @@ def load_market_snapshot():
             return None
     return None
 
-# 🧠 將全新的 LightGBM 大腦鎖進常駐記憶體，避免重複讀取硬碟榨乾效能
 @st.cache_resource
 def get_ai_model():
     if os.path.exists("quant_model.joblib") and os.path.exists("model_features.joblib"):
@@ -245,7 +244,6 @@ if target_ticker:
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
             box_color = "#555555"
 
-            # 🚀 從常駐快取讀取全新的 LightGBM 大腦 (完美傳遞 7 大特徵)
             model, features = get_ai_model()
             if model:
                 try:
@@ -256,11 +254,9 @@ if target_ticker:
                     input_data['is_divergence'] = 1 if bull_div else 0
                     input_data['rs_index'] = float(rs_index) if not pd.isna(rs_index) else 0.0
                     
-                    # 🚀 即時動態計算股性波動率與規模特徵，餵給 LightGBM 交叉審查
                     input_data['volatility'] = float(atr_14 / entry_price) if entry_price > 0 else 0.0
                     input_data['turnover'] = float(entry_price * today.get('Volume', 0)) if 'Volume' in today else 0.0
                     
-                    # 確保按照模型訓練時的 7 大特徵順序排列
                     input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
                     ai_win_rate_str = f"{win_prob * 100:.1f}%"
@@ -455,7 +451,7 @@ else:
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     # ==========================================================
-    # 📊 TAB 1: 自選即時流 x 完美對齊的 LightGBM 動態勝率膠囊標籤
+    # 📊 TAB 1: 完美修復時間差！動態即時提取現價與成交量算 AI 勝率
     # ==========================================================
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -468,12 +464,10 @@ else:
             rows = []
             current_names = st.session_state.stock_names.copy()
             
-            # 🧠 同步加載全局新大腦與大盤快取
             model, features = get_ai_model()
             snapshot = load_market_snapshot()
             snapshot_dict = {}
             
-            # 快取矩陣轉雜湊字典，實現 O(1) 極速搜尋，防止多執行緒阻塞
             if snapshot and 'data' in snapshot:
                 for item in snapshot['data']:
                     tk = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
@@ -484,8 +478,40 @@ else:
                     clean_ticker = t.split('.')[0]
                     base_name = names_dict.get(clean_ticker, clean_ticker)
                     
-                    # 🚀 核心：非同步即時為自選股打上 100% 同步的 LightGBM 勝率標籤
+                    rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
+                    
+                    # 1. 優先抓取即時報價，確保我們擁有「最真實的當下成交量」
+                    if FUGLE_API_KEY:
+                        try:
+                            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
+                            if res.status_code == 200:
+                                data = res.json()
+                                rt_price = data.get('closePrice')
+                                if not rt_price and data.get('lastTrade'): rt_price = data.get('lastTrade').get('price')
+                                prev_close = data.get('previousClose') or data.get('referencePrice')
+                                rt_vol = data.get('total', {}).get('tradeVolume', 0)
+                                if rt_price: rt_price = float(rt_price)
+                                if prev_close: prev_close = float(prev_close)
+                                if rt_vol: rt_vol = float(rt_vol)
+                        except: pass
+
+                    if not rt_price or rt_price == 0:
+                        try:
+                            df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
+                            if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
+                            if not df.empty and len(df) >= 2:
+                                c, p = df.iloc[-1], df.iloc[-2]
+                                rt_price, prev_close = float(c['Close']), float(p['Close'])
+                                rt_vol = float(c['Volume'])
+                        except: pass
+                        
+                    if not rt_price or rt_price == 0: return None
+                        
+                    change_amt = rt_price - prev_close
+                    change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
+                    
                     ai_badge_html = ""
+                    # 2. 將抓回來的真實即時成交量 (rt_vol) 動態計算 Turnover 餵給 AI
                     if model and clean_ticker in snapshot_dict:
                         try:
                             match_item = snapshot_dict[clean_ticker]
@@ -495,10 +521,11 @@ else:
                             try: rs_index = float(rs_val_str)
                             except: rs_index = 0.0
                             
-                            volatility = float(match_item.get('volatility', match_item.get('Volatility', 0.0)))
-                            turnover = float(match_item.get('turnover', match_item.get('Turnover', 0.0)))
+                            # 🔥 核心修正點：【當場心算】波動率與成交規模，保證與單股掃描 100% 同步！
+                            atr_14 = float(match_item.get('ATR_14', match_item.get('atr_14', rt_price * 0.05)))
+                            volatility = float(atr_14 / rt_price) if rt_price > 0 else 0.0
+                            turnover = float(rt_price * rt_vol)
                             
-                            # 完美對齊 7 大維度特徵
                             input_data = {
                                 'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
                                 'is_sweep': 1 if "流動性掠奪" in pattern_str else 0,
@@ -513,58 +540,24 @@ else:
                             win_prob = float(model.predict_proba(input_df)[0][1])
                             win_rate_pct = win_prob * 100
                             
-                            # 高質感膠囊視覺樣式
                             if win_rate_pct >= 60:
-                                badge_style = "background-color: #00cc96; color: black; padding: 10px 16px; border-radius: 4px; font-size: 12px; font-weight: bold;"
+                                badge_style = "background-color: #00cc96; color: black; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold;"
                                 prefix = "⭐ 核心強勢"
                             elif win_rate_pct >= 50:
-                                badge_style = "background-color: #ffc107; color: black; padding: 10px 16px; border-radius: 4px; font-size: 12px; font-weight: bold;"
+                                badge_style = "background-color: #ffc107; color: black; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold;"
                                 prefix = "⚖️ 溫和觀察"
                             else:
-                                badge_style = "background-color: #555555; color: #bbb; padding: 10px 16px; border-radius: 4px; font-size: 12px;"
+                                badge_style = "background-color: #555555; color: #bbb; padding: 2px 6px; border-radius: 4px; font-size: 12px;"
                                 prefix = "⏸️ 暫無動能"
                                 
                             ai_badge_html = f"<br><span style='{badge_style}'>{prefix} {win_rate_pct:.1f}%</span>"
                         except: pass
-                    
-                    # 標籤嵌入標的欄位
+                        
                     name_str = f"<b>{base_name}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>{ai_badge_html}"
+                    price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
+                    change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
                     
-                    # 即時報價串接 (Fugle / Yahoo Fallback)
-                    if FUGLE_API_KEY:
-                        try:
-                            res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
-                            if res.status_code == 200:
-                                data = res.json()
-                                rt_price = data.get('closePrice')
-                                if not rt_price and data.get('lastTrade'): rt_price = data.get('lastTrade').get('price')
-                                prev_close = data.get('previousClose') or data.get('referencePrice')
-                                rt_vol = data.get('total', {}).get('tradeVolume', 0)
-                                
-                                if rt_price and prev_close:
-                                    rt_price, prev_close = float(rt_price), float(prev_close)
-                                    change_amt = rt_price - prev_close
-                                    change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
-                                    
-                                    price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
-                                    change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                                    return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
-                        except: pass
-
-                    try:
-                        df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
-                        if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
-                        if not df.empty and len(df) >= 2:
-                            c, p = df.iloc[-1], df.iloc[-2]
-                            rt_price, float_p = float(c['Close']), float(p['Close'])
-                            rt_vol = float(c['Volume'])
-                            change_amt = rt_price - float_p
-                            change_pct = (change_amt / float_p) * 100 if float_p > 0 else 0
-                            
-                            price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
-                            change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                            return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
-                    except: pass
+                    return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
                 except: pass
                 return None
 
@@ -596,7 +589,7 @@ else:
         render_rt()
 
     # ==========================================================
-    # 🎯 TAB 2: 全市場 AI 勝率最高進出場戰術面板 (100% 矩陣批量推論)
+    # 🎯 TAB 2: 完美修復防呆，當場心算避免舊快取干擾
     # ==========================================================
     with tab2:
         st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
@@ -612,7 +605,6 @@ else:
             
             model, features = get_ai_model()
             
-            # 第一階段：提取有效數據並打包成矩陣 (支援大、小寫與新股性欄位防呆)
             for item in raw_list:
                 entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                 if entry_price == 0: continue
@@ -625,8 +617,12 @@ else:
                     try: rs_index = float(rs_val_str)
                     except: rs_index = 0.0
                     
-                    volatility = float(item.get('volatility', item.get('Volatility', 0.0)))
-                    turnover = float(item.get('turnover', item.get('Turnover', 0.0)))
+                    # 🔥 核心修正點：不再去讀取 snapshot 裡面缺失的 turnover 欄位，直接當場算！
+                    vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
+                    atr_14 = float(item.get('ATR_14', item.get('atr_14', entry_price * 0.05)))
+                    
+                    volatility = float(atr_14 / entry_price) if entry_price > 0 else 0.0
+                    turnover = float(entry_price * vol_val)
                     
                     bulk_features.append({
                         'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
@@ -638,7 +634,6 @@ else:
                         'turnover': turnover
                     })
 
-            # 第二階段：一鍵執行全市場批量向量化推論 (Vectorized Inference)
             all_probs = []
             if model and bulk_features:
                 try:
@@ -646,7 +641,6 @@ else:
                     all_probs = model.predict_proba(input_df)[:, 1] 
                 except: pass
 
-            # 第三階段：合併排序預測結果
             processed_stocks = []
             for idx, item in enumerate(valid_items):
                 ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
@@ -709,7 +703,6 @@ else:
                     'profit_reason': profit_reason, 'real_rr_ratio': real_rr_ratio
                 })
             
-            # 第四階段：批量渲染渲染前 20 名旗艦圖卡
             top_20 = sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]
             
             for s in top_20:
