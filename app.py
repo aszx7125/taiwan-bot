@@ -255,7 +255,10 @@ if target_ticker:
                     input_data['rs_index'] = float(rs_index) if not pd.isna(rs_index) else 0.0
                     
                     input_data['volatility'] = float(atr_14 / entry_price) if entry_price > 0 else 0.0
-                    input_data['turnover'] = float(entry_price * today.get('Volume', 0)) if 'Volume' in today else 0.0
+                    
+                    # 🔥 [單股掃描修正] 保證 AI 吃到的成交量是「股數」
+                    vol_today = float(today.get('Volume', 0))
+                    input_data['turnover'] = float(entry_price * vol_today)
                     
                     input_df = pd.DataFrame([input_data], columns=features).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
@@ -451,7 +454,7 @@ else:
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
     # ==========================================================
-    # 📊 TAB 1: 完美修復時間差！動態即時提取現價與成交量算 AI 勝率
+    # 📊 TAB 1: 隔離 UI 顯示與 AI 算繪的單位錯亂
     # ==========================================================
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -480,7 +483,7 @@ else:
                     
                     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
                     
-                    # 1. 優先抓取即時報價，確保我們擁有「最真實的當下成交量」
+                    # 1. 抓取即時價格與數量
                     if FUGLE_API_KEY:
                         try:
                             res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": FUGLE_API_KEY}, timeout=2)
@@ -511,7 +514,7 @@ else:
                     change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
                     
                     ai_badge_html = ""
-                    # 2. 將抓回來的真實即時成交量 (rt_vol) 動態計算 Turnover 餵給 AI
+                    # 2. 🔥 【終極修復】：從 Snapshot 提取「股數」計算大局市值規模，徹底避開盤中即時「張數」干擾
                     if model and clean_ticker in snapshot_dict:
                         try:
                             match_item = snapshot_dict[clean_ticker]
@@ -521,10 +524,12 @@ else:
                             try: rs_index = float(rs_val_str)
                             except: rs_index = 0.0
                             
-                            # 🔥 核心修正點：【當場心算】波動率與成交規模，保證與單股掃描 100% 同步！
                             atr_14 = float(match_item.get('ATR_14', match_item.get('atr_14', rt_price * 0.05)))
                             volatility = float(atr_14 / rt_price) if rt_price > 0 else 0.0
-                            turnover = float(rt_price * rt_vol)
+                            
+                            # 讀取昨日完整的 Yahoo 股數成交量
+                            base_vol = float(match_item.get('成交量', match_item.get('Volume', match_item.get('volume', 0.0))))
+                            turnover = float(rt_price * base_vol)
                             
                             input_data = {
                                 'is_pullback': 1 if "量縮回踩" in pattern_str else 0,
@@ -554,7 +559,11 @@ else:
                         except: pass
                         
                     name_str = f"<b>{base_name}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>{ai_badge_html}"
-                    price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
+                    
+                    # 3. 🔥 【視覺修復】：確保畫面上顯示的永遠是正確的「張數」
+                    display_vol = int(rt_vol) if rt_vol < 2000000 else int(rt_vol / 1000)
+                    price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({display_vol:,} 張)</span>"
+                    
                     change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
                     
                     return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
@@ -589,7 +598,7 @@ else:
         render_rt()
 
     # ==========================================================
-    # 🎯 TAB 2: 完美修復防呆，當場心算避免舊快取干擾
+    # 🎯 TAB 2: 全市場 AI 勝率最高進出場戰術面板 
     # ==========================================================
     with tab2:
         st.markdown("#### 🎯 全市場 AI 勝率最高進出場戰術面板 (TOP 20)")
@@ -617,7 +626,6 @@ else:
                     try: rs_index = float(rs_val_str)
                     except: rs_index = 0.0
                     
-                    # 🔥 核心修正點：不再去讀取 snapshot 裡面缺失的 turnover 欄位，直接當場算！
                     vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
                     atr_14 = float(item.get('ATR_14', item.get('atr_14', entry_price * 0.05)))
                     
