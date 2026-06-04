@@ -86,6 +86,8 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
     anchor_price = current_price
     base_vol = fallback_vol 
     atr = fallback_atr if fallback_atr else (anchor_price * 0.05)
+    vol_ratio = 1.0
+    broker_conc = 0.0
 
     if snapshot_dict and clean_ticker in snapshot_dict:
         item = snapshot_dict[clean_ticker]
@@ -109,6 +111,9 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
             try: atr = float(atr_raw)
             except: pass
 
+        vol_ratio = float(item.get('vol_ratio', item.get('Vol_Ratio', 1.0)))
+        broker_conc = float(item.get('broker_conc', item.get('Broker_Concentration', 0.0)))
+
     if base_vol <= 0 and current_vol > 0:
         base_vol = current_vol
 
@@ -122,19 +127,22 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
 
     return {
         'is_pullback': 1.0 if "量縮回踩" in pat else 0.0,
-        'is_sweep': 1.0 if "流動性掠奪" in pat else 0.0,
         'is_squeeze': 1.0 if "區間壓縮" in pat else 0.0,
         'is_divergence': 1.0 if "底背離" in pat else 0.0,
+        'is_liquidity_sweep': 1.0 if "流動性掠奪" in pat else 0.0,
+        'is_poc_rejection': 1.0 if "POC" in pat else 0.0,
         'rs_index': float(rs_idx),
+        'vol_ratio': float(vol_ratio),
         'volatility': float(volatility),
-        'turnover': float(turnover)
+        'turnover': float(turnover),
+        'broker_conc': float(broker_conc)
     }
 
 # ==========================================================
-# 📊 純粹神經網路回測面板核心運算 (徹底替換舊有 Score)
+# 📊 雙向去偏差回測模組 (整合 20MA 智慧濾網與大盤基準線)
 # ==========================================================
 @st.cache_data(ttl=3600*2) 
-def fetch_advanced_backtest(ai_prob_threshold=0.55):
+def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True):
     try:
         from supabase import create_client
         url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
@@ -144,11 +152,21 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55):
         model, features = get_ai_model()
         if not model: return {"status": "error", "msg": "找不到 AI 模型，請確認 quant_model.joblib 存在。"}
         
+        # 🔗 1. 連線並同步加權指數(大盤)歷史線作為基準對照與防禦線
+        market_k = fetch_yahoo_robust("^TWII", period="3y", interval="1d")
+        if market_k.empty: return {"status": "error", "msg": "無法下載大盤對照基準線。"}
+        
+        market_k = market_k.sort_index()
+        market_k['market_sma20'] = market_k['Close'].rolling(window=20).mean()
+        market_k['market_pct'] = market_k['Close'].pct_change()
+        market_k = market_k.reset_index()
+        market_k['date_norm'] = pd.to_datetime(market_k['index']).dt.normalize()
+        market_brief = market_k[['date_norm', 'Close', 'market_sma20', 'market_pct']].rename(columns={'Close': 'market_close'})
+
+        # 🔗 2. 自 Supabase 讀取全市場交易歷史記憶
         supabase = create_client(url, key)
         all_data = []
         offset, limit = 0, 1000
-        
-        # 🚀 取出所有欄位，因為神經網路推論需要特徵
         while True:
             res = supabase.table("quant_history").select("*").range(offset, offset+limit-1).execute()
             if not res.data: break
@@ -159,10 +177,11 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55):
         
         df = pd.DataFrame(all_data)
         df['date'] = pd.to_datetime(df['date'])
+        df['date_norm'] = df['date'].dt.normalize()
         df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
         df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
 
-        # 🎯 嚴格特徵工程對齊 (重建 SMC 特徵供 AI 使用)
+        # 🎯 3. 重建 SMC 機器學習高維特徵矩陣
         df['pattern'] = df['pattern'].fillna("")
         df['is_pullback'] = df['pattern'].str.contains("量縮回踩").astype(int)
         df['is_squeeze'] = df['pattern'].str.contains("區間壓縮").astype(int)
@@ -176,46 +195,51 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55):
         df['turnover'] = pd.to_numeric(df.get('turnover', 0.0), errors='coerce').fillna(0.0)
         df['broker_conc'] = pd.to_numeric(df.get('broker_conc', 0.0), errors='coerce').fillna(0.0)
 
-        # 🧠 將全歷史資料倒回神經網路進行預測！
+        # 🧠 4. 大腦盲測推演與大盤數據精準側擊合併
         try:
             input_df = df[features].astype(float).fillna(0)
             df['ai_prob'] = model.predict_proba(input_df)[:, 1]
         except Exception as e:
             return {"status": "error", "msg": f"AI 特徵對齊失敗: {str(e)}"}
 
-        # 🎯 嚴格對齊訓練目標：預測未來 5 天之表現
+        df = pd.merge(df, market_brief, on='date_norm', how='left')
+
         df['future_close_5d'] = df.groupby('ticker')['close_price'].shift(-5)
         df['return_5d'] = (df['future_close_5d'] - df['close_price']) / df['close_price']
 
-        # 🚀 拋棄舊 score，完全依賴 AI 神經網路預測的勝率來篩選訊號
-        signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['future_close_5d'].notna())].copy()
+        # 🎯 5. 執行條件過濾 (智慧防禦濾網交織)
+        if use_market_filter:
+            # 嚴格守則：預測達標 且 當天加權指數必須收在月線(20MA)上方，否則強制判定空倉防守不進場
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['future_close_5d'].notna())].copy()
+        else:
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['future_close_5d'].notna())].copy()
 
         if len(signals) == 0:
             pending = len(df[df['ai_prob'] >= ai_prob_threshold])
             return {"status": "pending", "pending_count": pending}
 
-        # 1. 真實實盤勝率 (> 1.5% 才算有效獲利)
+        # 6. 計算各項淨化後的量化核心指標
         wins = len(signals[signals['return_5d'] > 0.015])
         losses = len(signals) - wins
         wr = wins / len(signals) if len(signals) > 0 else 0
         
-        # 2. 累計盈虧 & 平均期望值 (解開勝率迷思的關鍵)
         cum_pnl = signals['return_5d'].sum() * 100
-        total_samples = len(signals) if len(signals) > 0 else 1
+        total_samples = len(signals)
         avg_trade_return = cum_pnl / total_samples
 
-        # 3. TP 觸及概率 (測量 5 日內真實波動)
-        tp1_hits = len(signals[signals['return_5d'] >= 0.03]) # 3%
-        tp2_hits = len(signals[signals['return_5d'] >= 0.05]) # 5%
-        tp3_hits = len(signals[signals['return_5d'] >= 0.07]) # 7%
-        ftp_hits = len(signals[signals['return_5d'] >= 0.10]) # 10%
+        tp1_hits = len(signals[signals['return_5d'] >= 0.03])
+        tp2_hits = len(signals[signals['return_5d'] >= 0.05])
+        tp3_hits = len(signals[signals['return_5d'] >= 0.07])
+        ftp_hits = len(signals[signals['return_5d'] >= 0.10])
 
-        # 4. 最新訊號清單 (包含 AI 預測勝率)
         recent_signals = signals.sort_values('date', ascending=False).head(50)
         recent_signals['ai_prob_str'] = (recent_signals['ai_prob'] * 100).apply(lambda x: f"{x:.1f}%")
         
-        # 5. 資產淨值曲線 (每日平均獲利累加)
-        equity_df = signals.groupby('date')['return_5d'].mean().cumsum().reset_index()
+        # 📈 7. 資產曲線與大盤基準線時間軸完美對撞
+        daily_summary = signals.groupby('date_norm').agg({'return_5d': 'mean', 'market_pct': 'first'}).reset_index()
+        daily_summary['strat_cum'] = daily_summary['return_5d'].cumsum() * 100
+        daily_summary['market_cum'] = daily_summary['market_pct'].fillna(0).cumsum() * 100
+        daily_summary['date_str'] = daily_summary['date_norm'].dt.strftime('%Y-%m-%d')
 
         return {
             "status": "ready",
@@ -229,7 +253,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55):
                 "samples": total_samples
             },
             "signals": recent_signals[['date', 'ticker', 'close_price', 'ai_prob_str']].to_dict('records'),
-            "equity": equity_df.to_dict('records')
+            "equity": daily_summary[['date_str', 'strat_cum', 'market_cum']].to_dict('records')
         }
     except Exception as e: return {"status": "error", "msg": str(e)}
 
@@ -331,7 +355,6 @@ if target_ticker:
                 else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
 
             ai_win_rate_str = "等待 AI 訓練"
-            
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
             box_color = "#a8a8a8"
             text_color = "#f0f0f0"
@@ -491,7 +514,7 @@ else:
         
         chain_list = list(INDUSTRY_CHAINS.keys())
         if not chain_list:
-            st.warning("⚠️ 尚未配置任何產業鏈 (請在 config.py 檢查 INDUSTRY_CHAINS)。")
+            st.warning("⚠️ 尚未配置任何產業鏈。")
         else:
             selected_chain = st.selectbox("選擇要檢視的產業鏈", chain_list)
             chain_data = INDUSTRY_CHAINS[selected_chain]
@@ -530,16 +553,14 @@ else:
             else: 
                 st.warning("⚠️ 系統快取準備中，請先前往 Actions 觸發掃描...")
 
-    # ==========================================================
-    # 🔬 旗艦級 AI 演算法實盤回測面板 (純淨神經網路版)
-    # ==========================================================
     with tab4:
         st.markdown("#### 🔬 AI 演算法實盤回測面板")
         
-        # 🚀 改為讓使用者直接拖曳「AI 神經網路預測勝率」
+        # 🎛️ 雙向防禦開關組
         test_threshold = st.slider("🎚️ 設定神經網路預測勝率門檻 (%)", min_value=40, max_value=85, value=55, step=1)
+        use_mkt_filter = st.checkbox("🛡️ 啟動大盤月線 (20MA) 智慧防禦濾網 (大盤轉弱破月線時，AI 自動空倉防守、拒絕進場)", value=True)
         
-        res_adv = fetch_advanced_backtest(ai_prob_threshold=test_threshold/100.0)
+        res_adv = fetch_advanced_backtest(ai_prob_threshold=test_threshold/100.0, use_market_filter=use_mkt_filter)
         
         if res_adv["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
         elif res_adv["status"] == "empty": st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
@@ -547,7 +568,7 @@ else:
         elif res_adv["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_adv['msg']}")
         elif res_adv["status"] == "ready":
             
-            sub_tab1, sub_tab2 = st.tabs(["📋 訊號清單 & 勝率面板", "📈 模擬回測圖表"])
+            sub_tab1, sub_tab2 = st.tabs(["📋 訊號清單 & 勝率面板", "📈 雙向去偏差對照圖表"])
             
             with sub_tab1:
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -565,7 +586,6 @@ else:
                 color_purple = "#c084fc"
                 color_red = "#ff4b4b"
                 
-                # 建構純粹的 AI 面板網格 (加入平均期望值)
                 r1_c1, r1_c2, r1_c3 = st.columns(3)
                 with r1_c1: st.markdown(build_card("AI 真實勝率 (>1.5%實質獲利)", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
                 with r1_c2: 
@@ -590,12 +610,11 @@ else:
                     st.dataframe(sig_df, hide_index=True, use_container_width=True)
 
             with sub_tab2:
-                st.markdown("#### 📈 策略資產淨值曲線 (Equity Curve)")
-                st.caption("圖表呈現 AI 在不同時期發出訊號後，每次平均獲利疊加的軌跡。")
+                st.markdown("#### 📈 AI 策略報酬 vs 大盤基準線對照圖 (Equity Curve vs Benchmark)")
+                st.caption("紫線代表 AI 策略累積获利，灰線代表同期間加權指數表現。若紫線顯著高於灰線，即代表 AI 具備強大超額報酬（Alpha）。")
                 if res_adv['equity']:
                     eq_df = pd.DataFrame(res_adv['equity'])
-                    eq_df.rename(columns={"date": "日期", "return_5d": "累計報酬 (%)"}, inplace=True)
-                    eq_df['累計報酬 (%)'] = eq_df['累計報酬 (%)'] * 100
-                    st.area_chart(eq_df.set_index("日期")['累計報酬 (%)'], color="#c084fc")
+                    eq_df.rename(columns={"date_str": "日期", "strat_cum": "AI 策略累積報酬 (%)", "market_cum": "加權指數大盤基準線 (%)"}, inplace=True)
+                    st.line_chart(eq_df.set_index("日期")[["AI 策略累積報酬 (%)", "加權指數大盤基準線 (%)"]], color=["#c084fc", "#6b6b79"])
                 else:
                     st.info("尚無足夠的歷史數據繪製曲線。")
