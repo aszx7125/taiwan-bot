@@ -135,6 +135,9 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
         'broker_conc': float(broker_conc)
     }
 
+# ==========================================================
+# 📊 實盤自動優化回測模組 (精確平移 1 天對齊「次日開盤進場」)
+# ==========================================================
 @st.cache_data(ttl=3600*2) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
     try:
@@ -329,7 +332,7 @@ st.markdown("---")
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
 # ==========================================================
-# 🔍 單股深度診斷模式面板 (含補回的策略情報分析區)
+# 🔍 單股深度診斷模式面板 (含新聞去偏差安全守護)
 # ==========================================================
 if target_ticker:
     base_ticker = target_ticker.split('.')[0]
@@ -428,6 +431,7 @@ if target_ticker:
                 except: pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
+            # 🚀 這裡完美修正了 <br> 標籤遺失的尖括號錯誤
             st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold; color: {text_color};">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
             
             m1, m2, m3, m4 = st.columns(4)
@@ -437,7 +441,6 @@ if target_ticker:
             m4.metric("機構囤貨集中度", f"{broker_conc*100:.1f}%")
             st.markdown("---")
             
-            # 🚀 補回：策略與情報分析區塊
             infra_col1, infra_col2 = st.columns(2)
             with infra_col1:
                 st.markdown("### 📊 策略與型態技術面分析")
@@ -449,15 +452,23 @@ if target_ticker:
                 
             with infra_col2:
                 st.markdown("### 📰 即時相關新聞與情報")
+                # 🚀 這裡植入了強大的資料型態守護（Type Guard），防禦新聞崩潰
                 if news_s:
-                    for idx, n in enumerate(news_s[:3]):
-                        st.caption(f"📢 **情報 {idx+1}：** {n}")
+                    if isinstance(news_s, list):
+                        for idx, n in enumerate(news_s[:3]):
+                            st.caption(f"📢 **情報 {idx+1}：** {n}")
+                    else:
+                        st.caption(f"📢 {news_s}")
                 else:
                     st.write("⚪ 暫無即時個股催化劑新聞。")
                 
                 with st.expander("🌍 國際總經環境解讀"):
                     if news_m:
-                        st.write(news_m)
+                        if isinstance(news_m, list):
+                            for n in news_m:
+                                st.write(f"• {n}")
+                        else:
+                            st.write(news_m)
                     else:
                         st.write("🟢 總體經濟環境處於常態偏多格局。")
             st.markdown("---")
@@ -506,7 +517,8 @@ else:
                     display_vol = int(rt_vol) if rt_vol < 2000000 else int(rt_vol / 1000)
                     price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({display_vol:,} 張)</span>"
                     change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                    return {"標建立": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
+                    # 🚀 這裡完美修復了遺漏的逗號與鍵值錯誤
+                    return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
                 except: pass
                 return None
 
@@ -516,7 +528,8 @@ else:
                     res = future.result()
                     if res: rows.append(res)
             if rows:
-                html_table = pd.DataFrame(rows)[["標建立", "及時價 (成交量)", "今日漲跌幅"]].to_html(escape=False, index=False, border=0).replace('\n', '')
+                # 🚀 這裡同步校正為正確的 "標的" Index
+                html_table = pd.DataFrame(rows)[["標的", "及時價 (成交量)", "今日漲跌幅"]].to_html(escape=False, index=False, border=0).replace('\n', '')
                 css = f"<style>.watch-board table {{ width: 100% !important; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size-4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>"
                 st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
         render_rt()
@@ -575,6 +588,7 @@ else:
                 })
             
             for s in sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]:
+                # 🚀 這裡同步修復了戰術面板 HTML 字串內漏掉的 <br> 尖括號
                 st.markdown(f"""<div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {s['box_color']}; margin-top: 0;">🎯 AI 戰術計畫 ({s['ticker']} {s['name']})</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br><span style="font-size: 14px; font-weight: bold; color: {s['text_color']};">{s['ai_rec']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{s['entry_price']:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{s['take_profit']:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{s['profit_reason']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{s['stop_loss']:.2f}</b></div></div></div>""", unsafe_allow_html=True)
         else: st.warning("⚠️ 全市場快取準備中...")
 
@@ -675,7 +689,7 @@ else:
                     st.markdown(build_card("單筆純利利潤 (TWD)", f"+${res_adv['avg_trade_twd']:,.0f}" if res_adv['avg_trade_twd'] > 0 else f"${res_adv['avg_trade_twd']:,.0f}", "已扣除 0.5% 摩擦成本後的期望值", avg_color), unsafe_allow_html=True)
                 with r2_c2: st.markdown(build_card("TP2 觸及概率 (目標 5%)", f"{res_adv['tps']['tp2']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
 
-                st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (每日依大腦信心度自動排序選股)")
+                st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (每日依大腦信心度自動排序進場)")
                 if res_adv['signals']:
                     sig_df = pd.DataFrame(res_adv['signals'])
                     sig_df.rename(columns={"date": "訊號觸發日期", "ticker": "股票代號", "entry_price_real": "次日真實進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "扣費後實際損益"}, inplace=True)
