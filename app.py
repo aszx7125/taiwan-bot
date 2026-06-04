@@ -131,8 +131,11 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
         'turnover': float(turnover)
     }
 
-@st.cache_data(ttl=3600*6) 
-def fetch_and_calculate_backtest(holding_period=5, threshold=60):
+# ==========================================================
+# 📊 純粹神經網路回測面板核心運算 (Tab 4 專用)
+# ==========================================================
+@st.cache_data(ttl=3600*2) 
+def fetch_advanced_backtest(threshold=50):
     try:
         from supabase import create_client
         url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
@@ -152,27 +155,53 @@ def fetch_and_calculate_backtest(holding_period=5, threshold=60):
         
         df = pd.DataFrame(all_data)
         df['date'] = pd.to_datetime(df['date'])
+        df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
         df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
 
-        df[f'future_close_{holding_period}d'] = df.groupby('ticker')['close_price'].shift(-holding_period)
-        df[f'return_{holding_period}d'] = (df[f'future_close_{holding_period}d'] - df['close_price']) / df['close_price']
+        # 🎯 嚴格對齊 AI 神經網路的訓練目標：預測未來 5 天之表現
+        df['future_close_5d'] = df.groupby('ticker')['close_price'].shift(-5)
+        df['return_5d'] = (df['future_close_5d'] - df['close_price']) / df['close_price']
 
-        signals = df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].notna())].copy()
-        total_signals = len(signals)
-        
-        if total_signals == 0:
-            pending = len(df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].isna())])
+        # 根據使用者設定的 AI 門檻濾出信號
+        signals = df[(df['score'] >= threshold) & (df['future_close_5d'].notna())].copy()
+
+        if len(signals) == 0:
+            pending = len(df[df['score'] >= threshold])
             return {"status": "pending", "pending_count": pending}
 
-        signals['is_win'] = signals[f'return_{holding_period}d'] > 0
-        win_rate = len(signals[signals['is_win']]) / total_signals
-        avg_win = signals[signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[signals['is_win']]) > 0 else 0
-        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win']]) > 0 else 0
-        expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+        # 1. AI 神經網路實盤勝率 (嚴格對齊訓練定義：> 1.5% 才算有效獲利)
+        wins = len(signals[signals['return_5d'] > 0.015])
+        losses = len(signals) - wins
+        wr = wins / len(signals) if len(signals) > 0 else 0
+        
+        # 2. 累計盈虧
+        cum_pnl = signals['return_5d'].sum() * 100
+
+        # 3. TP 觸及概率 (測量 5 日內真實波動)
+        total_samples = len(signals) if len(signals) > 0 else 1
+        tp1_hits = len(signals[signals['return_5d'] >= 0.03]) # 3%
+        tp2_hits = len(signals[signals['return_5d'] >= 0.05]) # 5%
+        tp3_hits = len(signals[signals['return_5d'] >= 0.07]) # 7%
+        ftp_hits = len(signals[signals['return_5d'] >= 0.10]) # 10%
+
+        # 4. 最新訊號清單
+        recent_signals = df[df['score'] >= threshold].sort_values('date', ascending=False).head(50)
+        
+        # 5. 資產淨值曲線 (每日平均獲利累加)
+        equity_df = signals.groupby('date')['return_5d'].mean().cumsum().reset_index()
 
         return {
-            "status": "ready", "total": total_signals, "win_rate": win_rate,
-            "avg_win": avg_win, "avg_loss": avg_loss, "expectancy": expectancy
+            "status": "ready",
+            "ai_strat": {"wr": wr, "w": wins, "l": losses},
+            "cum_pnl": cum_pnl,
+            "trades": total_samples,
+            "tps": {
+                "tp1": tp1_hits / total_samples, "tp2": tp2_hits / total_samples,
+                "tp3": tp3_hits / total_samples, "ftp": ftp_hits / total_samples,
+                "samples": total_samples
+            },
+            "signals": recent_signals[['date', 'ticker', 'close_price', 'score']].to_dict('records'),
+            "equity": equity_df.to_dict('records')
         }
     except Exception as e: return {"status": "error", "msg": str(e)}
 
@@ -275,7 +304,6 @@ if target_ticker:
 
             ai_win_rate_str = "等待 AI 訓練"
             
-            # 🔥 視覺明亮度修正：為單股掃描設定高亮銀灰與亮白字體
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
             box_color = "#a8a8a8"
             text_color = "#f0f0f0"
@@ -416,7 +444,6 @@ else:
                 profit_reason = "🚀 噴發目標：等距測幅擴展位" if entry_price > res_level else ("🎯 潛伏目標：前高/箱頂壓力區" if ("量縮回踩" in pattern_str or "底背離" in pattern_str) else "⚔️ 波段目標：前高波動擴張位")
                 real_rr_ratio = round((take_profit - entry_price) / max(entry_price - stop_loss, 0.01), 2)
                 
-                # 🔥 視覺明亮度修正：為主頁戰術面板設定高亮銀灰與亮白字體
                 box_color = "#00cc96" if win_prob > 0.60 else ("#ffc107" if win_prob > 0.50 else "#a8a8a8")
                 text_color = "#00cc96" if win_prob > 0.60 else ("#ffc107" if win_prob > 0.50 else "#f0f0f0")
                 ai_rec = "⭐⭐⭐ 極致期望值！" if win_prob > 0.60 else ("⭐⭐ 溫和佈局" if win_prob > 0.50 else "⚠️ 建議嚴格觀望")
@@ -475,49 +502,68 @@ else:
             else: 
                 st.warning("⚠️ 系統快取準備中，請先前往 Actions 觸發掃描...")
 
+    # ==========================================================
+    # 🔬 旗艦級 AI 演算法實盤回測面板 (純淨神經網路版)
+    # ==========================================================
     with tab4:
-        st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
-        st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
+        st.markdown("#### 🔬 AI 演算法實盤回測面板")
         
-        test_threshold = st.slider("🎚️ 設定 AI 分進場門檻", min_value=20, max_value=100, value=50, step=5)
+        test_threshold = st.slider("🎚️ 設定 AI 訊號進場門檻 (分)", min_value=20, max_value=100, value=50, step=5)
         
-        b_col1, b_col2 = st.columns([1, 1])
-        with b_col1:
-            st.markdown("##### ⏳ 短波段策略 (持倉 5 天)")
-            res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=test_threshold)
+        res_adv = fetch_advanced_backtest(threshold=test_threshold)
+        
+        if res_adv["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
+        elif res_adv["status"] == "empty": st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
+        elif res_adv["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。等待開獎。")
+        elif res_adv["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_adv['msg']}")
+        elif res_adv["status"] == "ready":
             
-            if res_5d["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
-            elif res_5d["status"] == "empty": st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
-            elif res_5d["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。")
-            elif res_5d["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_5d['msg']}")
-            elif res_5d["status"] == "ready":
-                rr_ratio = abs(res_5d['avg_win'] / res_5d['avg_loss']) if res_5d['avg_loss'] != 0 else 0
-                st.markdown(f"""
-                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #00cc96;">
-                    <h3 style="margin-top: 0; color: #00cc96;">期望值: {res_5d['expectancy']*100:+.2f}%</h3>
-                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_5d['total']} 次</p>
-                    <b>勝率:</b> {res_5d['win_rate']*100:.1f}%<br>
-                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_5d['avg_win']*100:.2f}%</span><br>
-                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_5d['avg_loss']*100:.2f}%</span><br>
-                    <b>盈虧比:</b> {rr_ratio:.2f}
-                </div>
-                """, unsafe_allow_html=True)
+            sub_tab1, sub_tab2 = st.tabs(["📋 訊號清單 & 勝率面板", "📈 模擬回測圖表"])
+            
+            with sub_tab1:
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                def build_card(title, value, subtext, color):
+                    return f"""
+                    <div style="background-color: #121218; padding: 22px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #2a2a35; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
+                        <div style="color: #8b8b99; font-size: 14px; margin-bottom: 8px; font-weight: 500;">{title}</div>
+                        <div style="color: {color}; font-size: 34px; font-weight: 700; margin-bottom: 5px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">{value}</div>
+                        <div style="color: #6b6b79; font-size: 13px;">{subtext}</div>
+                    </div>
+                    """
+                
+                color_green = "#4ade80"
+                color_purple = "#c084fc"
+                color_red = "#ff4b4b"
+                
+                # 建構純粹的 AI 面板網格
+                r1_c1, r1_c2 = st.columns(2)
+                with r1_c1: st.markdown(build_card("AI 神經網路真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
+                with r1_c2: 
+                    pnl_color = color_green if res_adv['cum_pnl'] > 0 else color_red
+                    st.markdown(build_card("累計盈虧 (%)", f"+{res_adv['cum_pnl']:.2f}%" if res_adv['cum_pnl'] > 0 else f"{res_adv['cum_pnl']:.2f}%", f"{res_adv['trades']} 筆交易樣本", pnl_color), unsafe_allow_html=True)
+                
+                r2_c1, r2_c2 = st.columns(2)
+                with r2_c1: st.markdown(build_card("TP1 觸及概率 (目標 3%)", f"{res_adv['tps']['tp1']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_green), unsafe_allow_html=True)
+                with r2_c2: st.markdown(build_card("TP2 觸及概率 (目標 5%)", f"{res_adv['tps']['tp2']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
+                
+                r3_c1, r3_c2 = st.columns(2)
+                with r3_c1: st.markdown(build_card("TP3 觸及概率 (目標 7%)", f"{res_adv['tps']['tp3']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
+                with r3_c2: st.markdown(build_card("FTP 觸及概率 (極致滿靶 10%)", f"{res_adv['tps']['ftp']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
 
-        with b_col2:
-            st.markdown("##### 🈷️ 長波段策略 (持倉 20 天)")
-            res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=test_threshold)
-            
-            if res_20d["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待開獎。")
-            elif res_20d["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_20d['msg']}")
-            elif res_20d["status"] == "ready":
-                rr_ratio = abs(res_20d['avg_win'] / res_20d['avg_loss']) if res_20d['avg_loss'] != 0 else 0
-                st.markdown(f"""
-                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #ffc107;">
-                    <h3 style="margin-top: 0; color: #ffc107;">期望值: {res_20d['expectancy']*100:+.2f}%</h3>
-                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_20d['total']} 次</p>
-                    <b>勝率:</b> {res_20d['win_rate']*100:.1f}%<br>
-                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_20d['avg_win']*100:.2f}%</span><br>
-                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_20d['avg_loss']*100:.2f}%</span><br>
-                    <b>盈虧比:</b> {rr_ratio:.2f}
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown("#### 🚨 近期觸發進場信號清單")
+                if res_adv['signals']:
+                    sig_df = pd.DataFrame(res_adv['signals'])
+                    sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "close_price": "進場價格", "score": "AI 分數"}, inplace=True)
+                    st.dataframe(sig_df, hide_index=True, use_container_width=True)
+
+            with sub_tab2:
+                st.markdown("#### 📈 策略資產淨值曲線 (Equity Curve)")
+                st.caption("圖表呈現所有有效交易信號每日平均獲利之累加曲線。")
+                if res_adv['equity']:
+                    eq_df = pd.DataFrame(res_adv['equity'])
+                    eq_df.rename(columns={"date": "日期", "return_5d": "累計報酬 (%)"}, inplace=True)
+                    eq_df['累計報酬 (%)'] = eq_df['累計報酬 (%)'] * 100
+                    st.area_chart(eq_df.set_index("日期")['累計報酬 (%)'], color="#c084fc")
+                else:
+                    st.info("尚無足夠的歷史數據繪製曲線。")
