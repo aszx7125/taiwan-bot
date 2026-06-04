@@ -135,9 +135,6 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
         'broker_conc': float(broker_conc)
     }
 
-# ==========================================================
-# 📊 實盤自動優化回測模組 (精確導入 0.5% 實盤手續費、稅金與滑價)
-# ==========================================================
 @st.cache_data(ttl=3600*2) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
     try:
@@ -196,25 +193,25 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
             return {"status": "error", "msg": f"AI 特徵對齊失敗: {str(e)}"}
 
         df = pd.merge(df, market_brief, on='date_norm', how='left')
-        df['future_close_5d'] = df.groupby('ticker')['close_price'].shift(-5)
-        df['return_5d'] = (df['future_close_5d'] - df['close_price']) / df['close_price']
+
+        df['entry_price_real'] = df.groupby('ticker')['close_price'].shift(-1)
+        df['future_close_6d'] = df.groupby('ticker')['close_price'].shift(-6)
+        df['return_5d'] = (df['future_close_6d'] - df['entry_price_real']) / df['entry_price_real']
 
         if use_market_filter:
-            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['future_close_5d'].notna())].copy()
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
         else:
-            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['future_close_5d'].notna())].copy()
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
 
         if len(signals) == 0:
             return {"status": "pending", "pending_count": 0}
 
-        # 🧠 真實部位自動化排序分配器
         pos_size = initial_cap / max_pos
         current_equity = initial_cap
         active_trades = []
         executed_trades = []
         daily_equity = []
 
-        # 每日開盤，自動把當天訊號按照 AI 勝率從高到低排序
         signals = signals.sort_values(['date_norm', 'ai_prob'], ascending=[True, False])
 
         for current_date, daily_sigs in signals.groupby('date_norm'):
@@ -228,8 +225,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
             
             for _, row in daily_sigs.iterrows():
                 if len(active_trades) < max_pos: 
-                    # 🚀 【核心淨利計算法】：嚴格扣除 0.5% 交易摩擦成本（稅金+手續費+實盤滑價）
-                    fee_rate = 0.005
+                    fee_rate = 0.005  
                     net_return_5d = row['return_5d'] - fee_rate
                     profit_twd = pos_size * net_return_5d
                     
@@ -254,7 +250,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
 
         exec_df = pd.DataFrame(executed_trades)
 
-        # 🚀 勝率卡片同步升級：扣除成本後「實質淨回報 > 0%」的單子才算贏！
         wins = len(exec_df[exec_df['net_return_5d'] > 0])
         losses = len(exec_df) - wins
         wr = wins / len(exec_df) if len(exec_df) > 0 else 0
@@ -292,7 +287,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
                 "tp3": tp3_hits / total_samples, "ftp": ftp_hits / total_samples,
                 "samples": total_samples
             },
-            "signals": recent_signals[['date', 'ticker', 'close_price', 'ai_prob_str', 'sim_profit_str']].to_dict('records'),
+            "signals": recent_signals[['date', 'ticker', 'entry_price_real', 'ai_prob_str', 'sim_profit_str']].to_dict('records'),
             "equity": daily_equity
         }
     except Exception as e: return {"status": "error", "msg": str(e)}
@@ -311,7 +306,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("💰 實盤資金管理")
     user_capital = st.number_input("初始本金 (TWD)", min_value=1000, max_value=20000000, value=1000000, step=10000)
-    user_max_pos = st.slider("最大同時持倉檔數", min_value=1, max_value=10, value=5, help="決定資金切分份數。")
+    user_max_pos = st.slider("最大同時持倉檔數", min_value=1, max_value=10, value=5)
     st.markdown("---")
 
     if FUGLE_API_KEY: st.success("🟢 零延遲即時引擎已啟動")
@@ -333,6 +328,9 @@ st.markdown("---")
 
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
+# ==========================================================
+# 🔍 單股深度診斷模式面板 (含補回的策略情報分析區)
+# ==========================================================
 if target_ticker:
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
@@ -376,9 +374,10 @@ if target_ticker:
             squeeze_on = bool(today.get('Squeeze_On', False))
             
             smc_status = []
-            if low_vol_pb: smc_status.append("📉 量縮回踩")
-            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮")
-            smc_text = " + ".join(smc_status) if smc_status else "一般常態震盪"
+            if low_vol_pb: smc_status.append("📉 量縮回踩 (Pullback)")
+            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮 (Squeeze)")
+            if bull_div: smc_status.append("📈 動能底背離 (Divergence)")
+            smc_text = " + ".join(smc_status) if smc_status else "一般常態箱體震盪"
 
             stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
             risk_per_share = max(entry_price - stop_loss, 0.01)
@@ -438,6 +437,31 @@ if target_ticker:
             m4.metric("機構囤貨集中度", f"{broker_conc*100:.1f}%")
             st.markdown("---")
             
+            # 🚀 補回：策略與情報分析區塊
+            infra_col1, infra_col2 = st.columns(2)
+            with infra_col1:
+                st.markdown("### 📊 策略與型態技術面分析")
+                st.info(f"🧬 **SMC 聰明錢結構型態：** {smc_text}")
+                st.write(f"* **20日高位壓力 (Res_20)：** `NT$ {res_level:.2f}`")
+                st.write(f"* **20日低位支撐 (Sup_20)：** `NT$ {sup_level:.2f}`")
+                st.write(f"* **ATR 波動度基準 (ATR_14)：** `NT$ {atr_14:.2f}`")
+                st.write(f"* **5日平均成交量 (Vol_SMA5)：** `{int(vol_sma5):,} 張`")
+                
+            with infra_col2:
+                st.markdown("### 📰 即時相關新聞與情報")
+                if news_s:
+                    for idx, n in enumerate(news_s[:3]):
+                        st.caption(f"📢 **情報 {idx+1}：** {n}")
+                else:
+                    st.write("⚪ 暫無即時個股催化劑新聞。")
+                
+                with st.expander("🌍 國際總經環境解讀"):
+                    if news_m:
+                        st.write(news_m)
+                    else:
+                        st.write("🟢 總體經濟環境處於常態偏多格局。")
+            st.markdown("---")
+            
         if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
             st.session_state.analyze_trigger = None; st.rerun()
 
@@ -482,7 +506,7 @@ else:
                     display_vol = int(rt_vol) if rt_vol < 2000000 else int(rt_vol / 1000)
                     price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({display_vol:,} 張)</span>"
                     change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                    return {"標的": name_str ,"及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
+                    return {"標建立": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
                 except: pass
                 return None
 
@@ -492,7 +516,7 @@ else:
                     res = future.result()
                     if res: rows.append(res)
             if rows:
-                html_table = pd.DataFrame(rows)[["標的", "及時價 (成交量)", "今日漲跌幅"]].to_html(escape=False, index=False, border=0).replace('\n', '')
+                html_table = pd.DataFrame(rows)[["標建立", "及時價 (成交量)", "今日漲跌幅"]].to_html(escape=False, index=False, border=0).replace('\n', '')
                 css = f"<style>.watch-board table {{ width: 100% !important; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size-4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>"
                 st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
         render_rt()
@@ -605,7 +629,6 @@ else:
         
         use_mkt_filter = st.checkbox("🛡️ 啟動大盤月線 (20MA) 智慧防禦濾網 (大盤轉弱破線時，自動空倉防守、拒絕新部位進場)", value=True)
         
-        # 🚀 拋棄手動滑桿，完全交由神經網路自動優化
         res_adv = fetch_advanced_backtest(
             ai_prob_threshold=0.50, 
             use_market_filter=use_mkt_filter,
@@ -655,12 +678,12 @@ else:
                 st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (每日依大腦信心度自動排序選股)")
                 if res_adv['signals']:
                     sig_df = pd.DataFrame(res_adv['signals'])
-                    sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "close_price": "進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "扣費後實際損益"}, inplace=True)
+                    sig_df.rename(columns={"date": "訊號觸發日期", "ticker": "股票代號", "entry_price_real": "次日真實進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "扣費後實際損益"}, inplace=True)
                     st.dataframe(sig_df, hide_index=True, use_container_width=True)
 
             with sub_tab2:
                 st.markdown("#### 📈 AI 實盤淨資產報酬 vs 大盤基準線 (%)")
-                st.caption("紫線為考慮手續費、滑價與大盤防禦濾網後的『真實財富增長軌跡』。")
+                st.caption("紫線為考慮次日開盤進場、手續費、滑價與大盤防禦濾網後的『真實財富增長軌跡』。")
                 if res_adv['equity']:
                     eq_df = pd.DataFrame(res_adv['equity'])
                     eq_df.rename(columns={"date_str": "日期", "strat_cum_pct": "AI 策略帳戶總報酬 (%)", "market_cum_pct": "加權指數大盤基準線 (%)"}, inplace=True)
