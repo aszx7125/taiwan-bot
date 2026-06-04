@@ -136,7 +136,7 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
     }
 
 # ==========================================================
-# 📊 實盤自動優化回測模組 (自動鎖定每日高勝率標的)
+# 📊 實盤自動優化回測模組 (精確導入 0.5% 實盤手續費、稅金與滑價)
 # ==========================================================
 @st.cache_data(ttl=3600*2) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
@@ -199,7 +199,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
         df['future_close_5d'] = df.groupby('ticker')['close_price'].shift(-5)
         df['return_5d'] = (df['future_close_5d'] - df['close_price']) / df['close_price']
 
-        # 🚀 基準設定：只要大於 50% 具備基本多頭優勢的，全部納入每日候選名單
         if use_market_filter:
             signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['future_close_5d'].notna())].copy()
         else:
@@ -208,18 +207,17 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
         if len(signals) == 0:
             return {"status": "pending", "pending_count": 0}
 
-        # 🧠 真實部位自動化排序分配器 (Limited Portfolio Optimizer)
+        # 🧠 真實部位自動化排序分配器
         pos_size = initial_cap / max_pos
         current_equity = initial_cap
         active_trades = []
         executed_trades = []
         daily_equity = []
 
-        # 🚀 關鍵核心：每日開盤，自動把當天訊號按照 AI 勝率從高到低 (Descending) 排序！
+        # 每日開盤，自動把當天訊號按照 AI 勝率從高到低排序
         signals = signals.sort_values(['date_norm', 'ai_prob'], ascending=[True, False])
 
         for current_date, daily_sigs in signals.groupby('date_norm'):
-            # 1. 結算到期的持倉 (持股 5 個交易日)
             still_active = []
             for t in active_trades:
                 if current_date >= t['exit_date']:
@@ -228,20 +226,23 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
                     still_active.append(t)
             active_trades = still_active
             
-            # 2. 自動鎖定今日勝率最高的前幾檔標的進場
             for _, row in daily_sigs.iterrows():
                 if len(active_trades) < max_pos: 
-                    profit_twd = pos_size * row['return_5d']
+                    # 🚀 【核心淨利計算法】：嚴格扣除 0.5% 交易摩擦成本（稅金+手續費+實盤滑價）
+                    fee_rate = 0.005
+                    net_return_5d = row['return_5d'] - fee_rate
+                    profit_twd = pos_size * net_return_5d
+                    
                     active_trades.append({
                         'exit_date': current_date + pd.Timedelta(days=7),
                         'profit': profit_twd
                     })
                     
                     row_dict = row.to_dict()
+                    row_dict['net_return_5d'] = net_return_5d
                     row_dict['sim_profit_twd'] = profit_twd
                     executed_trades.append(row_dict)
                     
-            # 記錄每日帳戶淨值
             daily_equity.append({
                 'date_str': current_date.strftime('%Y-%m-%d'), 
                 'strat_cum_pct': ((current_equity - initial_cap) / initial_cap) * 100,
@@ -249,11 +250,12 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
             })
 
         if not executed_trades:
-            return {"status": "empty", "msg": "經過自動化分配後，未產生任何有效交易。"}
+            return {"status": "empty", "msg": "經過自動化分配與交易成本侵蝕後，未產生有效淨利。"}
 
         exec_df = pd.DataFrame(executed_trades)
 
-        wins = len(exec_df[exec_df['return_5d'] > 0.015])
+        # 🚀 勝率卡片同步升級：扣除成本後「實質淨回報 > 0%」的單子才算贏！
+        wins = len(exec_df[exec_df['net_return_5d'] > 0])
         losses = len(exec_df) - wins
         wr = wins / len(exec_df) if len(exec_df) > 0 else 0
         
@@ -262,10 +264,10 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
         total_samples = len(exec_df)
         avg_trade_twd = total_net_profit_twd / total_samples
 
-        tp1_hits = len(exec_df[exec_df['return_5d'] >= 0.03])
-        tp2_hits = len(exec_df[exec_df['return_5d'] >= 0.05])
-        tp3_hits = len(exec_df[exec_df['return_5d'] >= 0.07])
-        ftp_hits = len(exec_df[exec_df['return_5d'] >= 0.10])
+        tp1_hits = len(exec_df[exec_df['net_return_5d'] >= 0.03])
+        tp2_hits = len(exec_df[exec_df['net_return_5d'] >= 0.05])
+        tp3_hits = len(exec_df[exec_df['net_return_5d'] >= 0.07])
+        ftp_hits = len(exec_df[exec_df['net_return_5d'] >= 0.10])
 
         recent_signals = exec_df.sort_values('date', ascending=False).head(50)
         recent_signals['ai_prob_str'] = (recent_signals['ai_prob'] * 100).apply(lambda x: f"{x:.1f}%")
@@ -308,9 +310,8 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("💰 實盤資金管理")
-    # 🚀 資金下限完美解鎖：最低允許 1,000 元！小資、散股實驗完全支援
     user_capital = st.number_input("初始本金 (TWD)", min_value=1000, max_value=20000000, value=1000000, step=10000)
-    user_max_pos = st.slider("最大同時持倉檔數", min_value=1, max_value=10, value=5, help="決定資金切分的份數。例如 100萬分 5 檔，每檔將投入 20萬元。")
+    user_max_pos = st.slider("最大同時持倉檔數", min_value=1, max_value=10, value=5, help="決定資金切分份數。")
     st.markdown("---")
 
     if FUGLE_API_KEY: st.success("🟢 零延遲即時引擎已啟動")
@@ -428,7 +429,7 @@ if target_ticker:
                 except: pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
-            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold; color: {text_color};">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br><span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold; color: {text_color};">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
             
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
@@ -481,7 +482,7 @@ else:
                     display_vol = int(rt_vol) if rt_vol < 2000000 else int(rt_vol / 1000)
                     price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({display_vol:,} 張)</span>"
                     change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                    return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
+                    return {"標的": name_str "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
                 except: pass
                 return None
 
@@ -550,7 +551,7 @@ else:
                 })
             
             for s in sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]:
-                st.markdown(f"""<div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {s['box_color']}; margin-top: 0;">🎯 AI 戰術計畫 ({s['ticker']} {s['name']})</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br><span style="font-size: 14px; font-weight: bold; color: {s['text_color']};">{s['ai_rec']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{s['entry_price']:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{s['take_profit']:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{s['profit_reason']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{s['stop_loss']:.2f}</b></div></div></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {s['box_color']}; margin-top: 0;">🎯 AI 戰術計畫 ({s['ticker']} {s['name']})</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span>br><b style="font-size: 24px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br><span style="font-size: 14px; font-weight: bold; color: {s['text_color']};">{s['ai_rec']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{s['entry_price']:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{s['take_profit']:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{s['profit_reason']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{s['stop_loss']:.2f}</b></div></div></div>""", unsafe_allow_html=True)
         else: st.warning("⚠️ 全市場快取準備中...")
 
     with tab3:
@@ -600,20 +601,20 @@ else:
 
     with tab4:
         st.markdown("#### 🔬 AI 演算法實盤回測面板")
-        st.caption("🧠 演算法已啟動全自動優化：系統每日開盤會自動掃描市場，並將有限資金「自動鎖定並優先買入」當天勝率最高、最具正向期望值的標的物。")
+        st.caption("🧠 演算法已啟動全自動優化：系統每日開盤會自動將有限資金「自動鎖定並優先買入」當天勝率最高、最具正向期望值的標的物。")
         
-        # 🚀 拋棄手動機率拉桿，大腦會自動選取具有正期望值(>50%)中信心度最高的標的
         use_mkt_filter = st.checkbox("🛡️ 啟動大盤月線 (20MA) 智慧防禦濾網 (大盤轉弱破線時，自動空倉防守、拒絕新部位進場)", value=True)
         
+        # 🚀 拋棄手動滑桿，完全交由神經網路自動優化
         res_adv = fetch_advanced_backtest(
-            ai_prob_threshold=0.50, # 只要大於 50% 具備多頭勝率即進入全自動篩選排序
+            ai_prob_threshold=0.50, 
             use_market_filter=use_mkt_filter,
             initial_cap=user_capital,
             max_pos=user_max_pos
         )
         
         if res_adv["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
-        elif res_adv["status"] == "empty": st.warning("⚠️ 經過資金與濾網優化篩選後，在該環境下無交易紀錄。")
+        elif res_adv["status"] == "empty": st.warning("⚠️ 經過資金與成本侵蝕過濾後，無交易紀錄。")
         elif res_adv["status"] == "pending": st.info("⏸️ 等待開獎。目前暫無達成條件之信號。")
         elif res_adv["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_adv['msg']}")
         elif res_adv["status"] == "ready":
@@ -637,29 +638,29 @@ else:
                 color_red = "#ff4b4b"
                 
                 r1_c1, r1_c2, r1_c3 = st.columns(3)
-                with r1_c1: st.markdown(build_card("AI 真實勝率 (>1.5%實質獲利)", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
+                with r1_c1: st.markdown(build_card("AI 真實勝率 (扣除摩擦成本)", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
                 with r1_c2: 
                     pnl_color = color_green if res_adv['net_profit_twd'] > 0 else color_red
-                    st.markdown(build_card("帳戶總淨利 (TWD)", f"+${res_adv['net_profit_twd']:,.0f}" if res_adv['net_profit_twd'] > 0 else f"${res_adv['net_profit_twd']:,.0f}", f"受限於本金 NT$ {user_capital:,}", pnl_color), unsafe_allow_html=True)
+                    st.markdown(build_card("帳戶實質總淨利", f"+${res_adv['net_profit_twd']:,.0f}" if res_adv['net_profit_twd'] > 0 else f"${res_adv['net_profit_twd']:,.0f}", f"基於初始本金 NT$ {user_capital:,}", pnl_color), unsafe_allow_html=True)
                 with r1_c3:
                     pct_color = color_green if res_adv['account_pct'] > 0 else color_red
-                    st.markdown(build_card("帳戶總報酬率 (%)", f"+{res_adv['account_pct']:.2f}%" if res_adv['account_pct'] > 0 else f"{res_adv['account_pct']:.2f}%", f"總成交筆數: {res_adv['trades']} 筆", pct_color), unsafe_allow_html=True)
+                    st.markdown(build_card("帳戶真實報酬率", f"+{res_adv['account_pct']:.2f}%" if res_adv['account_pct'] > 0 else f"{res_adv['account_pct']:.2f}%", f"總成交筆數: {res_adv['trades']} 筆", pct_color), unsafe_allow_html=True)
                 
                 r2_c1, r2_c2 = st.columns(2)
                 with r2_c1: 
                     avg_color = color_green if res_adv['avg_trade_twd'] > 0 else color_red
-                    st.markdown(build_card("單筆平均賺賠 (TWD)", f"+${res_adv['avg_trade_twd']:,.0f}" if res_adv['avg_trade_twd'] > 0 else f"${res_adv['avg_trade_twd']:,.0f}", "每次出手的真實期望值", avg_color), unsafe_allow_html=True)
+                    st.markdown(build_card("單筆純利利潤 (TWD)", f"+${res_adv['avg_trade_twd']:,.0f}" if res_adv['avg_trade_twd'] > 0 else f"${res_adv['avg_trade_twd']:,.0f}", "已扣除 0.5% 摩擦成本後的期望值", avg_color), unsafe_allow_html=True)
                 with r2_c2: st.markdown(build_card("TP2 觸及概率 (目標 5%)", f"{res_adv['tps']['tp2']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
 
-                st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (已依每日勝率最優解自動排序進場)")
+                st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (每日依大腦信心度自動排序選股)")
                 if res_adv['signals']:
                     sig_df = pd.DataFrame(res_adv['signals'])
-                    sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "close_price": "進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "單筆實際損益"}, inplace=True)
+                    sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "close_price": "進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "扣費後實際損益"}, inplace=True)
                     st.dataframe(sig_df, hide_index=True, use_container_width=True)
 
             with sub_tab2:
-                st.markdown("#### 📈 AI 策略帳戶總報酬 vs 大盤基準線對照圖 (%)")
-                st.caption("紫線代表 AI 策略自動去偏差後的真實帳戶增長軌跡，灰線代表同期間加權指數。")
+                st.markdown("#### 📈 AI 實盤淨資產報酬 vs 大盤基準線 (%)")
+                st.caption("紫線為考慮手續費、滑價與大盤防禦濾網後的『真實財富增長軌跡』。")
                 if res_adv['equity']:
                     eq_df = pd.DataFrame(res_adv['equity'])
                     eq_df.rename(columns={"date_str": "日期", "strat_cum_pct": "AI 策略帳戶總報酬 (%)", "market_cum_pct": "加權指數大盤基準線 (%)"}, inplace=True)
