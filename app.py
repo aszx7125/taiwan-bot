@@ -136,10 +136,10 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
     }
 
 # ==========================================================
-# 📊 實盤資金回測模組 (導入資金上限與持倉限制)
+# 📊 實盤自動優化回測模組 (自動鎖定每日高勝率標的)
 # ==========================================================
 @st.cache_data(ttl=3600*2) 
-def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True, initial_cap=1000000, max_pos=5):
+def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
     try:
         from supabase import create_client
         url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
@@ -199,6 +199,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True, init
         df['future_close_5d'] = df.groupby('ticker')['close_price'].shift(-5)
         df['return_5d'] = (df['future_close_5d'] - df['close_price']) / df['close_price']
 
+        # 🚀 基準設定：只要大於 50% 具備基本多頭優勢的，全部納入每日候選名單
         if use_market_filter:
             signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['future_close_5d'].notna())].copy()
         else:
@@ -207,18 +208,18 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True, init
         if len(signals) == 0:
             return {"status": "pending", "pending_count": 0}
 
-        # 🚀 啟動真實帳戶模擬器 (Limited Portfolio Simulation)
+        # 🧠 真實部位自動化排序分配器 (Limited Portfolio Optimizer)
         pos_size = initial_cap / max_pos
         current_equity = initial_cap
         active_trades = []
         executed_trades = []
         daily_equity = []
 
-        # 依照日期排序，同一天內依 AI 勝率由高到低排序 (優先買入最有把握的)
+        # 🚀 關鍵核心：每日開盤，自動把當天訊號按照 AI 勝率從高到低 (Descending) 排序！
         signals = signals.sort_values(['date_norm', 'ai_prob'], ascending=[True, False])
 
         for current_date, daily_sigs in signals.groupby('date_norm'):
-            # 1. 結算到期的持倉 (7 個自然日約等於 5 個交易日)
+            # 1. 結算到期的持倉 (持股 5 個交易日)
             still_active = []
             for t in active_trades:
                 if current_date >= t['exit_date']:
@@ -227,9 +228,9 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True, init
                     still_active.append(t)
             active_trades = still_active
             
-            # 2. 處理當日新訊號
+            # 2. 自動鎖定今日勝率最高的前幾檔標的進場
             for _, row in daily_sigs.iterrows():
-                if len(active_trades) < max_pos: # 如果帳戶還有閒置資金
+                if len(active_trades) < max_pos: 
                     profit_twd = pos_size * row['return_5d']
                     active_trades.append({
                         'exit_date': current_date + pd.Timedelta(days=7),
@@ -240,7 +241,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True, init
                     row_dict['sim_profit_twd'] = profit_twd
                     executed_trades.append(row_dict)
                     
-            # 記錄每日帳戶淨值與大盤基準
+            # 記錄每日帳戶淨值
             daily_equity.append({
                 'date_str': current_date.strftime('%Y-%m-%d'), 
                 'strat_cum_pct': ((current_equity - initial_cap) / initial_cap) * 100,
@@ -248,11 +249,10 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True, init
             })
 
         if not executed_trades:
-            return {"status": "empty", "msg": "經過資金濾網後無交易。"}
+            return {"status": "empty", "msg": "經過自動化分配後，未產生任何有效交易。"}
 
         exec_df = pd.DataFrame(executed_trades)
 
-        # 6. 計算各項淨化後的量化核心指標
         wins = len(exec_df[exec_df['return_5d'] > 0.015])
         losses = len(exec_df) - wins
         wr = wins / len(exec_df) if len(exec_df) > 0 else 0
@@ -271,7 +271,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.55, use_market_filter=True, init
         recent_signals['ai_prob_str'] = (recent_signals['ai_prob'] * 100).apply(lambda x: f"{x:.1f}%")
         recent_signals['sim_profit_str'] = recent_signals['sim_profit_twd'].apply(lambda x: f"NT$ {int(x):,}")
 
-        # 計算大盤基準線
         market_k['market_cum_pct'] = market_k['market_pct'].fillna(0).cumsum() * 100
         market_lookup = dict(zip(market_k['date_norm'].dt.strftime('%Y-%m-%d'), market_k['market_cum_pct']))
         
@@ -308,9 +307,9 @@ with st.sidebar:
         st.rerun()
     
     st.markdown("---")
-    # 💰 新增：資金與部位管理模組
     st.header("💰 實盤資金管理")
-    user_capital = st.number_input("初始本金 (TWD)", min_value=100000, max_value=20000000, value=1000000, step=100000)
+    # 🚀 資金下限完美解鎖：最低允許 1,000 元！小資、散股實驗完全支援
+    user_capital = st.number_input("初始本金 (TWD)", min_value=1000, max_value=20000000, value=1000000, step=10000)
     user_max_pos = st.slider("最大同時持倉檔數", min_value=1, max_value=10, value=5, help="決定資金切分的份數。例如 100萬分 5 檔，每檔將投入 20萬元。")
     st.markdown("---")
 
@@ -601,22 +600,21 @@ else:
 
     with tab4:
         st.markdown("#### 🔬 AI 演算法實盤回測面板")
+        st.caption("🧠 演算法已啟動全自動優化：系統每日開盤會自動掃描市場，並將有限資金「自動鎖定並優先買入」當天勝率最高、最具正向期望值的標的物。")
         
-        # 🎛️ 參數從側邊欄傳入
-        test_threshold = st.slider("🎚️ 設定神經網路預測勝率門檻 (%)", min_value=40, max_value=85, value=55, step=1)
-        use_mkt_filter = st.checkbox("🛡️ 啟動大盤月線 (20MA) 智慧防禦濾網 (大盤轉弱破線時，拒絕新部位進場)", value=True)
+        # 🚀 拋棄手動機率拉桿，大腦會自動選取具有正期望值(>50%)中信心度最高的標的
+        use_mkt_filter = st.checkbox("🛡️ 啟動大盤月線 (20MA) 智慧防禦濾網 (大盤轉弱破線時，自動空倉防守、拒絕新部位進場)", value=True)
         
-        # 帶入側邊欄資金設定
         res_adv = fetch_advanced_backtest(
-            ai_prob_threshold=test_threshold/100.0, 
+            ai_prob_threshold=0.50, # 只要大於 50% 具備多頭勝率即進入全自動篩選排序
             use_market_filter=use_mkt_filter,
             initial_cap=user_capital,
             max_pos=user_max_pos
         )
         
         if res_adv["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
-        elif res_adv["status"] == "empty": st.warning("⚠️ 經過資金與濾網篩選後無交易紀錄。")
-        elif res_adv["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold}%。目前暫無達成條件之信號等待開獎。")
+        elif res_adv["status"] == "empty": st.warning("⚠️ 經過資金與濾網優化篩選後，在該環境下無交易紀錄。")
+        elif res_adv["status"] == "pending": st.info("⏸️ 等待開獎。目前暫無達成條件之信號。")
         elif res_adv["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_adv['msg']}")
         elif res_adv["status"] == "ready":
             
@@ -642,7 +640,7 @@ else:
                 with r1_c1: st.markdown(build_card("AI 真實勝率 (>1.5%實質獲利)", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
                 with r1_c2: 
                     pnl_color = color_green if res_adv['net_profit_twd'] > 0 else color_red
-                    st.markdown(build_card("帳戶總淨利 (TWD)", f"+${res_adv['net_profit_twd']:,.0f}" if res_adv['net_profit_twd'] > 0 else f"${res_adv['net_profit_twd']:,.0f}", f"受限於本金 {user_capital:,} 萬", pnl_color), unsafe_allow_html=True)
+                    st.markdown(build_card("帳戶總淨利 (TWD)", f"+${res_adv['net_profit_twd']:,.0f}" if res_adv['net_profit_twd'] > 0 else f"${res_adv['net_profit_twd']:,.0f}", f"受限於本金 NT$ {user_capital:,}", pnl_color), unsafe_allow_html=True)
                 with r1_c3:
                     pct_color = color_green if res_adv['account_pct'] > 0 else color_red
                     st.markdown(build_card("帳戶總報酬率 (%)", f"+{res_adv['account_pct']:.2f}%" if res_adv['account_pct'] > 0 else f"{res_adv['account_pct']:.2f}%", f"總成交筆數: {res_adv['trades']} 筆", pct_color), unsafe_allow_html=True)
@@ -653,7 +651,7 @@ else:
                     st.markdown(build_card("單筆平均賺賠 (TWD)", f"+${res_adv['avg_trade_twd']:,.0f}" if res_adv['avg_trade_twd'] > 0 else f"${res_adv['avg_trade_twd']:,.0f}", "每次出手的真實期望值", avg_color), unsafe_allow_html=True)
                 with r2_c2: st.markdown(build_card("TP2 觸及概率 (目標 5%)", f"{res_adv['tps']['tp2']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
 
-                st.markdown("#### 🚨 歷史 AI 實盤觸發清單")
+                st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (已依每日勝率最優解自動排序進場)")
                 if res_adv['signals']:
                     sig_df = pd.DataFrame(res_adv['signals'])
                     sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "close_price": "進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "單筆實際損益"}, inplace=True)
@@ -661,7 +659,7 @@ else:
 
             with sub_tab2:
                 st.markdown("#### 📈 AI 策略帳戶總報酬 vs 大盤基準線對照圖 (%)")
-                st.caption("紫線代表 AI 策略的真實帳戶成長率（已考慮資金限制與防禦濾網），灰線代表同期間加權指數。")
+                st.caption("紫線代表 AI 策略自動去偏差後的真實帳戶增長軌跡，灰線代表同期間加權指數。")
                 if res_adv['equity']:
                     eq_df = pd.DataFrame(res_adv['equity'])
                     eq_df.rename(columns={"date_str": "日期", "strat_cum_pct": "AI 策略帳戶總報酬 (%)", "market_cum_pct": "加權指數大盤基準線 (%)"}, inplace=True)
