@@ -54,7 +54,6 @@ def get_ai_model():
 # 🚀 中央對齊核心：中央報價引擎與特徵萃取器
 # ==========================================================
 def get_realtime_quote(clean_ticker):
-    """確保全站呼叫同一套報價邏輯，防堵 API 延遲錯亂"""
     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
     if FUGLE_API_KEY:
         try:
@@ -82,7 +81,6 @@ def get_realtime_quote(clean_ticker):
     return rt_price, rt_vol, prev_close
 
 def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=0.0, fallback_rs=0.0, fallback_atr=None, fallback_pattern="", fallback_vol=0.0):
-    """終極特徵對齊：完美防堵盤中殘缺成交量與價格欺騙 AI"""
     rs_idx = fallback_rs
     pat = fallback_pattern
     
@@ -276,8 +274,11 @@ if target_ticker:
                 else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
 
             ai_win_rate_str = "等待 AI 訓練"
+            
+            # 🔥 視覺明亮度修正：為單股掃描設定高亮銀灰與亮白字體
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
-            box_color = "#555555"
+            box_color = "#a8a8a8"
+            text_color = "#f0f0f0"
 
             model, features = get_ai_model()
             snapshot = load_market_snapshot()
@@ -295,14 +296,15 @@ if target_ticker:
                     ai_win_rate_str = f"{win_prob * 100:.1f}%"
                     
                     if win_prob > 0.60 and real_rr_ratio >= 1.5:
-                        ai_recommendation = "⭐⭐⭐ 極致期望值！(高勝率 + 高風報比)"; box_color = "#00cc96"
+                        ai_recommendation = "⭐⭐⭐ 極致期望值！(高勝率 + 高風報比)"; box_color = "#00cc96"; text_color = "#00cc96"
                     elif win_prob > 0.50 and real_rr_ratio >= 1.0:
-                        ai_recommendation = "⭐⭐ 溫和佈局 (具備正向期望值)"; box_color = "#ffc107"
-                    else: ai_recommendation = "⚠️ 預測敗率較高，建議嚴格觀望"; box_color = "#555555"
+                        ai_recommendation = "⭐⭐ 溫和佈局 (具備正向期望值)"; box_color = "#ffc107"; text_color = "#ffc107"
+                    else: 
+                        ai_recommendation = "⚠️ 預測敗率較高，建議嚴格觀望"; box_color = "#a8a8a8"; text_color = "#f0f0f0"
                 except: pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
-            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold;">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br><span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold; color: {text_color};">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br><span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
             
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
@@ -330,9 +332,6 @@ else:
     st.markdown("---")
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
     
-    # ==========================================================
-    # 🧱 第一頁：自選即時流 (已完美隱藏 AI 勝率標籤)
-    # ==========================================================
     with tab1:
         c_title, c_slider = st.columns([2, 1])
         with c_title: st.markdown(f"#### 【{selected_cluster}】即時行情流")
@@ -373,9 +372,6 @@ else:
                 st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
         render_rt()
 
-    # ==========================================================
-    # 🎯 第二頁：全市場 AI 進出場戰術面板 (TOP 20)
-    # ==========================================================
     with tab2:
         st.markdown("#### 🎯 全市場 AI 進出場戰術面板 (TOP 20)")
         snapshot = load_market_snapshot()
@@ -420,21 +416,20 @@ else:
                 profit_reason = "🚀 噴發目標：等距測幅擴展位" if entry_price > res_level else ("🎯 潛伏目標：前高/箱頂壓力區" if ("量縮回踩" in pattern_str or "底背離" in pattern_str) else "⚔️ 波段目標：前高波動擴張位")
                 real_rr_ratio = round((take_profit - entry_price) / max(entry_price - stop_loss, 0.01), 2)
                 
-                box_color = "#00cc96" if win_prob > 0.60 else ("#ffc107" if win_prob > 0.50 else "#555555")
+                # 🔥 視覺明亮度修正：為主頁戰術面板設定高亮銀灰與亮白字體
+                box_color = "#00cc96" if win_prob > 0.60 else ("#ffc107" if win_prob > 0.50 else "#a8a8a8")
+                text_color = "#00cc96" if win_prob > 0.60 else ("#ffc107" if win_prob > 0.50 else "#f0f0f0")
                 ai_rec = "⭐⭐⭐ 極致期望值！" if win_prob > 0.60 else ("⭐⭐ 溫和佈局" if win_prob > 0.50 else "⚠️ 建議嚴格觀望")
                 
                 processed_stocks.append({
-                    'ticker': ticker, 'name': name, 'win_prob': win_prob, 'box_color': box_color, 'ai_rec': ai_rec,
+                    'ticker': ticker, 'name': name, 'win_prob': win_prob, 'box_color': box_color, 'text_color': text_color, 'ai_rec': ai_rec,
                     'entry_price': entry_price, 'take_profit': take_profit, 'stop_loss': stop_loss, 'profit_reason': profit_reason, 'real_rr_ratio': real_rr_ratio
                 })
             
             for s in sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]:
-                st.markdown(f"""<div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {s['box_color']}; margin-top: 0;">🎯 AI 戰術計畫 ({s['ticker']} {s['name']})</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br><span style="font-size: 14px; font-weight: bold;">{s['ai_rec']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{s['entry_price']:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{s['take_profit']:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{s['profit_reason']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{s['stop_loss']:.2f}</b></div></div></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {s['box_color']}; margin-top: 0;">🎯 AI 戰術計畫 ({s['ticker']} {s['name']})</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br><span style="font-size: 14px; font-weight: bold; color: {s['text_color']};">{s['ai_rec']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{s['entry_price']:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{s['take_profit']:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{s['profit_reason']}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{s['stop_loss']:.2f}</b></div></div></div>""", unsafe_allow_html=True)
         else: st.warning("⚠️ 全市場快取準備中...")
 
-    # ==========================================================
-    # 🕸️ 第三頁：產業鏈資金共振 (精選) —— ⚠️ 已修復 Pandas 崩潰 Bug
-    # ==========================================================
     with tab3:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析 (Top-Down)")
         st.caption("透過剖析細分產業鏈的平均量化熱度，快速抓出目前受到大資金與主力青睞的板塊共振族群。")
@@ -447,7 +442,6 @@ else:
             chain_data = INDUSTRY_CHAINS[selected_chain]
             
             snapshot = load_market_snapshot()
-            # 🚀 降維防呆轉譯：徹底拋棄會引發 KeyError 的 pd.DataFrame 直接提取，改用安全字典取值
             if snapshot and 'data' in snapshot:
                 raw_data = snapshot['data']
                 market_dict = {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in raw_data}
@@ -481,9 +475,6 @@ else:
             else: 
                 st.warning("⚠️ 系統快取準備中，請先前往 Actions 觸發掃描...")
 
-    # ==========================================================
-    # 🔬 第四頁：策略回測實驗室 (實盤)
-    # ==========================================================
     with tab4:
         st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
         st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
