@@ -36,7 +36,6 @@ def load_market_snapshot():
     return None
 
 def get_snapshot_dict(snapshot):
-    """將大盤快取轉為 O(1) 字典，確保全站讀取同一份歷史基準特徵"""
     if snapshot and 'data' in snapshot:
         return {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
     return {}
@@ -132,21 +131,26 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
     }
 
 # ==========================================================
-# 📊 純粹神經網路回測面板核心運算 (Tab 4 專用)
+# 📊 純粹神經網路回測面板核心運算 (徹底替換舊有 Score)
 # ==========================================================
 @st.cache_data(ttl=3600*2) 
-def fetch_advanced_backtest(threshold=50):
+def fetch_advanced_backtest(ai_prob_threshold=0.55):
     try:
         from supabase import create_client
         url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
         if not url or not key: return {"status": "no_key"}
         
+        model, features = get_ai_model()
+        if not model: return {"status": "error", "msg": "找不到 AI 模型，請確認 quant_model.joblib 存在。"}
+        
         supabase = create_client(url, key)
         all_data = []
         offset, limit = 0, 1000
+        
+        # 🚀 取出所有欄位，因為神經網路推論需要特徵
         while True:
-            res = supabase.table("quant_history").select("date, ticker, close_price, score").range(offset, offset+limit-1).execute()
+            res = supabase.table("quant_history").select("*").range(offset, offset+limit-1).execute()
             if not res.data: break
             all_data.extend(res.data)
             offset += limit
@@ -158,34 +162,57 @@ def fetch_advanced_backtest(threshold=50):
         df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
         df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
 
-        # 🎯 嚴格對齊 AI 神經網路的訓練目標：預測未來 5 天之表現
+        # 🎯 嚴格特徵工程對齊 (重建 SMC 特徵供 AI 使用)
+        df['pattern'] = df['pattern'].fillna("")
+        df['is_pullback'] = df['pattern'].str.contains("量縮回踩").astype(int)
+        df['is_squeeze'] = df['pattern'].str.contains("區間壓縮").astype(int)
+        df['is_divergence'] = df['pattern'].str.contains("底背離").astype(int)
+        df['is_liquidity_sweep'] = df['pattern'].str.contains("流動性掠奪").astype(int)
+        df['is_poc_rejection'] = df['pattern'].str.contains("POC").astype(int)
+        
+        df['rs_index'] = pd.to_numeric(df['rs_index'], errors='coerce').fillna(0)
+        df['vol_ratio'] = pd.to_numeric(df.get('vol_ratio', 1.0), errors='coerce').fillna(1.0)
+        df['volatility'] = pd.to_numeric(df.get('volatility', 0.0), errors='coerce').fillna(0.0)
+        df['turnover'] = pd.to_numeric(df.get('turnover', 0.0), errors='coerce').fillna(0.0)
+        df['broker_conc'] = pd.to_numeric(df.get('broker_conc', 0.0), errors='coerce').fillna(0.0)
+
+        # 🧠 將全歷史資料倒回神經網路進行預測！
+        try:
+            input_df = df[features].astype(float).fillna(0)
+            df['ai_prob'] = model.predict_proba(input_df)[:, 1]
+        except Exception as e:
+            return {"status": "error", "msg": f"AI 特徵對齊失敗: {str(e)}"}
+
+        # 🎯 嚴格對齊訓練目標：預測未來 5 天之表現
         df['future_close_5d'] = df.groupby('ticker')['close_price'].shift(-5)
         df['return_5d'] = (df['future_close_5d'] - df['close_price']) / df['close_price']
 
-        # 根據使用者設定的 AI 門檻濾出信號
-        signals = df[(df['score'] >= threshold) & (df['future_close_5d'].notna())].copy()
+        # 🚀 拋棄舊 score，完全依賴 AI 神經網路預測的勝率來篩選訊號
+        signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['future_close_5d'].notna())].copy()
 
         if len(signals) == 0:
-            pending = len(df[df['score'] >= threshold])
+            pending = len(df[df['ai_prob'] >= ai_prob_threshold])
             return {"status": "pending", "pending_count": pending}
 
-        # 1. AI 神經網路實盤勝率 (嚴格對齊訓練定義：> 1.5% 才算有效獲利)
+        # 1. 真實實盤勝率 (> 1.5% 才算有效獲利)
         wins = len(signals[signals['return_5d'] > 0.015])
         losses = len(signals) - wins
         wr = wins / len(signals) if len(signals) > 0 else 0
         
-        # 2. 累計盈虧
+        # 2. 累計盈虧 & 平均期望值 (解開勝率迷思的關鍵)
         cum_pnl = signals['return_5d'].sum() * 100
+        total_samples = len(signals) if len(signals) > 0 else 1
+        avg_trade_return = cum_pnl / total_samples
 
         # 3. TP 觸及概率 (測量 5 日內真實波動)
-        total_samples = len(signals) if len(signals) > 0 else 1
         tp1_hits = len(signals[signals['return_5d'] >= 0.03]) # 3%
         tp2_hits = len(signals[signals['return_5d'] >= 0.05]) # 5%
         tp3_hits = len(signals[signals['return_5d'] >= 0.07]) # 7%
         ftp_hits = len(signals[signals['return_5d'] >= 0.10]) # 10%
 
-        # 4. 最新訊號清單
-        recent_signals = df[df['score'] >= threshold].sort_values('date', ascending=False).head(50)
+        # 4. 最新訊號清單 (包含 AI 預測勝率)
+        recent_signals = signals.sort_values('date', ascending=False).head(50)
+        recent_signals['ai_prob_str'] = (recent_signals['ai_prob'] * 100).apply(lambda x: f"{x:.1f}%")
         
         # 5. 資產淨值曲線 (每日平均獲利累加)
         equity_df = signals.groupby('date')['return_5d'].mean().cumsum().reset_index()
@@ -194,13 +221,14 @@ def fetch_advanced_backtest(threshold=50):
             "status": "ready",
             "ai_strat": {"wr": wr, "w": wins, "l": losses},
             "cum_pnl": cum_pnl,
+            "avg_trade_return": avg_trade_return,
             "trades": total_samples,
             "tps": {
                 "tp1": tp1_hits / total_samples, "tp2": tp2_hits / total_samples,
                 "tp3": tp3_hits / total_samples, "ftp": ftp_hits / total_samples,
                 "samples": total_samples
             },
-            "signals": recent_signals[['date', 'ticker', 'close_price', 'score']].to_dict('records'),
+            "signals": recent_signals[['date', 'ticker', 'close_price', 'ai_prob_str']].to_dict('records'),
             "equity": equity_df.to_dict('records')
         }
     except Exception as e: return {"status": "error", "msg": str(e)}
@@ -508,13 +536,14 @@ else:
     with tab4:
         st.markdown("#### 🔬 AI 演算法實盤回測面板")
         
-        test_threshold = st.slider("🎚️ 設定 AI 訊號進場門檻 (分)", min_value=20, max_value=100, value=50, step=5)
+        # 🚀 改為讓使用者直接拖曳「AI 神經網路預測勝率」
+        test_threshold = st.slider("🎚️ 設定神經網路預測勝率門檻 (%)", min_value=40, max_value=85, value=55, step=1)
         
-        res_adv = fetch_advanced_backtest(threshold=test_threshold)
+        res_adv = fetch_advanced_backtest(ai_prob_threshold=test_threshold/100.0)
         
         if res_adv["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
         elif res_adv["status"] == "empty": st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
-        elif res_adv["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。等待開獎。")
+        elif res_adv["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold}%。目前暫無達成條件之信號等待開獎。")
         elif res_adv["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_adv['msg']}")
         elif res_adv["status"] == "ready":
             
@@ -536,12 +565,15 @@ else:
                 color_purple = "#c084fc"
                 color_red = "#ff4b4b"
                 
-                # 建構純粹的 AI 面板網格
-                r1_c1, r1_c2 = st.columns(2)
-                with r1_c1: st.markdown(build_card("AI 神經網路真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
+                # 建構純粹的 AI 面板網格 (加入平均期望值)
+                r1_c1, r1_c2, r1_c3 = st.columns(3)
+                with r1_c1: st.markdown(build_card("AI 真實勝率 (>1.5%實質獲利)", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
                 with r1_c2: 
                     pnl_color = color_green if res_adv['cum_pnl'] > 0 else color_red
                     st.markdown(build_card("累計盈虧 (%)", f"+{res_adv['cum_pnl']:.2f}%" if res_adv['cum_pnl'] > 0 else f"{res_adv['cum_pnl']:.2f}%", f"{res_adv['trades']} 筆交易樣本", pnl_color), unsafe_allow_html=True)
+                with r1_c3:
+                    avg_color = color_green if res_adv['avg_trade_return'] > 0 else color_red
+                    st.markdown(build_card("單筆平均期望值", f"+{res_adv['avg_trade_return']:.2f}%" if res_adv['avg_trade_return'] > 0 else f"{res_adv['avg_trade_return']:.2f}%", "大數法則獲利核心", avg_color), unsafe_allow_html=True)
                 
                 r2_c1, r2_c2 = st.columns(2)
                 with r2_c1: st.markdown(build_card("TP1 觸及概率 (目標 3%)", f"{res_adv['tps']['tp1']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_green), unsafe_allow_html=True)
@@ -551,15 +583,15 @@ else:
                 with r3_c1: st.markdown(build_card("TP3 觸及概率 (目標 7%)", f"{res_adv['tps']['tp3']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
                 with r3_c2: st.markdown(build_card("FTP 觸及概率 (極致滿靶 10%)", f"{res_adv['tps']['ftp']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
 
-                st.markdown("#### 🚨 近期觸發進場信號清單")
+                st.markdown("#### 🚨 歷史 AI 高勝率觸發清單")
                 if res_adv['signals']:
                     sig_df = pd.DataFrame(res_adv['signals'])
-                    sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "close_price": "進場價格", "score": "AI 分數"}, inplace=True)
+                    sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "close_price": "進場價格", "ai_prob_str": "AI 預測勝率"}, inplace=True)
                     st.dataframe(sig_df, hide_index=True, use_container_width=True)
 
             with sub_tab2:
                 st.markdown("#### 📈 策略資產淨值曲線 (Equity Curve)")
-                st.caption("圖表呈現所有有效交易信號每日平均獲利之累加曲線。")
+                st.caption("圖表呈現 AI 在不同時期發出訊號後，每次平均獲利疊加的軌跡。")
                 if res_adv['equity']:
                     eq_df = pd.DataFrame(res_adv['equity'])
                     eq_df.rename(columns={"date": "日期", "return_5d": "累計報酬 (%)"}, inplace=True)
