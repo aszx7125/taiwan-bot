@@ -482,7 +482,7 @@ else:
                     display_vol = int(rt_vol) if rt_vol < 2000000 else int(rt_vol / 1000)
                     price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({display_vol:,} 張)</span>"
                     change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                    return {"標的": name_str "及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
+                    return {"標的": name_str ,"及時價 (成交量)": price_vol, "今日漲跌幅": change_str, "raw_pct": change_pct}
                 except: pass
                 return None
 
