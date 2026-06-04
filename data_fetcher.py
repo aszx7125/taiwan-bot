@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import datetime
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -130,6 +131,11 @@ def _fetch_and_score_sync(symbol, market_ret_20, conds, names_dict, mode):
         if df_daily.empty or len(df_daily) < 35: return None
         
         df_daily = add_advanced_indicators(df_daily, market_ret_20)
+        
+        # 🚀 計算爆量比 (Vol_Ratio) 並補齊給神經網路
+        df_daily['Vol_SMA5'] = df_daily['Volume'].rolling(window=5).mean()
+        df_daily['Vol_Ratio'] = np.where(df_daily['Vol_SMA5'] > 0, df_daily['Volume'] / df_daily['Vol_SMA5'], 1.0)
+        
         if 'Score' not in df_daily.columns: return None
         
         last = df_daily.iloc[-1]
@@ -138,23 +144,43 @@ def _fetch_and_score_sync(symbol, market_ret_20, conds, names_dict, mode):
         
         score = int(last.get('Score', 0)) if pd.notna(last.get('Score')) else 0
         rs_val = float(last.get('RS_Index', 0)) if pd.notna(last.get('RS_Index')) else 0.0
-        rsi_val = float(last.get('RSI', 50)) if pd.notna(last.get('RSI')) else 50.0
+        
+        # 🚀 提取神經網路需要的四大核心特徵
+        close_val = float(last.get('Close', 0.0))
+        vol_val = float(last.get('Volume', 0.0))
+        atr_val = float(last.get('ATR_14', 0.0))
+        
+        volatility = round(atr_val / close_val, 4) if close_val > 0 else 0.0
+        turnover = float(close_val * vol_val)
+        vol_ratio = float(last.get('Vol_Ratio', 1.0))
+        broker_conc = float(last.get('Broker_Concentration', 0.0)) # 若日後加入指標計算，便可直接抓取
         
         liq_sweep = bool(last.get('Liquidity_Sweep_Bull', False))
         low_vol_pb = bool(last.get('Low_Vol_Pullback', False))
-        broker_conc = float(last.get('Broker_Concentration', 0.0))
         
         pattern_list = []
         if low_vol_pb: pattern_list.append("📉 量縮回踩")
         if broker_conc > 0.3: pattern_list.append("🏦 分點囤貨")
-        if liq_sweep: pattern_list.append("🧹 破底翻")
+        if liq_sweep: pattern_list.append("🌊 流動性掠奪")
         if df_daily['Squeeze_On'].iloc[-2] and last['Close'] > last['BB_Upper']: pattern_list.append("💥 壓縮突破")
         
         if not pattern_list: pattern_list.append("多頭" if last['Close'] > last['SMA_20'] else "空頭")
         pattern_str = " + ".join(pattern_list[:3]) 
         
         if mode == "score":
-            return {"代號": code, "名稱": name, "量化總分": score, "機構籌碼/型態": pattern_str, "大盤相對強度": f"{rs_val*100:+.2f}%", "現價": f"{last['Close']:.2f}"}
+            return {
+                "代號": code, 
+                "名稱": name, 
+                "量化總分": score, 
+                "機構籌碼/型態": pattern_str, 
+                "大盤相對強度": f"{rs_val*100:+.2f}%", 
+                "現價": f"{close_val:.2f}",
+                # 🚀 完美封裝四大核心特徵，對接 backend_updater
+                "volatility": volatility,
+                "turnover": turnover,
+                "vol_ratio": vol_ratio,
+                "broker_conc": broker_conc
+            }
     except: pass
     return None
 

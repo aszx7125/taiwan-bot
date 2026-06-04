@@ -86,6 +86,13 @@ def run_backend_update():
                 try: rs_val = float(str(item.get("大盤相對強度", "0")).replace("%", ""))
                 except: rs_val = 0.0
                 
+                # 🚀 嚴格對齊 Supabase Schema，完整補齊缺失的神經網路特徵！
+                # 若前線 _fetch_and_score_sync 尚未傳回這些變數，則設定安全的預設值以防止報錯或 NULL。
+                volatility = float(item.get("volatility", item.get("Volatility", 0.0)))
+                turnover = float(item.get("turnover", item.get("Turnover", 0.0)))
+                vol_ratio = float(item.get("vol_ratio", item.get("Vol_Ratio", 1.0)))
+                broker_conc = float(item.get("broker_conc", item.get("Broker_Concentration", 0.0)))
+                
                 db_records.append({
                     "date": today_str,
                     "ticker": str(item.get("代號")),
@@ -93,7 +100,11 @@ def run_backend_update():
                     "score": int(item.get("量化總分", 0)),
                     "pattern": str(item.get("機構籌碼/型態", "")),
                     "close_price": float(item.get("現價", 0)),
-                    "rs_index": rs_val
+                    "rs_index": rs_val,
+                    "volatility": volatility,
+                    "turnover": turnover,
+                    "vol_ratio": round(vol_ratio, 2),
+                    "broker_conc": broker_conc
                 })
             
             if db_records:
