@@ -26,6 +26,11 @@ def process_single_ticker(t, days_back, market_ret_20, names_dict, start_date):
             return clean_ticker, f"⚠️ {clean_ticker} {name} 數據不足，跳過。"
 
         df = add_advanced_indicators(df, market_ret_20)
+        
+        # 🚀 補充計算 vol_ratio (爆量比) - 今日成交量 / 5日均量
+        df['Vol_SMA5'] = df['Volume'].rolling(window=5).mean()
+        df['Vol_Ratio'] = np.where(df['Vol_SMA5'] > 0, df['Volume'] / df['Vol_SMA5'], 1.0)
+        
         df = df[df.index >= start_date]
         df = df.replace([np.inf, -np.inf], 0).fillna(0)
         
@@ -37,13 +42,18 @@ def process_single_ticker(t, days_back, market_ret_20, names_dict, start_date):
                 if pd.isna(rs_val) or rs_val == float('inf') or rs_val == float('-inf'): rs_val = 0.0
             except: rs_val = 0.0
             
-            # 🚀 提取新特徵：波動率 (Volatility) 與 成交金額 (Turnover/規模)
+            # 提取新特徵：波動率 (Volatility) 與 成交金額 (Turnover/規模)
             close_val = float(row.get("Close", 0))
             vol_val = float(row.get("Volume", 0))
             atr_val = float(row.get("ATR_14", 0))
             
             volatility = round(atr_val / close_val, 4) if close_val > 0 else 0.0
             turnover = float(close_val * vol_val)
+            
+            # 🚀 提取爆量比與防呆籌碼
+            vol_ratio = float(row.get('Vol_Ratio', 1.0))
+            if pd.isna(vol_ratio) or vol_ratio == float('inf') or vol_ratio == float('-inf'): vol_ratio = 1.0
+            broker_conc = 0.0 # Yahoo 歷史資料不含分點籌碼，強制補 0 防止資料庫出現 NULL
             
             bull_div = bool(row.get('Bullish_Div', False))
             liq_sweep = bool(row.get('Liquidity_Sweep_Bull', False))
@@ -57,6 +67,7 @@ def process_single_ticker(t, days_back, market_ret_20, names_dict, start_date):
             if bull_div: pattern_list.append("🟢 RSI底背離")
             pattern_str = " + ".join(pattern_list) if pattern_list else "常態震盪"
             
+            # 🚀 完美對齊 Supabase Schema，補上缺失的 Key
             db_records.append({
                 "date": date_str,
                 "ticker": clean_ticker,
@@ -66,7 +77,9 @@ def process_single_ticker(t, days_back, market_ret_20, names_dict, start_date):
                 "close_price": close_val,
                 "rs_index": rs_val,
                 "volatility": volatility,
-                "turnover": turnover
+                "turnover": turnover,
+                "vol_ratio": round(vol_ratio, 2),
+                "broker_conc": broker_conc
             })
             
         return clean_ticker, db_records
@@ -117,19 +130,18 @@ def inject_history_data(target_tickers, days_back=730):
 if __name__ == "__main__":
     auto_tickers = set()
     
-    # ⚖️ 1. 大型權值股 (0050代表 - 教導 AI 穩健趨勢與外資邏輯)
+    # ⚖️ 1. 大型權值股
     top_50 = ['2330.TW', '2317.TW', '2454.TW', '2382.TW', '2308.TW', '2881.TW', '2882.TW', '2891.TW', '3231.TW', '2303.TW', '2886.TW', '2884.TW', '2885.TW', '1216.TW', '2002.TW', '2892.TW', '2880.TW', '2883.TW', '2887.TW', '2912.TW', '2356.TW', '2379.TW', '2301.TW', '3045.TW', '2345.TW', '2395.TW', '2412.TW', '2890.TW', '2603.TW', '2609.TW', '2615.TW', '2207.TW', '3711.TW', '5871.TW', '4938.TW', '5880.TW', '6669.TW', '2324.TW', '3008.TW', '3034.TW', '3481.TW', '2409.TW', '2801.TW', '2812.TW', '8046.TW', '2888.TW', '2353.TW', '2352.TW', '1101.TW', '1102.TW']
     
-    # ⚖️ 2. 中型中堅股 (0051代表 - 教導 AI 投信作帳與強勢波段)
+    # ⚖️ 2. 中型中堅股
     mid_50 = ['2368.TW', '2376.TW', '2377.TW', '2383.TW', '3037.TW', '2618.TW', '2610.TW', '2313.TW', '2354.TW', '2449.TW', '2373.TW', '2385.TW', '2392.TW', '2408.TW', '2458.TW', '2606.TW', '2809.TW', '2834.TW', '2845.TW', '2889.TW', '2903.TW', '2915.TW', '3044.TW', '3443.TW', '3532.TW', '3661.TW', '3702.TW', '4904.TW', '4915.TW', '5347.TWO', '5483.TWO', '6176.TW', '6239.TW', '6271.TW', '8016.TW', '8081.TW', '8112.TW', '8464.TW', '9904.TW', '9910.TW', '9914.TW', '9921.TW', '9941.TW', '9945.TW']
     
-    # ⚖️ 3. 小型/櫃買妖股 (OTC代表 - 教導 AI 辨識隔日沖與假突破陷阱)
+    # ⚖️ 3. 小型/櫃買妖股
     otc_50 = ['3105.TWO', '3293.TWO', '3324.TWO', '3529.TWO', '5425.TWO', '6147.TWO', '6274.TWO', '8069.TWO', '8299.TWO', '3131.TWO', '3141.TWO', '3227.TWO', '3260.TWO', '3264.TWO', '3314.TWO', '3328.TWO', '3362.TWO', '3374.TWO', '3483.TWO', '3491.TWO', '3552.TWO', '3556.TWO', '3587.TWO', '3680.TWO', '4105.TWO', '4114.TWO', '4123.TWO', '4128.TWO', '4162.TWO', '4743.TWO', '4947.TWO', '4953.TWO', '4979.TWO', '5289.TWO', '5351.TWO', '5478.TWO', '5490.TWO', '5536.TWO', '6104.TWO', '6121.TWO', '6138.TWO', '6182.TWO', '6188.TWO', '6223.TWO', '6245.TWO', '6279.TWO', '8044.TWO', '8050.TWO']
 
     for t in top_50 + mid_50 + otc_50:
         auto_tickers.add(t)
         
-    # 加上您原本配置在 Config 的自選清單
     for cluster_name, tickers in DEFAULT_CLUSTERS.items():
         for t in tickers: auto_tickers.add(t.strip().upper())
             
@@ -142,5 +154,4 @@ if __name__ == "__main__":
                 
     final_watchlist = sorted(list(auto_tickers))
     
-    # 執行回補：預設回補過去兩年 (730天)
     inject_history_data(final_watchlist, days_back=730)
