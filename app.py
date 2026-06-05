@@ -36,7 +36,6 @@ def load_market_snapshot():
     return None
 
 def get_snapshot_dict(snapshot):
-    """將大盤快取轉為 O(1) 字典，確保全站讀取同一份歷史基準特徵"""
     if snapshot and 'data' in snapshot:
         return {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
     return {}
@@ -50,9 +49,6 @@ def get_ai_model():
         except: pass
     return None, None
 
-# ==========================================================
-# 🚀 中央對齊核心：中央報價引擎與特徵萃取器
-# ==========================================================
 def get_realtime_quote(clean_ticker):
     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
     if FUGLE_API_KEY:
@@ -87,6 +83,8 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
     anchor_price = current_price
     base_vol = fallback_vol 
     atr = fallback_atr if fallback_atr else (anchor_price * 0.05)
+    vol_ratio = 1.0
+    broker_conc = 0.0
 
     if snapshot_dict and clean_ticker in snapshot_dict:
         item = snapshot_dict[clean_ticker]
@@ -110,6 +108,9 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
             try: atr = float(atr_raw)
             except: pass
 
+        vol_ratio = float(item.get('vol_ratio', item.get('Vol_Ratio', 1.0)))
+        broker_conc = float(item.get('broker_conc', item.get('Broker_Concentration', 0.0)))
+
     if base_vol <= 0 and current_vol > 0:
         base_vol = current_vol
 
@@ -123,27 +124,46 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
 
     return {
         'is_pullback': 1.0 if "量縮回踩" in pat else 0.0,
-        'is_sweep': 1.0 if "流動性掠奪" in pat else 0.0,
         'is_squeeze': 1.0 if "區間壓縮" in pat else 0.0,
         'is_divergence': 1.0 if "底背離" in pat else 0.0,
+        'is_liquidity_sweep': 1.0 if "流動性掠奪" in pat else 0.0,
+        'is_poc_rejection': 1.0 if "POC" in pat else 0.0,
         'rs_index': float(rs_idx),
+        'vol_ratio': float(vol_ratio),
         'volatility': float(volatility),
-        'turnover': float(turnover)
+        'turnover': float(turnover),
+        'broker_conc': float(broker_conc)
     }
 
-@st.cache_data(ttl=3600*6) 
-def fetch_and_calculate_backtest(holding_period=5, threshold=60):
+# ==========================================================
+# 📊 實盤自動優化回測模組 (精確平移 1 天對齊「次日開盤進場」)
+# ==========================================================
+@st.cache_data(ttl=3600*2) 
+def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
     try:
         from supabase import create_client
         url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
         if not url or not key: return {"status": "no_key"}
         
+        model, features = get_ai_model()
+        if not model: return {"status": "error", "msg": "找不到 AI 模型，請確認 quant_model.joblib 存在。"}
+        
+        market_k = fetch_yahoo_robust("^TWII", period="3y", interval="1d")
+        if market_k.empty: return {"status": "error", "msg": "無法下載大盤對照基準線。"}
+        
+        market_k = market_k.sort_index()
+        market_k['market_sma20'] = market_k['Close'].rolling(window=20).mean()
+        market_k['market_pct'] = market_k['Close'].pct_change()
+        market_k = market_k.reset_index()
+        market_k['date_norm'] = pd.to_datetime(market_k['index']).dt.normalize()
+        market_brief = market_k[['date_norm', 'Close', 'market_sma20', 'market_pct']].rename(columns={'Close': 'market_close'})
+
         supabase = create_client(url, key)
         all_data = []
         offset, limit = 0, 1000
         while True:
-            res = supabase.table("quant_history").select("date, ticker, close_price, score").range(offset, offset+limit-1).execute()
+            res = supabase.table("quant_history").select("*").range(offset, offset+limit-1).execute()
             if not res.data: break
             all_data.extend(res.data)
             offset += limit
@@ -152,27 +172,126 @@ def fetch_and_calculate_backtest(holding_period=5, threshold=60):
         
         df = pd.DataFrame(all_data)
         df['date'] = pd.to_datetime(df['date'])
+        df['date_norm'] = df['date'].dt.normalize()
+        df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
         df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
 
-        df[f'future_close_{holding_period}d'] = df.groupby('ticker')['close_price'].shift(-holding_period)
-        df[f'return_{holding_period}d'] = (df[f'future_close_{holding_period}d'] - df['close_price']) / df['close_price']
-
-        signals = df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].notna())].copy()
-        total_signals = len(signals)
+        df['pattern'] = df['pattern'].fillna("")
+        df['is_pullback'] = df['pattern'].str.contains("量縮回踩").astype(int)
+        df['is_squeeze'] = df['pattern'].str.contains("區間壓縮").astype(int)
+        df['is_divergence'] = df['pattern'].str.contains("底背離").astype(int)
+        df['is_liquidity_sweep'] = df['pattern'].str.contains("流動性掠奪").astype(int)
+        df['is_poc_rejection'] = df['pattern'].str.contains("POC").astype(int)
         
-        if total_signals == 0:
-            pending = len(df[(df['score'] >= threshold) & (df[f'future_close_{holding_period}d'].isna())])
-            return {"status": "pending", "pending_count": pending}
+        df['rs_index'] = pd.to_numeric(df['rs_index'], errors='coerce').fillna(0)
+        df['vol_ratio'] = pd.to_numeric(df.get('vol_ratio', 1.0), errors='coerce').fillna(1.0)
+        df['volatility'] = pd.to_numeric(df.get('volatility', 0.0), errors='coerce').fillna(0.0)
+        df['turnover'] = pd.to_numeric(df.get('turnover', 0.0), errors='coerce').fillna(0.0)
+        df['broker_conc'] = pd.to_numeric(df.get('broker_conc', 0.0), errors='coerce').fillna(0.0)
 
-        signals['is_win'] = signals[f'return_{holding_period}d'] > 0
-        win_rate = len(signals[signals['is_win']]) / total_signals
-        avg_win = signals[signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[signals['is_win']]) > 0 else 0
-        avg_loss = signals[~signals['is_win']][f'return_{holding_period}d'].mean() if len(signals[~signals['is_win']]) > 0 else 0
-        expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+        try:
+            input_df = df[features].astype(float).fillna(0)
+            df['ai_prob'] = model.predict_proba(input_df)[:, 1]
+        except Exception as e:
+            return {"status": "error", "msg": f"AI 特徵對齊失敗: {str(e)}"}
+
+        df = pd.merge(df, market_brief, on='date_norm', how='left')
+
+        df['entry_price_real'] = df.groupby('ticker')['close_price'].shift(-1)
+        df['future_close_6d'] = df.groupby('ticker')['close_price'].shift(-6)
+        df['return_5d'] = (df['future_close_6d'] - df['entry_price_real']) / df['entry_price_real']
+
+        if use_market_filter:
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
+        else:
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
+
+        if len(signals) == 0:
+            return {"status": "pending", "pending_count": 0}
+
+        pos_size = initial_cap / max_pos
+        current_equity = initial_cap
+        active_trades = []
+        executed_trades = []
+        daily_equity = []
+
+        signals = signals.sort_values(['date_norm', 'ai_prob'], ascending=[True, False])
+
+        for current_date, daily_sigs in signals.groupby('date_norm'):
+            still_active = []
+            for t in active_trades:
+                if current_date >= t['exit_date']:
+                    current_equity += t['profit']
+                else:
+                    still_active.append(t)
+            active_trades = still_active
+            
+            for _, row in daily_sigs.iterrows():
+                if len(active_trades) < max_pos: 
+                    fee_rate = 0.005  
+                    net_return_5d = row['return_5d'] - fee_rate
+                    profit_twd = pos_size * net_return_5d
+                    
+                    active_trades.append({
+                        'exit_date': current_date + pd.Timedelta(days=7),
+                        'profit': profit_twd
+                    })
+                    
+                    row_dict = row.to_dict()
+                    row_dict['net_return_5d'] = net_return_5d
+                    row_dict['sim_profit_twd'] = profit_twd
+                    executed_trades.append(row_dict)
+                    
+            daily_equity.append({
+                'date_str': current_date.strftime('%Y-%m-%d'), 
+                'strat_cum_pct': ((current_equity - initial_cap) / initial_cap) * 100,
+                'market_cum_pct': daily_sigs.iloc[0]['market_cum'] if 'market_cum' in daily_sigs else 0
+            })
+
+        if not executed_trades:
+            return {"status": "empty", "msg": "經過自動化分配與交易成本侵蝕後，未產生有效淨利。"}
+
+        exec_df = pd.DataFrame(executed_trades)
+
+        wins = len(exec_df[exec_df['net_return_5d'] > 0])
+        losses = len(exec_df) - wins
+        wr = wins / len(exec_df) if len(exec_df) > 0 else 0
+        
+        total_net_profit_twd = exec_df['sim_profit_twd'].sum()
+        account_return_pct = (total_net_profit_twd / initial_cap) * 100
+        total_samples = len(exec_df)
+        avg_trade_twd = total_net_profit_twd / total_samples
+
+        tp1_hits = len(exec_df[exec_df['net_return_5d'] >= 0.03])
+        tp2_hits = len(exec_df[exec_df['net_return_5d'] >= 0.05])
+        tp3_hits = len(exec_df[exec_df['net_return_5d'] >= 0.07])
+        ftp_hits = len(exec_df[exec_df['net_return_5d'] >= 0.10])
+
+        recent_signals = exec_df.sort_values('date', ascending=False).head(50)
+        recent_signals['ai_prob_str'] = (recent_signals['ai_prob'] * 100).apply(lambda x: f"{x:.1f}%")
+        recent_signals['sim_profit_str'] = recent_signals['sim_profit_twd'].apply(lambda x: f"NT$ {int(x):,}")
+
+        market_k['market_cum_pct'] = market_k['market_pct'].fillna(0).cumsum() * 100
+        market_lookup = dict(zip(market_k['date_norm'].dt.strftime('%Y-%m-%d'), market_k['market_cum_pct']))
+        
+        for d in daily_equity:
+            if d['date_str'] in market_lookup:
+                d['market_cum_pct'] = market_lookup[d['date_str']]
 
         return {
-            "status": "ready", "total": total_signals, "win_rate": win_rate,
-            "avg_win": avg_win, "avg_loss": avg_loss, "expectancy": expectancy
+            "status": "ready",
+            "ai_strat": {"wr": wr, "w": wins, "l": losses},
+            "net_profit_twd": total_net_profit_twd,
+            "account_pct": account_return_pct,
+            "avg_trade_twd": avg_trade_twd,
+            "trades": total_samples,
+            "tps": {
+                "tp1": tp1_hits / total_samples, "tp2": tp2_hits / total_samples,
+                "tp3": tp3_hits / total_samples, "ftp": ftp_hits / total_samples,
+                "samples": total_samples
+            },
+            "signals": recent_signals[['date', 'ticker', 'entry_price_real', 'ai_prob_str', 'sim_profit_str']].to_dict('records'),
+            "equity": daily_equity
         }
     except Exception as e: return {"status": "error", "msg": str(e)}
 
@@ -186,7 +305,13 @@ with st.sidebar:
     if st.button("📊 診斷此自選股", use_container_width=True, type="primary"):
         st.session_state.analyze_trigger = sidebar_ticker 
         st.rerun()
+    
     st.markdown("---")
+    st.header("💰 實盤資金管理")
+    user_capital = st.number_input("初始本金 (TWD)", min_value=1000, max_value=20000000, value=1000000, step=10000)
+    user_max_pos = st.slider("最大同時持倉檔數", min_value=1, max_value=10, value=5)
+    st.markdown("---")
+
     if FUGLE_API_KEY: st.success("🟢 零延遲即時引擎已啟動")
     else: st.warning("🟡 目前使用 Yahoo 延遲報價")
     st.markdown("---")
@@ -206,6 +331,9 @@ st.markdown("---")
 
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
+# ==========================================================
+# 🔍 單股深度診斷模式面板 (含新聞去偏差安全守護)
+# ==========================================================
 if target_ticker:
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
@@ -249,9 +377,10 @@ if target_ticker:
             squeeze_on = bool(today.get('Squeeze_On', False))
             
             smc_status = []
-            if low_vol_pb: smc_status.append("📉 量縮回踩")
-            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮")
-            smc_text = " + ".join(smc_status) if smc_status else "一般常態震盪"
+            if low_vol_pb: smc_status.append("📉 量縮回踩 (Pullback)")
+            if squeeze_on: smc_status.append("🛡️ 區間極度壓縮 (Squeeze)")
+            if bull_div: smc_status.append("📈 動能底背離 (Divergence)")
+            smc_text = " + ".join(smc_status) if smc_status else "一般常態箱體震盪"
 
             stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
             risk_per_share = max(entry_price - stop_loss, 0.01)
@@ -274,8 +403,6 @@ if target_ticker:
                 else: micro_status_text = "⚪ 1h 均線下弱勢震盪"
 
             ai_win_rate_str = "等待 AI 訓練"
-            
-            # 🔥 視覺明亮度修正：為單股掃描設定高亮銀灰與亮白字體
             ai_recommendation = "⏸️ 勝率偏低或追高風險，強制觀望"
             box_color = "#a8a8a8"
             text_color = "#f0f0f0"
@@ -304,13 +431,54 @@ if target_ticker:
                 except: pass
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
-            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold; color: {text_color};">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span><br><span style="font-size: 12px; color: gray;">(實況風報比 1 : {real_rr_ratio})</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;"><h4 style="color: {box_color}; margin-top: 0;">🎯 AI 深度學習 x 結構價格 戰術計畫</h4><div style="display: flex; justify-content: space-between; flex-wrap: wrap;"><div style="flex: 1; min-width: 180px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">1. AI 真實勝率預測</span><br><b style="font-size: 24px; color: {box_color};">{ai_win_rate_str}</b><br><span style="font-size: 14px; font-weight: bold; color: {text_color};">{ai_recommendation}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">2. 建議進場價</span><br><b style="font-size: 22px;">{entry_price:.2f}</b></div><div style="flex: 1; min-width: 200px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">3. 結構停利點</span><br><b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b><br><span style="font-size: 12px; color: #00cc96; font-weight: bold;">{profit_reason}</span></div><div style="flex: 1; min-width: 130px; margin-bottom: 10px;"><span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br><b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b></div></div></div>""", unsafe_allow_html=True)
             
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
             m2.metric("日K 巨觀潛伏分數", f"{ai_score} 分")
             m3.metric("1h 小時區微觀狀態", micro_status_text)
             m4.metric("機構囤貨集中度", f"{broker_conc*100:.1f}%")
+            st.markdown("---")
+            
+            infra_col1, infra_col2 = st.columns(2)
+            with infra_col1:
+                st.markdown("### 📊 策略與型態技術面分析")
+                st.info(f"🧬 **SMC 聰明錢結構型態：** {smc_text}")
+                st.write(f"* **20日高位壓力 (Res_20)：** `NT$ {res_level:.2f}`")
+                st.write(f"* **20日低位支撐 (Sup_20)：** `NT$ {sup_level:.2f}`")
+                st.write(f"* **ATR 波動度基準 (ATR_14)：** `NT$ {atr_14:.2f}`")
+                st.write(f"* **5日平均成交量 (Vol_SMA5)：** `{int(vol_sma5):,} 張`")
+                
+            with infra_col2:
+                st.markdown("### 📰 即時相關新聞與情報")
+                if news_s:
+                    if isinstance(news_s, list):
+                        for idx, n in enumerate(news_s[:5]):
+                            if isinstance(n, dict) and 'title' in n:
+                                n_title = n.get('title', '檢視新聞詳情')
+                                n_link = n.get('link', '#')
+                                st.markdown(f"📢 **情報 {idx+1}：** [{n_title}]({n_link})")
+                            else:
+                                st.caption(f"📢 **情報 {idx+1}：** {n}")
+                    else:
+                        st.caption(f"📢 {news_s}")
+                else:
+                    st.write("⚪ 暫無即時個股催化劑新聞。")
+                
+                with st.expander("🌍 國際總經環境解讀"):
+                    if news_m:
+                        if isinstance(news_m, list):
+                            for n in news_m:
+                                if isinstance(n, dict) and 'title' in n:
+                                    m_title = n.get('title', '點此查看總經情報')
+                                    m_link = n.get('link', '#')
+                                    st.markdown(f"• [{m_title}]({m_link})")
+                                else:
+                                    st.write(f"• {n}")
+                        else:
+                            st.write(news_m)
+                    else:
+                        st.write("🟢 總體經濟環境處於常態偏多格局。")
             st.markdown("---")
             
         if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
@@ -416,7 +584,6 @@ else:
                 profit_reason = "🚀 噴發目標：等距測幅擴展位" if entry_price > res_level else ("🎯 潛伏目標：前高/箱頂壓力區" if ("量縮回踩" in pattern_str or "底背離" in pattern_str) else "⚔️ 波段目標：前高波動擴張位")
                 real_rr_ratio = round((take_profit - entry_price) / max(entry_price - stop_loss, 0.01), 2)
                 
-                # 🔥 視覺明亮度修正：為主頁戰術面板設定高亮銀灰與亮白字體
                 box_color = "#00cc96" if win_prob > 0.60 else ("#ffc107" if win_prob > 0.50 else "#a8a8a8")
                 text_color = "#00cc96" if win_prob > 0.60 else ("#ffc107" if win_prob > 0.50 else "#f0f0f0")
                 ai_rec = "⭐⭐⭐ 極致期望值！" if win_prob > 0.60 else ("⭐⭐ 溫和佈局" if win_prob > 0.50 else "⚠️ 建議嚴格觀望")
@@ -436,7 +603,7 @@ else:
         
         chain_list = list(INDUSTRY_CHAINS.keys())
         if not chain_list:
-            st.warning("⚠️ 尚未配置任何產業鏈 (請在 config.py 檢查 INDUSTRY_CHAINS)。")
+            st.warning("⚠️ 尚未配置任何產業鏈。")
         else:
             selected_chain = st.selectbox("選擇要檢視的產業鏈", chain_list)
             chain_data = INDUSTRY_CHAINS[selected_chain]
@@ -476,48 +643,69 @@ else:
                 st.warning("⚠️ 系統快取準備中，請先前往 Actions 觸發掃描...")
 
     with tab4:
-        st.markdown("#### 🔬 AI 演算法真實勝率與期望值 (Out-of-Sample)")
-        st.caption("系統自動從 Supabase 大腦記憶庫撈取歷史訊號，與未來真實收盤價對撞，計算出策略目前的真實期望值。")
+        st.markdown("#### 🔬 AI 演算法實盤回測面板")
+        st.caption("🧠 演算法已啟動全自動優化：系統每日開盤會自動將有限資金「自動鎖定並優先買入」當天勝率最高、最具正向期望值的標的物。")
         
-        test_threshold = st.slider("🎚️ 設定 AI 分進場門檻", min_value=20, max_value=100, value=50, step=5)
+        use_mkt_filter = st.checkbox("🛡️ 啟動大盤月線 (20MA) 智慧防禦濾網 (大盤轉弱破線時，自動空倉防守、拒絕新部位進場)", value=True)
         
-        b_col1, b_col2 = st.columns([1, 1])
-        with b_col1:
-            st.markdown("##### ⏳ 短波段策略 (持倉 5 天)")
-            res_5d = fetch_and_calculate_backtest(holding_period=5, threshold=test_threshold)
+        res_adv = fetch_advanced_backtest(
+            ai_prob_threshold=0.50, 
+            use_market_filter=use_mkt_filter,
+            initial_cap=user_capital,
+            max_pos=user_max_pos
+        )
+        
+        if res_adv["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
+        elif res_adv["status"] == "empty": st.warning("⚠️ 經過資金與成本侵蝕過濾後，無交易紀錄。")
+        elif res_adv["status"] == "pending": st.info("⏸️ 等待開獎。目前暫無達成條件之信號。")
+        elif res_adv["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_adv['msg']}")
+        elif res_adv["status"] == "ready":
             
-            if res_5d["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
-            elif res_5d["status"] == "empty": st.warning("⚠️ Supabase 資料庫為空，請先補齊歷史。")
-            elif res_5d["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_5d['pending_count']}** 筆訊號等待開獎。")
-            elif res_5d["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_5d['msg']}")
-            elif res_5d["status"] == "ready":
-                rr_ratio = abs(res_5d['avg_win'] / res_5d['avg_loss']) if res_5d['avg_loss'] != 0 else 0
-                st.markdown(f"""
-                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #00cc96;">
-                    <h3 style="margin-top: 0; color: #00cc96;">期望值: {res_5d['expectancy']*100:+.2f}%</h3>
-                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_5d['total']} 次</p>
-                    <b>勝率:</b> {res_5d['win_rate']*100:.1f}%<br>
-                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_5d['avg_win']*100:.2f}%</span><br>
-                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_5d['avg_loss']*100:.2f}%</span><br>
-                    <b>盈虧比:</b> {rr_ratio:.2f}
-                </div>
-                """, unsafe_allow_html=True)
+            sub_tab1, sub_tab2 = st.tabs(["📋 真實帳戶績效 & 訊號清單", "📈 帳戶淨值對照曲線"])
+            
+            with sub_tab1:
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                def build_card(title, value, subtext, color):
+                    return f"""
+                    <div style="background-color: #121218; padding: 22px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #2a2a35; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
+                        <div style="color: #8b8b99; font-size: 14px; margin-bottom: 8px; font-weight: 500;">{title}</div>
+                        <div style="color: {color}; font-size: 32px; font-weight: 700; margin-bottom: 5px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">{value}</div>
+                        <div style="color: #6b6b79; font-size: 13px;">{subtext}</div>
+                    </div>
+                    """
+                
+                color_green = "#4ade80"
+                color_purple = "#c084fc"
+                color_red = "#ff4b4b"
+                
+                r1_c1, r1_c2, r1_c3 = st.columns(3)
+                with r1_c1: st.markdown(build_card("AI 真實勝率 (扣除摩擦成本)", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
+                with r1_c2: 
+                    pnl_color = color_green if res_adv['net_profit_twd'] > 0 else color_red
+                    st.markdown(build_card("帳戶實質總淨利", f"+${res_adv['net_profit_twd']:,.0f}" if res_adv['net_profit_twd'] > 0 else f"${res_adv['net_profit_twd']:,.0f}", f"基於初始本金 NT$ {user_capital:,}", pnl_color), unsafe_allow_html=True)
+                with r1_c3:
+                    pct_color = color_green if res_adv['account_pct'] > 0 else color_red
+                    st.markdown(build_card("帳戶真實報酬率", f"+{res_adv['account_pct']:.2f}%" if res_adv['account_pct'] > 0 else f"{res_adv['account_pct']:.2f}%", f"總成交筆數: {res_adv['trades']} 筆", pct_color), unsafe_allow_html=True)
+                
+                r2_c1, r2_c2 = st.columns(2)
+                with r2_c1: 
+                    avg_color = color_green if res_adv['avg_trade_twd'] > 0 else color_red
+                    st.markdown(build_card("單筆純利利潤 (TWD)", f"+${res_adv['avg_trade_twd']:,.0f}" if res_adv['avg_trade_twd'] > 0 else f"${res_adv['avg_trade_twd']:,.0f}", "已扣除 0.5% 摩擦成本後的期望值", avg_color), unsafe_allow_html=True)
+                with r2_c2: st.markdown(build_card("TP2 觸及概率 (目標 5%)", f"{res_adv['tps']['tp2']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
 
-        with b_col2:
-            st.markdown("##### 🈷️ 長波段策略 (持倉 20 天)")
-            res_20d = fetch_and_calculate_backtest(holding_period=20, threshold=test_threshold)
-            
-            if res_20d["status"] == "pending": st.info(f"⏸️ 門檻設定為 {test_threshold} 分。目前有 **{res_20d['pending_count']}** 筆訊號等待開獎。")
-            elif res_20d["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_20d['msg']}")
-            elif res_20d["status"] == "ready":
-                rr_ratio = abs(res_20d['avg_win'] / res_20d['avg_loss']) if res_20d['avg_loss'] != 0 else 0
-                st.markdown(f"""
-                <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-top: 4px solid #ffc107;">
-                    <h3 style="margin-top: 0; color: #ffc107;">期望值: {res_20d['expectancy']*100:+.2f}%</h3>
-                    <p style="color: gray; margin-bottom: 5px;">總樣本數: {res_20d['total']} 次</p>
-                    <b>勝率:</b> {res_20d['win_rate']*100:.1f}%<br>
-                    <b>平均獲利:</b> <span style="color:#ff4b4b;">+{res_20d['avg_win']*100:.2f}%</span><br>
-                    <b>平均虧損:</b> <span style="color:#00cc96;">{res_20d['avg_loss']*100:.2f}%</span><br>
-                    <b>盈虧比:</b> {rr_ratio:.2f}
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (每日依大腦信心度自動排序選股)")
+                if res_adv['signals']:
+                    sig_df = pd.DataFrame(res_adv['signals'])
+                    sig_df.rename(columns={"date": "訊號觸發日期", "ticker": "股票代號", "entry_price_real": "次日真實進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "扣費後實際損益"}, inplace=True)
+                    st.dataframe(sig_df, hide_index=True, use_container_width=True)
+
+            with sub_tab2:
+                st.markdown("#### 📈 AI 實盤淨資產報酬 vs 大盤基準線 (%)")
+                st.caption("紫線為考慮次日開盤進場、手續費、滑價與大盤防禦濾網後的『真實財富增長軌跡』。")
+                if res_adv['equity']:
+                    eq_df = pd.DataFrame(res_adv['equity'])
+                    eq_df.rename(columns={"date_str": "日期", "strat_cum_pct": "AI 策略帳戶總報酬 (%)", "market_cum_pct": "加權指數大盤基準線 (%)"}, inplace=True)
+                    st.line_chart(eq_df.set_index("日期")[["AI 策略帳戶總報酬 (%)", "加權指數大盤基準線 (%)"]], color=["#c084fc", "#6b6b79"])
+                else:
+                    st.info("尚無足夠的歷史數據繪製曲線。")
