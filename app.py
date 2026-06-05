@@ -197,6 +197,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
 
         df = pd.merge(df, market_brief, on='date_norm', how='left')
 
+        # 🚀【核心滑價與跳空風險計算】：將進場價格平移至 Day T+1（次日開盤），出場平移至 Day T+6 收盤
         df['entry_price_real'] = df.groupby('ticker')['close_price'].shift(-1)
         df['future_close_6d'] = df.groupby('ticker')['close_price'].shift(-6)
         df['return_5d'] = (df['future_close_6d'] - df['entry_price_real']) / df['entry_price_real']
@@ -215,6 +216,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
         executed_trades = []
         daily_equity = []
 
+        # 每日開盤，自動把當天訊號按照 AI 勝率從高到低進行優化排序
         signals = signals.sort_values(['date_norm', 'ai_prob'], ascending=[True, False])
 
         for current_date, daily_sigs in signals.groupby('date_norm'):
@@ -228,6 +230,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
             
             for _, row in daily_sigs.iterrows():
                 if len(active_trades) < max_pos: 
+                    # 🚀【扣除雙向稅費與實盤追價滑價】：每筆扣除 0.5%
                     fee_rate = 0.005  
                     net_return_5d = row['return_5d'] - fee_rate
                     profit_twd = pos_size * net_return_5d
@@ -331,9 +334,6 @@ st.markdown("---")
 
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
-# ==========================================================
-# 🔍 單股深度診斷模式面板 (含新聞去偏差安全守護)
-# ==========================================================
 if target_ticker:
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
@@ -495,7 +495,7 @@ else:
             cols = st.columns(len(summary))
             for i, (name, data) in enumerate(summary.items()): 
                 cols[i].metric(name, f"{data['price']:.2f}", f"{data['change']:+.2f} ({data['pct']:+.2f}%)")
-        with c_greed: st.metric("台股恐懼貪婪指數", f"{greed_index} / 100")
+        with c_greed: st.metric("放眼全球：台股恐懼貪婪指數", f"{greed_index} / 100")
             
     st.markdown("---")
     tab1, tab2, tab3, tab4 = st.tabs(["📊 自選即時流", "🎯 全市場 AI 進出場戰術面板", "🕸️ 產業鏈資金共振 (精選)", "🔬 策略回測實驗室 (實盤)"])
