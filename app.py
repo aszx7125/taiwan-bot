@@ -135,6 +135,9 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
         'broker_conc': float(broker_conc)
     }
 
+# ==========================================================
+# 📊 實盤自動優化回測模組 (精確平移 1 天對齊「次日開盤進場」)
+# ==========================================================
 @st.cache_data(ttl=3600*2) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
     try:
@@ -495,13 +498,14 @@ else:
         with c_greed: st.metric("放眼全球：台股恐懼貪婪指數", f"{greed_index} / 100")
             
     st.markdown("---")
-    # 🚀 升級工程：正式解鎖 5 大核心分頁流
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    # 🚀 升級工程：包含資金回測在內的 6 大核心分頁
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 自選即時流", 
         "🔮 每日收盤趨勢預測", 
         "🎯 全市場 AI 進出場戰術面板", 
         "🕸️ 產業鏈資金共振 (精選)", 
-        "⚖️ 預測與今日盤面比對"
+        "⚖️ 預測與今日盤面比對",
+        "🔬 策略回測實驗室 (實盤)"
     ])
     
     with tab1:
@@ -544,9 +548,6 @@ else:
                 st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
         render_rt()
 
-    # ==========================================================
-    # 🔮 新增頁籤二：每日收盤趨勢預測 (隔天大盤風向標)
-    # ==========================================================
     with tab2:
         st.markdown("#### 🔮 每日收盤後大盤特徵與明日趨勢預測")
         st.caption("本頁籤會自動加總全市場最新收盤落庫之 SMC 與技術面數據，由 AI 大腦算出明日全市場潛在多頭動能比率。")
@@ -687,9 +688,6 @@ else:
             else: 
                 st.warning("⚠️ 系統快取準備中，請先前往 Actions 觸發掃描...")
 
-    # ==========================================================
-    # ⚖️ 新增頁籤五：預測與今日盤面比對結果 (開獎大盤照妖鏡)
-    # ==========================================================
     with tab5:
         st.markdown("#### ⚖️ 昨晚 AI 趨勢預測 x 今日實盤開獎比對面板")
         st.caption("本面板會自動提取昨日收盤算出之 AI 預測信心度，與今日盤中「最新即時報價」直接跨時空對撞，讓洗盤與跳空無所遁形。")
@@ -701,7 +699,7 @@ else:
             snapshot_dict = get_snapshot_dict(snapshot)
             
             valid_items, bulk_features = [], []
-            for item in raw_list[:40]: # 抽取前40檔核心焦點標的執行精確開獎
+            for item in raw_list[:40]: 
                 ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
                 entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                 vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
@@ -766,3 +764,74 @@ else:
                 st.info("請前往後台重新啟動機器人大腦訓練。")
         else:
             st.warning("⚠️ 全市場快取準備中...")
+
+    # ==========================================================
+    # 🔬 歸位：第六頁籤 - 策略回測實驗室 (包含資金管理與防禦濾網)
+    # ==========================================================
+    with tab6:
+        st.markdown("#### 🔬 AI 演算法實盤回測面板")
+        st.caption("🧠 演算法已啟動全自動優化：系統每日開盤會自動將有限資金「自動鎖定並優先買入」當天勝率最高、最具正向期望值的標的物。")
+        
+        use_mkt_filter = st.checkbox("🛡️ 啟動大盤月線 (20MA) 智慧防禦濾網 (大盤轉弱破線時，自動空倉防守、拒絕新部位進場)", value=True)
+        
+        res_adv = fetch_advanced_backtest(
+            ai_prob_threshold=0.50, 
+            use_market_filter=use_mkt_filter,
+            initial_cap=user_capital,
+            max_pos=user_max_pos
+        )
+        
+        if res_adv["status"] == "no_key": st.error("⚠️ 找不到資料庫金鑰。")
+        elif res_adv["status"] == "empty": st.warning("⚠️ 經過資金與成本侵蝕過濾後，無交易紀錄。")
+        elif res_adv["status"] == "pending": st.info("⏸️ 等待開獎。目前暫無達成條件之信號。")
+        elif res_adv["status"] == "error": st.error(f"❌ 運算發生錯誤: {res_adv['msg']}")
+        elif res_adv["status"] == "ready":
+            
+            sub_tab1, sub_tab2 = st.tabs(["📋 真實帳戶績效 & 訊號清單", "📈 帳戶淨值對照曲線"])
+            
+            with sub_tab1:
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                def build_card(title, value, subtext, color):
+                    return f"""
+                    <div style="background-color: #121218; padding: 22px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #2a2a35; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
+                        <div style="color: #8b8b99; font-size: 14px; margin-bottom: 8px; font-weight: 500;">{title}</div>
+                        <div style="color: {color}; font-size: 32px; font-weight: 700; margin-bottom: 5px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">{value}</div>
+                        <div style="color: #6b6b79; font-size: 13px;">{subtext}</div>
+                    </div>
+                    """
+                
+                color_green = "#4ade80"
+                color_purple = "#c084fc"
+                color_red = "#ff4b4b"
+                
+                r1_c1, r1_c2, r1_c3 = st.columns(3)
+                with r1_c1: st.markdown(build_card("AI 真實勝率 (扣除摩擦成本)", f"{res_adv['ai_strat']['wr']*100:.1f}%", f"{res_adv['ai_strat']['w']}W / {res_adv['ai_strat']['l']}L", color_green), unsafe_allow_html=True)
+                with r1_c2: 
+                    pnl_color = color_green if res_adv['net_profit_twd'] > 0 else color_red
+                    st.markdown(build_card("帳戶實質總淨利", f"+${res_adv['net_profit_twd']:,.0f}" if res_adv['net_profit_twd'] > 0 else f"${res_adv['net_profit_twd']:,.0f}", f"基於初始本金 NT$ {user_capital:,}", pnl_color), unsafe_allow_html=True)
+                with r1_c3:
+                    pct_color = color_green if res_adv['account_pct'] > 0 else color_red
+                    st.markdown(build_card("帳戶真實報酬率", f"+{res_adv['account_pct']:.2f}%" if res_adv['account_pct'] > 0 else f"{res_adv['account_pct']:.2f}%", f"總成交筆數: {res_adv['trades']} 筆", pct_color), unsafe_allow_html=True)
+                
+                r2_c1, r2_c2 = st.columns(2)
+                with r2_c1: 
+                    avg_color = color_green if res_adv['avg_trade_twd'] > 0 else color_red
+                    st.markdown(build_card("單筆純利利潤 (TWD)", f"+${res_adv['avg_trade_twd']:,.0f}" if res_adv['avg_trade_twd'] > 0 else f"${res_adv['avg_trade_twd']:,.0f}", "已扣除 0.5% 摩擦成本後的期望值", avg_color), unsafe_allow_html=True)
+                with r2_c2: st.markdown(build_card("TP2 觸及概率 (目標 5%)", f"{res_adv['tps']['tp2']*100:.1f}%", f"{res_adv['tps']['samples']} 筆樣本", color_purple), unsafe_allow_html=True)
+
+                st.markdown("#### 🚨 歷史 AI 實盤觸發清單 (每日依大腦信心度自動排序選股)")
+                if res_adv['signals']:
+                    sig_df = pd.DataFrame(res_adv['signals'])
+                    sig_df.rename(columns={"date": "訊號觸發日期", "ticker": "股票代號", "entry_price_real": "次日真實進場價", "ai_prob_str": "AI勝率", "sim_profit_str": "扣費後實際損益"}, inplace=True)
+                    st.dataframe(sig_df, hide_index=True, use_container_width=True)
+
+            with sub_tab2:
+                st.markdown("#### 📈 AI 實盤淨資產報酬 vs 大盤基準線 (%)")
+                st.caption("紫線為考慮次日開盤進場、手續費、滑價與大盤防禦濾網後的『真實財富增長軌跡』。")
+                if res_adv['equity']:
+                    eq_df = pd.DataFrame(res_adv['equity'])
+                    eq_df.rename(columns={"date_str": "日期", "strat_cum_pct": "AI 策略帳戶總報酬 (%)", "market_cum_pct": "加權指數大盤基準線 (%)"}, inplace=True)
+                    st.line_chart(eq_df.set_index("日期")[["AI 策略帳戶總報酬 (%)", "加權指數大盤基準線 (%)"]], color=["#c084fc", "#6b6b79"])
+                else:
+                    st.info("尚無足夠的歷史數據繪製曲線。")
