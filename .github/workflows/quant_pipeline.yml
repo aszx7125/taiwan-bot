@@ -1,0 +1,38 @@
+name: 台股 AI 雙核量化管線工廠
+
+on:
+  schedule:
+    - cron: '0 10 * * 1-5'  # 每天下午台股收盤後自動收錄特徵
+    - cron: '0 18 * * 6'    # 每週六晚上 18:00 (UTC 10:00) 自動啟動大腦重新訓練
+
+jobs:
+  # (原本每天抓資料的 Job 保留，此處僅展示新增的週末訓練 Job)
+  train_weekly_lstm:
+    if: github.event.schedule == '0 18 * * 6'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 複製儲存庫代碼
+        uses: actions/checkout@v3
+
+      - name: 配置 Python 3.10 環境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 安裝深度學習與相容套件
+        run: |
+          pip install pandas numpy supabase tensorflow joblib scikit-learn
+
+      - name: 執行雲端 CPU 煉丹
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python train_lstm.py
+
+      - name: 自動將新大腦 Commit 並 Push 回 GitHub 儲存庫
+        run: |
+          git config --local user.email "bot@quant.factory"
+          git config --local user.name "AI-Brain-Builder-Bot"
+          git add lstm_momentum_brain.h5
+          # 只有當檔案真的有更新時才推播，防止空提交報錯
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 自動每週更新：時序 LSTM 深度大腦 [Skip CI]" && git push)
