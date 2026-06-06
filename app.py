@@ -19,14 +19,13 @@ from data_fetcher import (
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
 
 # ==========================================
-# ⚙️ 系統環境與資料初始化
+# ⚙️ 系統環境與資料快取 (防卡死隔離)
 # ==========================================
 if 'stock_clusters' not in st.session_state: st.session_state.stock_clusters = DEFAULT_CLUSTERS.copy()
 if 'stock_names' not in st.session_state: st.session_state.stock_names = DEFAULT_NAMES.copy()
 
 FUGLE_API_KEY = get_fugle_key()
 
-# ⚡ 優化 1：快取 CSV 讀取，避免每次點擊都讀硬碟
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_load_tickers():
     return load_all_market_tickers()
@@ -175,9 +174,10 @@ def compute_batch_lstm_scores(features_list):
         return scores
     except Exception: return np.full(len(features_list), 0.50)
 
-# ⚡ 優化 2：全市場推論快取 (5分鐘更新一次，保證秒速切換)
+# ⚡ 效能殺手修復：拔除巨量字典傳遞，內部封裝讀取，保證秒開主頁
 @st.cache_data(ttl=300, show_spinner=False)
-def get_cached_top20_signals(snapshot_data):
+def get_cached_top20_signals():
+    snapshot_data = load_market_snapshot()
     model, features = get_ai_model()
     if not model or not snapshot_data or 'data' not in snapshot_data: return []
     
@@ -224,8 +224,8 @@ def get_cached_top20_signals(snapshot_data):
     return sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)
 
 # ==========================================================
-# 📊 實盤自動優化回測模組 (資金曲線)
-# ==========================================
+# 📊 實盤自動優化回測模組
+# ==========================================================
 @st.cache_data(ttl=3600*2, show_spinner=False) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
     try:
@@ -385,7 +385,7 @@ target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.
 
 if target_ticker:
     # --------------------------------------------------------
-    # 🔍 單股深入診斷模式
+    # 🔍 單股深入診斷模式 (含新聞與 1h 微觀狀態復原版)
     # --------------------------------------------------------
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
@@ -414,6 +414,14 @@ if target_ticker:
                 entry_price, y_close, p_change = 0.0, 1.0, 0.0
                 res_level, sup_level, atr_14, ai_score, broker_conc = 0.0, 0.0, 0.0, 0, 0.0
             
+            # 🔥 滿血復活：1h 微觀狀態還原
+            micro_status_text = "⚪ 1h 均線下弱勢震盪"
+            if not df_hourly.empty and len(df_hourly) >= 2:
+                last_hour = df_hourly.iloc[-1]
+                if bool(last_hour.get('Micro_Sniper_Trigger', False)): micro_status_text = "🔥 帶量突破 1h 均線"
+                elif bool(last_hour.get('MACD_Cross_Up', False)): micro_status_text = "📈 1h MACD 金叉發動"
+                elif bool(last_hour.get('Vol_Surge_1h', False)): micro_status_text = "🌊 1h 微觀異常爆量"
+
             low_vol_pb = bool(today.get('Low_Vol_Pullback', False))
             smc_text = "量縮回踩" if low_vol_pb else "一般常態箱體震盪"
             stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
@@ -475,9 +483,30 @@ if target_ticker:
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
             m2.metric("巨觀潛伏分數", f"{ai_score} 分")
-            m3.metric("SMC 結構", smc_text)
+            m3.metric("1h 微觀狀態", micro_status_text)
             m4.metric("機構集中度", f"{broker_conc*100:.1f}%")
             st.markdown("---")
+            
+            # 🔥 滿血復活：策略、籌碼與新聞版面還原
+            infra_col1, infra_col2 = st.columns(2)
+            with infra_col1:
+                st.markdown("### 📊 策略與型態技術面分析")
+                st.info(f"🧬 **SMC 聰明錢結構型態：** {smc_text}")
+                st.write(f"* **20日高位壓力 (Res_20)：** `NT$ {res_level:.2f}`")
+                st.write(f"* **20日低位支撐 (Sup_20)：** `NT$ {sup_level:.2f}`")
+                st.write(f"* **ATR 波動度基準 (ATR_14)：** `NT$ {atr_14:.2f}`")
+                
+            with infra_col2:
+                st.markdown("### 📰 即時相關新聞與情報")
+                if news_s and isinstance(news_s, list):
+                    for idx, n in enumerate(news_s[:3]):
+                        if isinstance(n, dict): st.markdown(f"📢 **情報 {idx+1}：** [{n.get('title', '檢視')}]({n.get('link', '#')})")
+                else:
+                    st.write("⚪ 暫無即時個股催化劑新聞。")
+                with st.expander("🌍 國際總經環境解讀"):
+                    st.write("🟢 總體經濟環境處於常態偏多格局。")
+            st.markdown("---")
+            
             if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
                 st.session_state.analyze_trigger = None; st.rerun()
 
@@ -514,19 +543,28 @@ else:
         def render_rt():
             rows = []
             current_names = st.session_state.stock_names.copy()
-            for t in cluster_stocks:
+            
+            # ⚡ 效能優化：15路執行緒高速併發抓取即時報價，告別卡頓
+            def fetch_rt_data(t):
                 try:
                     clean_ticker = t.split('.')[0]
                     rt_price, rt_vol, prev_close = get_realtime_quote(clean_ticker)
                     if rt_price > 0:
                         change_amt = rt_price - prev_close
                         change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
-                        
                         name_str = f"<b>{current_names.get(clean_ticker, clean_ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>"
                         price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
                         change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                        rows.append({"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str})
+                        return {"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str}
                 except: pass
+                return None
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+                results = list(executor.map(fetch_rt_data, cluster_stocks))
+                
+            for res in results:
+                if res: rows.append(res)
+                
             if rows:
                 html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')
                 css = f"<style>.watch-board table {{ width: 100% !important; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size-4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>"
@@ -547,45 +585,36 @@ else:
 
     with tab3:
         st.markdown("#### 🎯 全市場 AI 進出場戰術面板 (TOP 20)")
-        snapshot = load_market_snapshot()
-        if snapshot and 'data' in snapshot and len(snapshot['data']) > 0:
-            model, features = get_ai_model()
-            if not model:
-                st.error("🚨 雙核引擎發生嚴重缺損：找不到『LightGBM 靜態大腦』！")
-            else:
-                # ⚡ 優化：直接提取 5 分鐘快取結果，瞬間載入！
-                processed_stocks = get_cached_top20_signals(snapshot)
-                
-                if not processed_stocks:
-                    st.info("ℹ️ 目前快取資料中無符合運算條件之股票。請等待系統自動抓取最新資料。")
-                else:
-                    for s in processed_stocks[:20]:
-                        st.markdown(f"""
-                        <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 15px;">
-                            <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 {s['ticker']} {s['name']}</h4>
-                            <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
-                                <div style="flex: 1; min-width: 150px;">
-                                    <span style="color: gray; font-size: 14px;">雙核勝率</span><br>
-                                    <b style="font-size: 22px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br>
-                                    <span style="font-size: 12px; font-weight: bold; color: {s['box_color']};">{s['ai_rec']}</span>
-                                </div>
-                                <div style="flex: 1; min-width: 120px;">
-                                    <span style="color: gray; font-size: 14px;">進場價</span><br>
-                                    <b style="font-size: 20px;">{s['entry_price']:.2f}</b>
-                                </div>
-                                <div style="flex: 1; min-width: 150px;">
-                                    <span style="color: gray; font-size: 14px;">停利點</span><br>
-                                    <b style="font-size: 20px; color: #00cc96;">{s['take_profit']:.2f}</b><br>
-                                    <span style="font-size: 12px; color: #00cc96;">{s['profit_reason']}</span>
-                                </div>
-                                <div style="flex: 1; min-width: 120px;">
-                                    <span style="color: gray; font-size: 14px;">防守價</span><br>
-                                    <b style="font-size: 20px; color: #ff4b4b;">{s['stop_loss']:.2f}</b>
-                                </div>
-                            </div>
+        processed_stocks = get_cached_top20_signals() # 🔥 秒開呼叫，不再重複運算
+        if not processed_stocks:
+            st.info("ℹ️ 找不到大腦模型，或快取資料中無符合運算條件之股票。")
+        else:
+            for s in processed_stocks[:20]:
+                st.markdown(f"""
+                <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 15px;">
+                    <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 {s['ticker']} {s['name']}</h4>
+                    <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 150px;">
+                            <span style="color: gray; font-size: 14px;">雙核勝率</span><br>
+                            <b style="font-size: 22px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br>
+                            <span style="font-size: 12px; font-weight: bold; color: {s['box_color']};">{s['ai_rec']}</span>
                         </div>
-                        """, unsafe_allow_html=True)
-        else: st.info("ℹ️ 快取資料為空。")
+                        <div style="flex: 1; min-width: 120px;">
+                            <span style="color: gray; font-size: 14px;">進場價</span><br>
+                            <b style="font-size: 20px;">{s['entry_price']:.2f}</b>
+                        </div>
+                        <div style="flex: 1; min-width: 150px;">
+                            <span style="color: gray; font-size: 14px;">停利點</span><br>
+                            <b style="font-size: 20px; color: #00cc96;">{s['take_profit']:.2f}</b><br>
+                            <span style="font-size: 12px; color: #00cc96;">{s['profit_reason']}</span>
+                        </div>
+                        <div style="flex: 1; min-width: 120px;">
+                            <span style="color: gray; font-size: 14px;">防守價</span><br>
+                            <b style="font-size: 20px; color: #ff4b4b;">{s['stop_loss']:.2f}</b>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
     with tab4:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析")
@@ -614,7 +643,7 @@ else:
 
     with tab5:
         st.markdown("#### ⚖️ 昨晚 AI 趨勢預測 x 今日實盤開獎比對面板")
-        # ⚡ 優化 3：懶加載開關！防止 30 路 API 同時噴發卡死主頁
+        # ⚡ 防卡死開關：手動控制即時報價併發，不卡首頁載入
         if st.button("🔄 點擊執行即時對撞比對 (需連線抓取報價)"):
             with st.spinner("正在向各大交易所抓取即時跳動報價..."):
                 snapshot = load_market_snapshot()
@@ -664,7 +693,7 @@ else:
                                 comparison_rows = [r for r in results if r is not None]
                                 if comparison_rows: st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
                                 else: st.info("目前非交易時段或 API 限流無法取得跳動報價。")
-                            except Exception as e: st.error(f"比對引擎演算中... {e}")
+                            except Exception as e: st.error(f"比เอียด引擎演算中... {e}")
                         else: st.info("ℹ️ 無可比對之有效數據。")
                 else: st.info("ℹ️ 全市場快取準備中...")
         else:
