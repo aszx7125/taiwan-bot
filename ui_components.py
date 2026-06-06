@@ -29,7 +29,7 @@ def render_top20_card(s):
     """, unsafe_allow_html=True)
 
 def render_single_diagnostic_card(win_rate_str, recommendation, entry_price, take_profit, stop_loss, box_color, text_color):
-    """渲染單股專注模式的雙核卡片"""
+    """渲染單股專注模式的雙核主卡片"""
     st.markdown(f"""
     <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
         <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 雙核戰術計畫</h4>
