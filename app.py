@@ -315,7 +315,7 @@ with st.sidebar:
     display_options = [f"{t.split('.')[0]} {st.session_state.stock_names.get(t.split('.')[0], '')}".strip() for t in cluster_stocks]
     sidebar_ticker = st.selectbox("2. 選擇分析標的", display_options).split(' ')[0]
     st.write("") 
-    if st.button("📊 診斷此自選股", use_container_width=True, type="primary"):
+    if st.button("📊 診斷此自選股", width="stretch", type="primary"):
         st.session_state.analyze_trigger = sidebar_ticker 
         st.rerun()
     
@@ -339,7 +339,7 @@ with st.sidebar:
 st.title("⚡ 台股戰情分析終端")
 col1, col2 = st.columns([3, 1])
 with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed")
-with col2: analyze_manual_btn = st.button("單股掃描", use_container_width=True)
+with col2: analyze_manual_btn = st.button("單股掃描", width="stretch")
 st.markdown("---")
 
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
@@ -463,7 +463,7 @@ if target_ticker:
                     st.write("🟢 總體經濟環境處於常態偏多格局。")
             st.markdown("---")
             
-        if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
+        if st.button("⬅️ 返回戰情室主頁", width="stretch"):
             st.session_state.analyze_trigger = None; st.rerun()
 
 else:
@@ -642,7 +642,7 @@ else:
                             avg_score = int(display_df['量化分數'].mean())
                             heat_color = "#ff4b4b" if avg_score >= 65 else ("#ffc107" if avg_score >= 45 else "#00cc96")
                             st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
-                            st.dataframe(display_df.sort_values("量化分數", ascending=False), hide_index=True, use_container_width=True)
+                            st.dataframe(display_df.sort_values("量化分數", ascending=False), hide_index=True, width="stretch")
                         else: st.markdown(f"<div style='background:#111;padding:15px;border-radius:5px;color:gray;'><b>{sub_name}</b><br>暫無快取數據</div>", unsafe_allow_html=True)
             else: st.warning("⚠️ 系統快取準備中...")
 
@@ -692,7 +692,7 @@ else:
                         results = list(executor.map(fetch_live_comparison, enumerate(valid_items)))
                         
                     comparison_rows = [r for r in results if r is not None]
-                    if comparison_rows: st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
+                    if comparison_rows: st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, width="stretch")
                     else: st.info("正在連線至報價引擎讀取今日開獎數據...")
                 except Exception as e: st.error(f"比對引擎演算中... {e}")
             else: st.info("請前往後台重啟大腦訓練。")
@@ -729,7 +729,7 @@ else:
                 if res_adv['signals']:
                     sig_df = pd.DataFrame(res_adv['signals'])
                     sig_df.rename(columns={"date": "觸發日期", "ticker": "股票代號", "entry_price_real": "次日真實進場價", "ai_prob_str": "基底勝率", "sim_profit_str": "扣費後損益"}, inplace=True)
-                    st.dataframe(sig_df, hide_index=True, use_container_width=True)
+                    st.dataframe(sig_df, hide_index=True, width="stretch")
 
             with sub_tab2:
                 st.markdown("#### 📈 AI 實盤淨資產報酬 vs 大盤基準線 (%)")
