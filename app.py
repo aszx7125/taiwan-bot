@@ -63,7 +63,7 @@ target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.
 
 if target_ticker:
     # --------------------------------------------------------
-    # 🔍 單股深入診斷模式 (新聞與 1h 微觀狀態復原版)
+    # 🔍 單股深入診斷模式
     # --------------------------------------------------------
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
@@ -86,7 +86,7 @@ if target_ticker:
             ai_score = int(today.get('Score', 0))
             broker_conc = float(today.get('Broker_Concentration', 0.0))
             
-            # 🔥 1h 微觀狀態還原
+            # 1h 微觀狀態
             micro_status_text = "⚪ 1h 均線下弱勢震盪"
             if not df_hourly.empty and len(df_hourly) >= 2:
                 last_hour = df_hourly.iloc[-1]
@@ -104,14 +104,12 @@ if target_ticker:
             
             final_prob = brain.predict_win_rates([feat_dict])[0]
             
-            # 狀態判定
             box_color = "#00cc96" if final_prob > 0.52 else ("#ffc107" if final_prob > 0.50 else "#a8a8a8")
             ai_rec = "⭐⭐⭐ 高期望值" if final_prob > 0.52 else ("⭐⭐ 溫和佈局" if final_prob > 0.50 else "⚠️ 建議觀望")
             
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化報告")
             render_single_diagnostic_card(f"{final_prob*100:.1f}%", ai_rec, entry_price, take_profit, stop_loss, box_color, box_color)
             
-            # 四宮格指標
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
             m2.metric("巨觀潛伏分數", f"{ai_score} 分")
@@ -119,7 +117,6 @@ if target_ticker:
             m4.metric("機構集中度", f"{broker_conc*100:.1f}%")
             st.markdown("---")
             
-            # 🔥 策略、籌碼與新聞版面還原
             infra_col1, infra_col2 = st.columns(2)
             with infra_col1:
                 st.markdown("### 📊 策略與型態技術面分析")
@@ -160,7 +157,6 @@ else:
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "🕸️ 產業鏈資金共振", "⚖️ 實盤開獎對撞", "🔬 策略回測"])
     
     with tab1:
-        # 🔥 字體拉桿復原
         c_title, c_slider = st.columns([2, 1])
         with c_title: st.markdown(f"#### 【{selected_cluster}】即時行情流")
         with c_slider:
@@ -169,20 +165,26 @@ else:
         @st.fragment(run_every=datetime.timedelta(seconds=15))
         def render_rt():
             rows = []
+            # 🔥 關鍵修復：把名稱字典拷貝到主執行緒，供子執行緒安全使用
+            current_names = st.session_state.stock_names.copy()
+            
             def fetch_rt(t):
                 ticker = t.split('.')[0]
                 p, v, prev = get_realtime_quote(ticker, FUGLE_API_KEY)
                 if p > 0: 
                     chg_amt = p - prev
                     chg_pct = (chg_amt/prev)*100 if prev > 0 else 0
-                    name_str = f"<b>{st.session_state.stock_names.get(ticker, ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
+                    # 🔥 使用 current_names 取代 st.session_state
+                    name_str = f"<b>{current_names.get(ticker, ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
                     p_str = f"<b>{p:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(v):,} 張)</span>"
                     chg_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{chg_amt:.2f}<br>(+{chg_pct:.2f}%)</span>" if chg_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{chg_amt:.2f}<br>({chg_pct:.2f}%)</span>" if chg_amt < 0 else "0.00")
                     return {"標的": name_str, "及時價 (成交量)": p_str, "今日漲跌幅": chg_str}
                 return None
+            
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
                 for res in ex.map(fetch_rt, cluster_stocks):
                     if res: rows.append(res)
+                    
             if rows: 
                 html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')
                 css = f"<style>.watch-board table {{ width: 100% !important; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size-4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>"
