@@ -449,43 +449,51 @@ else:
     ])
     
     with tab1:
-        st.markdown(f"#### 【{selected_cluster}】即時行情流")
-        rows = []
-        current_names = st.session_state.stock_names.copy()
-        for t in cluster_stocks:
-            try:
-                clean_ticker = t.split('.')[0]
-                rt_price, rt_vol, prev_close = get_realtime_quote(clean_ticker)
-                if rt_price > 0:
-                    change_amt = rt_price - prev_close
-                    change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
-                    
-                    name_str = f"<b>{current_names.get(clean_ticker, clean_ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>"
-                    price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
-                    change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f} (+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f} ({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
-                    rows.append({"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str})
-            except: pass
-        if rows:
-            html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0)
-            css = "<style>.watch-board table { width: 100%; border-collapse: collapse; } .watch-board th { text-align: left; padding: 10px; border-bottom: 2px solid #555; } .watch-board td { text-align: left; padding: 15px 10px; border-bottom: 1px solid #444; }</style>"
-            st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
+        # 🎨 恢復字體大小拉桿與完美排版
+        c_title, c_slider = st.columns([2, 1])
+        with c_title: st.markdown(f"#### 【{selected_cluster}】即時行情流")
+        with c_slider:
+            with st.expander("⚙️ 畫幅設定"): user_font_size = st.slider("表格文字大小", 12, 40, 22, 2)
+            
+        @st.fragment(run_every=datetime.timedelta(seconds=15))
+        def render_rt():
+            rows = []
+            current_names = st.session_state.stock_names.copy()
+            for t in cluster_stocks:
+                try:
+                    clean_ticker = t.split('.')[0]
+                    rt_price, rt_vol, prev_close = get_realtime_quote(clean_ticker)
+                    if rt_price > 0:
+                        change_amt = rt_price - prev_close
+                        change_pct = (change_amt / prev_close) * 100 if prev_close > 0 else 0
+                        
+                        name_str = f"<b>{current_names.get(clean_ticker, clean_ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{clean_ticker}</span>"
+                        price_vol = f"<b>{rt_price:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(rt_vol):,} 張)</span>"
+                        change_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{change_amt:.2f}<br>(+{change_pct:.2f}%)</span>" if change_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{change_amt:.2f}<br>({change_pct:.2f}%)</span>" if change_amt < 0 else "0.00")
+                        rows.append({"標的": name_str, "及時價 (成交量)": price_vol, "今日漲跌幅": change_str})
+                except: pass
+            if rows:
+                html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')
+                css = f"<style>.watch-board table {{ width: 100% !important; border-collapse: collapse; }} .watch-board th {{ text-align: center !important; font-size: {max(14, user_font_size-4)}px !important; padding: 10px !important; border-bottom: 2px solid #555 !important; }} .watch-board td {{ text-align: center !important; font-size: {user_font_size}px !important; padding: 16px !important; border-bottom: 1px solid #444 !important; vertical-align: middle !important; }}</style>"
+                st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
+        render_rt()
 
     with tab2:
         st.markdown("#### 🔮 每日收盤後大盤特徵與明日趨勢預測")
         snapshot = load_market_snapshot()
-        if snapshot:
+        if snapshot and 'data' in snapshot and len(snapshot['data']) > 0:
             all_probs = [int(item.get('量化總分', 50)) / 100.0 for item in snapshot['data']]
             bullish_ratio = float(np.mean(np.array(all_probs) >= 0.52)) * 100
             st.metric("🤖 AI 明日全市場強勢看多標的比率", f"{bullish_ratio:.1f}%")
             if bullish_ratio >= 35.0: st.success("🔥 **大腦趨勢研判：** 全市場突破特徵大範圍共振，明日多頭勝率極高。")
             elif bullish_ratio >= 15.0: st.warning("⚖️ **大腦趨勢研判：** 市場進入個股分化橫盤震盪，建議嚴格鎖定高勝率前段班。")
             else: st.error("❄️ **大腦趨勢研判：** 全市場潛在多頭動能萎縮，強烈建議啟動自動空倉防守。")
-        else: st.warning("⚠️ 全市場快取準備中...")
+        else: st.info("ℹ️ 快取中無有效數據，請等待今日收盤後 GitHub Actions 重新抓取資料。")
 
     with tab3:
         st.markdown("#### 🎯 全市場 AI 進出場戰術面板 (TOP 20)")
         snapshot = load_market_snapshot()
-        if snapshot:
+        if snapshot and 'data' in snapshot and len(snapshot['data']) > 0:
             model, features = get_ai_model()
             if not model:
                 st.error("🚨 雙核引擎發生嚴重缺損：找不到『LightGBM 靜態大腦』！請上傳 `quant_model.joblib`。")
@@ -496,6 +504,7 @@ else:
                 
                 for item in raw_list:
                     ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
+                    # 🚀 防空白修復：確保即便遇到沒有 '現價' 欄位的資料，也能有容錯值 0.0 被跳過，不引發當機
                     entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                     if entry_price == 0: continue
                     valid_items.append(item)
@@ -503,61 +512,66 @@ else:
                     bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
 
                 processed_stocks = []
-                try:
-                    input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
-                    base_probs = model.predict_proba(input_df)[:, 1] 
-                    
-                    for idx, item in enumerate(valid_items):
-                        ticker = str(item.get('代號', '')).split('.')[0].strip()
-                        lstm_score = compute_hybrid_lstm_score(ticker, bulk_features[idx], snapshot_dict)
-                        final_prob = (base_probs[idx] * 0.6) + (lstm_score * 0.4)
+                if len(valid_items) > 0:
+                    try:
+                        input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
+                        base_probs = model.predict_proba(input_df)[:, 1] 
                         
-                        entry_price = float(item.get('現價', 0.0))
-                        res_level = float(item.get('Res_20', entry_price * 1.05))
-                        sup_level = float(item.get('Sup_20', entry_price * 0.95))
-                        atr_14 = float(item.get('ATR_14', entry_price * 0.05))
-                        
-                        stop_loss = round(res_level * 0.985, 2) if entry_price > res_level else round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
-                        take_profit = round(res_level + (res_level - sup_level), 2) if entry_price > res_level else round(res_level + (atr_14 * 1.0), 2)
-                        profit_reason = "🚀 噴發目標" if entry_price > res_level else "🎯 波段目標"
-                        
-                        box_color = "#00cc96" if final_prob > 0.52 else ("#ffc107" if final_prob > 0.50 else "#a8a8a8")
-                        ai_rec = "⭐⭐⭐ 雙核極致期望值" if final_prob > 0.52 else ("⭐⭐ 溫和佈局" if final_prob > 0.50 else "⚠️ 建議嚴格觀望")
-                        
-                        processed_stocks.append({
-                            'ticker': ticker, 'name': str(item.get('名稱', '')), 'win_prob': final_prob, 'box_color': box_color, 'ai_rec': ai_rec,
-                            'entry_price': entry_price, 'take_profit': take_profit, 'stop_loss': stop_loss, 'profit_reason': profit_reason
-                        })
-                except Exception as e: st.error(f"⚠️ 批量推論發生錯誤: {e}")
+                        for idx, item in enumerate(valid_items):
+                            ticker = str(item.get('代號', '')).split('.')[0].strip()
+                            lstm_score = compute_hybrid_lstm_score(ticker, bulk_features[idx], snapshot_dict)
+                            final_prob = (base_probs[idx] * 0.6) + (lstm_score * 0.4)
+                            
+                            entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
+                            res_level = float(item.get('Res_20', entry_price * 1.05))
+                            sup_level = float(item.get('Sup_20', entry_price * 0.95))
+                            atr_14 = float(item.get('ATR_14', entry_price * 0.05))
+                            
+                            stop_loss = round(res_level * 0.985, 2) if entry_price > res_level else round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
+                            take_profit = round(res_level + (res_level - sup_level), 2) if entry_price > res_level else round(res_level + (atr_14 * 1.0), 2)
+                            profit_reason = "🚀 噴發目標" if entry_price > res_level else "🎯 波段目標"
+                            
+                            box_color = "#00cc96" if final_prob > 0.52 else ("#ffc107" if final_prob > 0.50 else "#a8a8a8")
+                            ai_rec = "⭐⭐⭐ 雙核極致期望值" if final_prob > 0.52 else ("⭐⭐ 溫和佈局" if final_prob > 0.50 else "⚠️ 建議嚴格觀望")
+                            
+                            processed_stocks.append({
+                                'ticker': ticker, 'name': str(item.get('名稱', '')), 'win_prob': final_prob, 'box_color': box_color, 'ai_rec': ai_rec,
+                                'entry_price': entry_price, 'take_profit': take_profit, 'stop_loss': stop_loss, 'profit_reason': profit_reason
+                            })
+                    except Exception as e: st.error(f"⚠️ 批量推論發生錯誤: {e}")
                 
-                # HTML 渲染出完整的精緻卡片列表
-                for s in sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]:
-                    st.markdown(f"""
-                    <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 15px;">
-                        <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 {s['ticker']} {s['name']}</h4>
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
-                            <div style="flex: 1; min-width: 150px;">
-                                <span style="color: gray; font-size: 14px;">雙核勝率</span><br>
-                                <b style="font-size: 22px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br>
-                                <span style="font-size: 12px; font-weight: bold; color: {s['box_color']};">{s['ai_rec']}</span>
-                            </div>
-                            <div style="flex: 1; min-width: 120px;">
-                                <span style="color: gray; font-size: 14px;">進場價</span><br>
-                                <b style="font-size: 20px;">{s['entry_price']:.2f}</b>
-                            </div>
-                            <div style="flex: 1; min-width: 150px;">
-                                <span style="color: gray; font-size: 14px;">停利點</span><br>
-                                <b style="font-size: 20px; color: #00cc96;">{s['take_profit']:.2f}</b><br>
-                                <span style="font-size: 12px; color: #00cc96;">{s['profit_reason']}</span>
-                            </div>
-                            <div style="flex: 1; min-width: 120px;">
-                                <span style="color: gray; font-size: 14px;">防守價</span><br>
-                                <b style="font-size: 20px; color: #ff4b4b;">{s['stop_loss']:.2f}</b>
+                # 🚀 防呆機制：若全市場資料過濾後為 0 檔
+                if not processed_stocks:
+                    st.info("ℹ️ 目前快取資料中無符合運算條件之股票（可能因週末無報價）。請等待系統自動抓取最新資料。")
+                else:
+                    # 🎨 滿血版 HTML 卡片渲染
+                    for s in sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]:
+                        st.markdown(f"""
+                        <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 15px;">
+                            <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 {s['ticker']} {s['name']}</h4>
+                            <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+                                <div style="flex: 1; min-width: 150px;">
+                                    <span style="color: gray; font-size: 14px;">雙核勝率</span><br>
+                                    <b style="font-size: 22px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br>
+                                    <span style="font-size: 12px; font-weight: bold; color: {s['box_color']};">{s['ai_rec']}</span>
+                                </div>
+                                <div style="flex: 1; min-width: 120px;">
+                                    <span style="color: gray; font-size: 14px;">進場價</span><br>
+                                    <b style="font-size: 20px;">{s['entry_price']:.2f}</b>
+                                </div>
+                                <div style="flex: 1; min-width: 150px;">
+                                    <span style="color: gray; font-size: 14px;">停利點</span><br>
+                                    <b style="font-size: 20px; color: #00cc96;">{s['take_profit']:.2f}</b><br>
+                                    <span style="font-size: 12px; color: #00cc96;">{s['profit_reason']}</span>
+                                </div>
+                                <div style="flex: 1; min-width: 120px;">
+                                    <span style="color: gray; font-size: 14px;">防守價</span><br>
+                                    <b style="font-size: 20px; color: #ff4b4b;">{s['stop_loss']:.2f}</b>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-        else: st.warning("⚠️ 全市場快取準備中...")
+                        """, unsafe_allow_html=True)
+        else: st.info("ℹ️ 快取資料為空，請等待今日 GitHub Actions 自動化腳本執行完成。")
 
     with tab4:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析")
@@ -575,19 +589,19 @@ else:
                         for code in [str(t).split('.')[0].strip() for t in tickers]:
                             if code in market_dict:
                                 item = market_dict[code]
-                                sub_items.append({"名稱": str(item.get('名稱', code)), "現價": float(item.get('現價', 0.0)), "量化分數": int(item.get('量化總分', 0))})
+                                sub_items.append({"名稱": str(item.get('名稱', code)), "現價": float(item.get('現價', item.get('close_price', 0.0))), "量化分數": int(item.get('量化總分', 0))})
                         if sub_items:
                             display_df = pd.DataFrame(sub_items)
                             avg_score = int(display_df['量化分數'].mean())
                             heat_color = "#ff4b4b" if avg_score >= 65 else ("#ffc107" if avg_score >= 45 else "#00cc96")
                             st.markdown(f"<div style='background:#1e1e1e;padding:15px;border-top:4px solid {heat_color};border-radius:5px;margin-bottom:15px;'><b>{sub_name}</b><br><span style='font-size:24px;color:{heat_color};'>板塊熱度: {avg_score} 分</span></div>", unsafe_allow_html=True)
                             st.dataframe(display_df.sort_values("量化分數", ascending=False), hide_index=True, use_container_width=True)
-            else: st.warning("⚠️ 系統快取準備中...")
+            else: st.info("ℹ️ 快取中無有效數據。")
 
     with tab5:
         st.markdown("#### ⚖️ 昨晚 AI 趨勢預測 x 今日實盤開獎比對面板")
         snapshot = load_market_snapshot()
-        if snapshot:
+        if snapshot and 'data' in snapshot and len(snapshot['data']) > 0:
             model, features = get_ai_model()
             if not model: st.error("🚨 缺少大腦模型檔案。")
             else:
@@ -595,43 +609,47 @@ else:
                 snapshot_dict = get_snapshot_dict(snapshot)
                 valid_items, bulk_features = [], []
                 for item in raw_list[:30]: 
-                    ticker = str(item.get('代號', '')).split('.')[0].strip()
-                    entry_price = float(item.get('現價', 0.0))
+                    ticker = str(item.get('代號', ''))
+                    if not ticker: continue
+                    ticker = ticker.split('.')[0].strip()
+                    entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                     if entry_price == 0: continue
                     vol_val = float(item.get('成交量', 0.0))
                     valid_items.append({'ticker': ticker, 'name': str(item.get('名稱', ticker)), 'yesterday_close': entry_price})
                     bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
-                    
-                try:
-                    input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
-                    probs = model.predict_proba(input_df)[:, 1]
-                    
-                    def fetch_live_comparison(idx_item):
-                        idx, item = idx_item
-                        rt_p, _, _ = get_realtime_quote(item['ticker'])
-                        if rt_p <= 0: return None
-                        y_close = item['yesterday_close']
-                        change_pct = ((rt_p - y_close) / y_close) * 100
-                        lstm_score = compute_hybrid_lstm_score(item['ticker'], bulk_features[idx], snapshot_dict)
-                        prob_pct = ((probs[idx] * 0.6) + (lstm_score * 0.4)) * 100
+                
+                if len(valid_items) > 0:
+                    try:
+                        input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
+                        probs = model.predict_proba(input_df)[:, 1]
                         
-                        if prob_pct >= 52.0:
-                            direction = "📈 預期突破做多"; status = "🟢 成功捕捉突破" if change_pct > 0 else "🔴 訊號反向跌破"
-                        elif prob_pct >= 50.0:
-                            direction = "⚖️ 溫和多頭結構"; status = "🟢 符合震盪偏多" if change_pct > -1 else "🔴 跌破多頭結構"
-                        else:
-                            direction = "⚠️ 建議空倉觀望"; status = "🟢 成功避開風險" if change_pct <= 0 else "⚪ 錯失低位反彈"
+                        def fetch_live_comparison(idx_item):
+                            idx, item = idx_item
+                            rt_p, _, _ = get_realtime_quote(item['ticker'])
+                            if rt_p <= 0: return None
+                            y_close = item['yesterday_close']
+                            change_pct = ((rt_p - y_close) / y_close) * 100
+                            lstm_score = compute_hybrid_lstm_score(item['ticker'], bulk_features[idx], snapshot_dict)
+                            prob_pct = ((probs[idx] * 0.6) + (lstm_score * 0.4)) * 100
                             
-                        return {"股票代號": item['ticker'], "股票名稱": item['name'], "勝率": f"{prob_pct:.1f}%", "方向": direction, "昨收": f"{y_close:.2f}", "現價": f"{rt_p:.2f}", "漲跌": f"{change_pct:+.2f}%", "實況比對": status}
-                        
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                        results = list(executor.map(fetch_live_comparison, enumerate(valid_items)))
-                        
-                    comparison_rows = [r for r in results if r is not None]
-                    if comparison_rows: st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
-                    else: st.info("正在連線報價引擎...")
-                except Exception as e: st.error(f"比對引擎演算中... {e}")
-        else: st.warning("⚠️ 全市場快取準備中...")
+                            if prob_pct >= 52.0:
+                                direction = "📈 預期突破做多"; status = "🟢 成功捕捉突破" if change_pct > 0 else "🔴 訊號反向跌破"
+                            elif prob_pct >= 50.0:
+                                direction = "⚖️ 溫和多頭結構"; status = "🟢 符合震盪偏多" if change_pct > -1 else "🔴 跌破多頭結構"
+                            else:
+                                direction = "⚠️ 建議空倉觀望"; status = "🟢 成功避開風險" if change_pct <= 0 else "⚪ 錯失低位反彈"
+                                
+                            return {"股票代號": item['ticker'], "股票名稱": item['name'], "勝率": f"{prob_pct:.1f}%", "方向": direction, "昨收": f"{y_close:.2f}", "現價": f"{rt_p:.2f}", "漲跌": f"{change_pct:+.2f}%", "實況比對": status}
+                            
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                            results = list(executor.map(fetch_live_comparison, enumerate(valid_items)))
+                            
+                        comparison_rows = [r for r in results if r is not None]
+                        if comparison_rows: st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
+                        else: st.info("正在連線報價引擎，或目前非交易時段無法取得跳動報價...")
+                    except Exception as e: st.error(f"比對引擎演算中... {e}")
+                else: st.info("ℹ️ 無可比對之有效數據。")
+        else: st.info("ℹ️ 全市場快取準備中...")
 
     with tab6:
         st.markdown("#### 🔬 AI 演算法實盤回測面板")
