@@ -7,3 +7,4 @@ supabase
 scikit-learn
 joblib
 lightgbm
+tensorflow
