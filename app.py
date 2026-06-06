@@ -25,11 +25,21 @@ if 'stock_clusters' not in st.session_state: st.session_state.stock_clusters = D
 if 'stock_names' not in st.session_state: st.session_state.stock_names = DEFAULT_NAMES.copy()
 
 FUGLE_API_KEY = get_fugle_key()
-csv_df = load_all_market_tickers()
+
+# ⚡ 優化 1：快取 CSV 讀取，避免每次點擊都讀硬碟
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_load_tickers():
+    return load_all_market_tickers()
+
+csv_df = cached_load_tickers()
 if not csv_df.empty:
     for index, row in csv_df.iterrows():
         code = str(row['Ticker']).split('.')[0]
         if code not in st.session_state.stock_names: st.session_state.stock_names[code] = str(row['Name'])
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_market_summary():
+    return get_market_summary()
 
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
@@ -53,9 +63,7 @@ def get_ai_model():
             lgbm = joblib.load("quant_model.joblib")
             feats = joblib.load("model_features.joblib")
             return lgbm, feats
-        except Exception as e:
-            print(f"❌ LightGBM 讀取失敗: {e}")
-            return None, None
+        except Exception as e: return None, None
     return None, None
 
 @st.cache_resource
@@ -64,9 +72,7 @@ def get_lstm_model():
         try:
             import tensorflow as tf
             return tf.keras.models.load_model("lstm_momentum_brain.h5")
-        except Exception as e:
-            print(f"❌ LSTM 讀取失敗: {e}")
-            return None
+        except Exception as e: return None
     return None
 
 # ==========================================
@@ -148,43 +154,79 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
         'broker_conc': float(broker_conc)
     }
 
-# 🔥 高效矩陣批次推論：將 1000 檔股票打包成 1 個方塊秒殺運算
 def compute_batch_lstm_scores(features_list):
     lstm_net = get_lstm_model()
-    if lstm_net is None or not features_list: 
-        return np.full(len(features_list), 0.50)
-    
-    # 嚴格校準與訓練時一模一樣的 15 維特徵輸入順序，避免失真
+    if lstm_net is None or not features_list: return np.full(len(features_list), 0.50)
     LSTM_FEATURE_ORDER = ['daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 'turnover', 'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection']
-    
     try:
         all_seqs = []
         for feat in features_list:
             seq = []
             for i in range(10):
-                # 模擬時序軌跡：利用衰減系數構造 10 日動能變化
                 decay = 1.0 - (0.01 * (9 - i))
                 day_feat = feat.copy()
                 day_feat['daily_return'] = float(feat.get('rs_index', 0.0) * 0.001 * decay)
                 day_feat['vol_ratio'] = float(feat.get('vol_ratio', 1.0) * decay)
-                
-                # 強制對齊特徵陣列
                 ordered_feat = [day_feat.get(col, 0.0) for col in LSTM_FEATURE_ORDER]
                 seq.append(ordered_feat)
             all_seqs.append(seq)
-            
         tensor_3d = np.array(all_seqs, dtype=np.float32)
-        # 一次性運算整個矩陣，batch_size=512 可榨乾 CPU 效能
         scores = lstm_net.predict(tensor_3d, batch_size=512, verbose=0).flatten()
         return scores
-    except Exception as e:
-        print(f"Batch LSTM 發生異常: {e}")
-        return np.full(len(features_list), 0.50)
+    except Exception: return np.full(len(features_list), 0.50)
+
+# ⚡ 優化 2：全市場推論快取 (5分鐘更新一次，保證秒速切換)
+@st.cache_data(ttl=300, show_spinner=False)
+def get_cached_top20_signals(snapshot_data):
+    model, features = get_ai_model()
+    if not model or not snapshot_data or 'data' not in snapshot_data: return []
+    
+    raw_list = snapshot_data['data']
+    valid_items, bulk_features = [], []
+    snapshot_dict = get_snapshot_dict(snapshot_data)
+    
+    for item in raw_list:
+        ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
+        entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
+        if entry_price == 0: continue
+        valid_items.append(item)
+        vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
+        bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
+
+    processed_stocks = []
+    if len(valid_items) > 0:
+        try:
+            input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
+            base_probs = model.predict_proba(input_df)[:, 1] 
+            lstm_scores = compute_batch_lstm_scores(bulk_features)
+            
+            for idx, item in enumerate(valid_items):
+                ticker = str(item.get('代號', '')).split('.')[0].strip()
+                final_prob = (base_probs[idx] * 0.6) + (lstm_scores[idx] * 0.4)
+                
+                entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
+                res_level = float(item.get('Res_20', entry_price * 1.05))
+                sup_level = float(item.get('Sup_20', entry_price * 0.95))
+                atr_14 = float(item.get('ATR_14', entry_price * 0.05))
+                
+                stop_loss = round(res_level * 0.985, 2) if entry_price > res_level else round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
+                take_profit = round(res_level + (res_level - sup_level), 2) if entry_price > res_level else round(res_level + (atr_14 * 1.0), 2)
+                profit_reason = "🚀 噴發目標" if entry_price > res_level else "🎯 波段目標"
+                
+                box_color = "#00cc96" if final_prob > 0.52 else ("#ffc107" if final_prob > 0.50 else "#a8a8a8")
+                ai_rec = "⭐⭐⭐ 雙核極致期望" if final_prob > 0.52 else ("⭐⭐ 溫和佈局" if final_prob > 0.50 else "⚠️ 建議嚴格觀望")
+                
+                processed_stocks.append({
+                    'ticker': ticker, 'name': str(item.get('名稱', '')), 'win_prob': final_prob, 'box_color': box_color, 'ai_rec': ai_rec,
+                    'entry_price': entry_price, 'take_profit': take_profit, 'stop_loss': stop_loss, 'profit_reason': profit_reason
+                })
+        except Exception: pass
+    return sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)
 
 # ==========================================================
 # 📊 實盤自動優化回測模組 (資金曲線)
 # ==========================================
-@st.cache_data(ttl=3600*2) 
+@st.cache_data(ttl=3600*2, show_spinner=False) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
     try:
         from supabase import create_client
@@ -389,10 +431,7 @@ if target_ticker:
             if model:
                 try:
                     input_data = extract_ai_features(base_ticker, entry_price, snapshot_dict, current_vol=rt_v, fallback_rs=float(today.get('RS_Index', 0.0)), fallback_atr=atr_14, fallback_pattern=smc_text, fallback_vol=vol_sma5)
-                    
-                    # 🔥 利用矩陣引擎極速推論 1 筆單股資料
                     lstm_score = compute_batch_lstm_scores([input_data])[0]
-                    
                     input_df = pd.DataFrame([input_data], columns=features).astype(float).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
                     final_prob = (win_prob * 0.6) + (lstm_score * 0.4)
@@ -447,7 +486,7 @@ else:
     # 🏠 滿血旗艦主視覺儀表板 (6 大頁籤全開)
     # --------------------------------------------------------
     st.markdown("### 🌍 大盤與情緒摘要")
-    summary = get_market_summary()
+    summary = cached_market_summary()
     if summary:
         twii_data = summary.get("加權指數", {"pct": 0})
         greed_index = int(max(0, min(100, 50 + (twii_data['pct'] * 15) + random.randint(-5, 5))))
@@ -512,55 +551,15 @@ else:
         if snapshot and 'data' in snapshot and len(snapshot['data']) > 0:
             model, features = get_ai_model()
             if not model:
-                st.error("🚨 雙核引擎發生嚴重缺損：找不到『LightGBM 靜態大腦』！請上傳 `quant_model.joblib`。")
+                st.error("🚨 雙核引擎發生嚴重缺損：找不到『LightGBM 靜態大腦』！")
             else:
-                raw_list = snapshot['data']
-                valid_items, bulk_features = [], []
-                snapshot_dict = get_snapshot_dict(snapshot)
-                
-                for item in raw_list:
-                    ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
-                    entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
-                    if entry_price == 0: continue
-                    valid_items.append(item)
-                    vol_val = float(item.get('成交量', item.get('Volume', item.get('volume', 0.0))))
-                    bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
-
-                processed_stocks = []
-                if len(valid_items) > 0:
-                    try:
-                        input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
-                        base_probs = model.predict_proba(input_df)[:, 1] 
-                        
-                        # 🔥 呼叫極速批次推論：一秒解算全市場
-                        lstm_scores = compute_batch_lstm_scores(bulk_features)
-                        
-                        for idx, item in enumerate(valid_items):
-                            ticker = str(item.get('代號', '')).split('.')[0].strip()
-                            final_prob = (base_probs[idx] * 0.6) + (lstm_scores[idx] * 0.4)
-                            
-                            entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
-                            res_level = float(item.get('Res_20', entry_price * 1.05))
-                            sup_level = float(item.get('Sup_20', entry_price * 0.95))
-                            atr_14 = float(item.get('ATR_14', entry_price * 0.05))
-                            
-                            stop_loss = round(res_level * 0.985, 2) if entry_price > res_level else round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
-                            take_profit = round(res_level + (res_level - sup_level), 2) if entry_price > res_level else round(res_level + (atr_14 * 1.0), 2)
-                            profit_reason = "🚀 噴發目標" if entry_price > res_level else "🎯 波段目標"
-                            
-                            box_color = "#00cc96" if final_prob > 0.52 else ("#ffc107" if final_prob > 0.50 else "#a8a8a8")
-                            ai_rec = "⭐⭐⭐ 雙核極致期望值" if final_prob > 0.52 else ("⭐⭐ 溫和佈局" if final_prob > 0.50 else "⚠️ 建議嚴格觀望")
-                            
-                            processed_stocks.append({
-                                'ticker': ticker, 'name': str(item.get('名稱', '')), 'win_prob': final_prob, 'box_color': box_color, 'ai_rec': ai_rec,
-                                'entry_price': entry_price, 'take_profit': take_profit, 'stop_loss': stop_loss, 'profit_reason': profit_reason
-                            })
-                    except Exception as e: st.error(f"⚠️ 批量推論發生錯誤: {e}")
+                # ⚡ 優化：直接提取 5 分鐘快取結果，瞬間載入！
+                processed_stocks = get_cached_top20_signals(snapshot)
                 
                 if not processed_stocks:
-                    st.info("ℹ️ 目前快取資料中無符合運算條件之股票（可能因週末無報價）。請等待系統自動抓取最新資料。")
+                    st.info("ℹ️ 目前快取資料中無符合運算條件之股票。請等待系統自動抓取最新資料。")
                 else:
-                    for s in sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]:
+                    for s in processed_stocks[:20]:
                         st.markdown(f"""
                         <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 15px;">
                             <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 {s['ticker']} {s['name']}</h4>
@@ -586,7 +585,7 @@ else:
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
-        else: st.info("ℹ️ 快取資料為空，請等待今日 GitHub Actions 自動化腳本執行完成。")
+        else: st.info("ℹ️ 快取資料為空。")
 
     with tab4:
         st.markdown("#### 🕸️ 上中下游產業鏈資金共振分析")
@@ -615,60 +614,61 @@ else:
 
     with tab5:
         st.markdown("#### ⚖️ 昨晚 AI 趨勢預測 x 今日實盤開獎比對面板")
-        snapshot = load_market_snapshot()
-        if snapshot and 'data' in snapshot and len(snapshot['data']) > 0:
-            model, features = get_ai_model()
-            if not model: st.error("🚨 缺少大腦模型檔案。")
-            else:
-                raw_list = snapshot['data']
-                snapshot_dict = get_snapshot_dict(snapshot)
-                valid_items, bulk_features = [], []
-                for item in raw_list[:30]: 
-                    ticker = str(item.get('代號', ''))
-                    if not ticker: continue
-                    ticker = ticker.split('.')[0].strip()
-                    entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
-                    if entry_price == 0: continue
-                    vol_val = float(item.get('成交量', 0.0))
-                    valid_items.append({'ticker': ticker, 'name': str(item.get('名稱', ticker)), 'yesterday_close': entry_price})
-                    bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
-                
-                if len(valid_items) > 0:
-                    try:
-                        input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
-                        base_probs = model.predict_proba(input_df)[:, 1]
+        # ⚡ 優化 3：懶加載開關！防止 30 路 API 同時噴發卡死主頁
+        if st.button("🔄 點擊執行即時對撞比對 (需連線抓取報價)"):
+            with st.spinner("正在向各大交易所抓取即時跳動報價..."):
+                snapshot = load_market_snapshot()
+                if snapshot and 'data' in snapshot and len(snapshot['data']) > 0:
+                    model, features = get_ai_model()
+                    if not model: st.error("🚨 缺少大腦模型檔案。")
+                    else:
+                        raw_list = snapshot['data']
+                        snapshot_dict = get_snapshot_dict(snapshot)
+                        valid_items, bulk_features = [], []
+                        for item in raw_list[:30]: 
+                            ticker = str(item.get('代號', ''))
+                            if not ticker: continue
+                            ticker = ticker.split('.')[0].strip()
+                            entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
+                            if entry_price == 0: continue
+                            vol_val = float(item.get('成交量', 0.0))
+                            valid_items.append({'ticker': ticker, 'name': str(item.get('名稱', ticker)), 'yesterday_close': entry_price})
+                            bulk_features.append(extract_ai_features(ticker, entry_price, snapshot_dict, current_vol=vol_val))
                         
-                        # 🔥 拔除耗時地雷：在執行緒外圍一次性算完 LSTM 分數
-                        lstm_scores = compute_batch_lstm_scores(bulk_features)
-                        
-                        def fetch_live_comparison(idx_item):
-                            idx, item = idx_item
-                            rt_p, _, _ = get_realtime_quote(item['ticker'])
-                            if rt_p <= 0: return None
-                            y_close = item['yesterday_close']
-                            change_pct = ((rt_p - y_close) / y_close) * 100
-                            
-                            # 直接取用已經秒算好的分數，完全不卡死
-                            prob_pct = ((base_probs[idx] * 0.6) + (lstm_scores[idx] * 0.4)) * 100
-                            
-                            if prob_pct >= 52.0:
-                                direction = "📈 預期突破做多"; status = "🟢 成功捕捉突破" if change_pct > 0 else "🔴 訊號反向跌破"
-                            elif prob_pct >= 50.0:
-                                direction = "⚖️ 溫和多頭結構"; status = "🟢 符合震盪偏多" if change_pct > -1 else "🔴 跌破多頭結構"
-                            else:
-                                direction = "⚠️ 建議空倉觀望"; status = "🟢 成功避開風險" if change_pct <= 0 else "⚪ 錯失低位反彈"
+                        if len(valid_items) > 0:
+                            try:
+                                input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
+                                base_probs = model.predict_proba(input_df)[:, 1]
+                                lstm_scores = compute_batch_lstm_scores(bulk_features)
                                 
-                            return {"股票代號": item['ticker'], "股票名稱": item['name'], "勝率": f"{prob_pct:.1f}%", "方向": direction, "昨收": f"{y_close:.2f}", "現價": f"{rt_p:.2f}", "漲跌": f"{change_pct:+.2f}%", "實況比對": status}
-                            
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                            results = list(executor.map(fetch_live_comparison, enumerate(valid_items)))
-                            
-                        comparison_rows = [r for r in results if r is not None]
-                        if comparison_rows: st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
-                        else: st.info("正在連線報價引擎，或目前非交易時段無法取得跳動報價...")
-                    except Exception as e: st.error(f"比對引擎演算中... {e}")
-                else: st.info("ℹ️ 無可比對之有效數據。")
-        else: st.info("ℹ️ 全市場快取準備中...")
+                                def fetch_live_comparison(idx_item):
+                                    idx, item = idx_item
+                                    rt_p, _, _ = get_realtime_quote(item['ticker'])
+                                    if rt_p <= 0: return None
+                                    y_close = item['yesterday_close']
+                                    change_pct = ((rt_p - y_close) / y_close) * 100
+                                    prob_pct = ((base_probs[idx] * 0.6) + (lstm_scores[idx] * 0.4)) * 100
+                                    
+                                    if prob_pct >= 52.0:
+                                        direction = "📈 預期突破做多"; status = "🟢 成功捕捉突破" if change_pct > 0 else "🔴 訊號反向跌破"
+                                    elif prob_pct >= 50.0:
+                                        direction = "⚖️ 溫和多頭結構"; status = "🟢 符合震盪偏多" if change_pct > -1 else "🔴 跌破多頭結構"
+                                    else:
+                                        direction = "⚠️ 建議空倉觀望"; status = "🟢 成功避開風險" if change_pct <= 0 else "⚪ 錯失低位反彈"
+                                        
+                                    return {"股票代號": item['ticker'], "股票名稱": item['name'], "勝率": f"{prob_pct:.1f}%", "方向": direction, "昨收": f"{y_close:.2f}", "現價": f"{rt_p:.2f}", "漲跌": f"{change_pct:+.2f}%", "實況比對": status}
+                                    
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                                    results = list(executor.map(fetch_live_comparison, enumerate(valid_items)))
+                                    
+                                comparison_rows = [r for r in results if r is not None]
+                                if comparison_rows: st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
+                                else: st.info("目前非交易時段或 API 限流無法取得跳動報價。")
+                            except Exception as e: st.error(f"比對引擎演算中... {e}")
+                        else: st.info("ℹ️ 無可比對之有效數據。")
+                else: st.info("ℹ️ 全市場快取準備中...")
+        else:
+            st.info("👈 點擊上方按鈕開始抓取即時報價並比對勝率。")
 
     with tab6:
         st.markdown("#### 🔬 AI 演算法實盤回測面板")
