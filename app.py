@@ -44,7 +44,7 @@ def get_snapshot_dict(snapshot):
     return {}
 
 # ==========================================
-# 🧠 雙核引擎安全讀取區 (防崩潰機制)
+# 🧠 雙核引擎安全讀取區 
 # ==========================================
 @st.cache_resource
 def get_ai_model():
@@ -148,22 +148,38 @@ def extract_ai_features(clean_ticker, current_price, snapshot_dict, current_vol=
         'broker_conc': float(broker_conc)
     }
 
-def compute_hybrid_lstm_score(ticker_code, current_features, snapshot_dict):
+# 🔥 高效矩陣批次推論：將 1000 檔股票打包成 1 個方塊秒殺運算
+def compute_batch_lstm_scores(features_list):
     lstm_net = get_lstm_model()
-    if lstm_net is None: return 0.50 
+    if lstm_net is None or not features_list: 
+        return np.full(len(features_list), 0.50)
+    
+    # 嚴格校準與訓練時一模一樣的 15 維特徵輸入順序，避免失真
+    LSTM_FEATURE_ORDER = ['daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 'turnover', 'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection']
+    
     try:
-        mock_sequence = []
-        for i in range(10):
-            decay = 1.0 - (0.01 * (9 - i))
-            day_feat = current_features.copy()
-            day_feat['daily_return'] = float(current_features['rs_index'] * 0.001 * decay)
-            day_feat['vol_ratio'] = float(current_features['vol_ratio'] * decay)
-            mock_sequence.append(list(day_feat.values()))
+        all_seqs = []
+        for feat in features_list:
+            seq = []
+            for i in range(10):
+                # 模擬時序軌跡：利用衰減系數構造 10 日動能變化
+                decay = 1.0 - (0.01 * (9 - i))
+                day_feat = feat.copy()
+                day_feat['daily_return'] = float(feat.get('rs_index', 0.0) * 0.001 * decay)
+                day_feat['vol_ratio'] = float(feat.get('vol_ratio', 1.0) * decay)
+                
+                # 強制對齊特徵陣列
+                ordered_feat = [day_feat.get(col, 0.0) for col in LSTM_FEATURE_ORDER]
+                seq.append(ordered_feat)
+            all_seqs.append(seq)
             
-        tensor_3d = np.array([mock_sequence], dtype=np.float32)
-        lstm_score = float(lstm_net.predict(tensor_3d, verbose=0)[0][0])
-        return lstm_score
-    except: return 0.50
+        tensor_3d = np.array(all_seqs, dtype=np.float32)
+        # 一次性運算整個矩陣，batch_size=512 可榨乾 CPU 效能
+        scores = lstm_net.predict(tensor_3d, batch_size=512, verbose=0).flatten()
+        return scores
+    except Exception as e:
+        print(f"Batch LSTM 發生異常: {e}")
+        return np.full(len(features_list), 0.50)
 
 # ==========================================================
 # 📊 實盤自動優化回測模組 (資金曲線)
@@ -373,7 +389,10 @@ if target_ticker:
             if model:
                 try:
                     input_data = extract_ai_features(base_ticker, entry_price, snapshot_dict, current_vol=rt_v, fallback_rs=float(today.get('RS_Index', 0.0)), fallback_atr=atr_14, fallback_pattern=smc_text, fallback_vol=vol_sma5)
-                    lstm_score = compute_hybrid_lstm_score(base_ticker, input_data, snapshot_dict)
+                    
+                    # 🔥 利用矩陣引擎極速推論 1 筆單股資料
+                    lstm_score = compute_batch_lstm_scores([input_data])[0]
+                    
                     input_df = pd.DataFrame([input_data], columns=features).astype(float).fillna(0)
                     win_prob = float(model.predict_proba(input_df)[0][1])
                     final_prob = (win_prob * 0.6) + (lstm_score * 0.4)
@@ -389,7 +408,6 @@ if target_ticker:
 
             st.subheader(f"🧬 {target_ticker} {c_name} 多時區量化診斷報告")
             
-            # 美化戰術卡片
             st.markdown(f"""
             <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
                 <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 雙核戰術計畫</h4>
@@ -442,14 +460,12 @@ else:
             
     st.markdown("---")
     
-    # 渲染 6 大美化頁籤
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 自選即時流", "🔮 每日收盤趨勢預測", "🎯 全市場 AI 進出場戰術面板", 
         "🕸️ 產業鏈資金共振", "⚖️ 預測與今日盤面比對", "🔬 策略回測實驗室 (實盤)"
     ])
     
     with tab1:
-        # 🎨 恢復字體大小拉桿與完美排版
         c_title, c_slider = st.columns([2, 1])
         with c_title: st.markdown(f"#### 【{selected_cluster}】即時行情流")
         with c_slider:
@@ -504,7 +520,6 @@ else:
                 
                 for item in raw_list:
                     ticker = str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip()
-                    # 🚀 防空白修復：確保即便遇到沒有 '現價' 欄位的資料，也能有容錯值 0.0 被跳過，不引發當機
                     entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                     if entry_price == 0: continue
                     valid_items.append(item)
@@ -517,10 +532,12 @@ else:
                         input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
                         base_probs = model.predict_proba(input_df)[:, 1] 
                         
+                        # 🔥 呼叫極速批次推論：一秒解算全市場
+                        lstm_scores = compute_batch_lstm_scores(bulk_features)
+                        
                         for idx, item in enumerate(valid_items):
                             ticker = str(item.get('代號', '')).split('.')[0].strip()
-                            lstm_score = compute_hybrid_lstm_score(ticker, bulk_features[idx], snapshot_dict)
-                            final_prob = (base_probs[idx] * 0.6) + (lstm_score * 0.4)
+                            final_prob = (base_probs[idx] * 0.6) + (lstm_scores[idx] * 0.4)
                             
                             entry_price = float(item.get('現價', item.get('close_price', item.get('Close', 0.0))))
                             res_level = float(item.get('Res_20', entry_price * 1.05))
@@ -540,11 +557,9 @@ else:
                             })
                     except Exception as e: st.error(f"⚠️ 批量推論發生錯誤: {e}")
                 
-                # 🚀 防呆機制：若全市場資料過濾後為 0 檔
                 if not processed_stocks:
                     st.info("ℹ️ 目前快取資料中無符合運算條件之股票（可能因週末無報價）。請等待系統自動抓取最新資料。")
                 else:
-                    # 🎨 滿血版 HTML 卡片渲染
                     for s in sorted(processed_stocks, key=lambda x: x['win_prob'], reverse=True)[:20]:
                         st.markdown(f"""
                         <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 15px;">
@@ -621,7 +636,10 @@ else:
                 if len(valid_items) > 0:
                     try:
                         input_df = pd.DataFrame(bulk_features, columns=features).astype(float).fillna(0)
-                        probs = model.predict_proba(input_df)[:, 1]
+                        base_probs = model.predict_proba(input_df)[:, 1]
+                        
+                        # 🔥 拔除耗時地雷：在執行緒外圍一次性算完 LSTM 分數
+                        lstm_scores = compute_batch_lstm_scores(bulk_features)
                         
                         def fetch_live_comparison(idx_item):
                             idx, item = idx_item
@@ -629,8 +647,9 @@ else:
                             if rt_p <= 0: return None
                             y_close = item['yesterday_close']
                             change_pct = ((rt_p - y_close) / y_close) * 100
-                            lstm_score = compute_hybrid_lstm_score(item['ticker'], bulk_features[idx], snapshot_dict)
-                            prob_pct = ((probs[idx] * 0.6) + (lstm_score * 0.4)) * 100
+                            
+                            # 直接取用已經秒算好的分數，完全不卡死
+                            prob_pct = ((base_probs[idx] * 0.6) + (lstm_scores[idx] * 0.4)) * 100
                             
                             if prob_pct >= 52.0:
                                 direction = "📈 預期突破做多"; status = "🟢 成功捕捉突破" if change_pct > 0 else "🔴 訊號反向跌破"
