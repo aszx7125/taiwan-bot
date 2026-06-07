@@ -203,7 +203,6 @@ else:
                     bulk_features.append(brain.extract_features(ticker, ep, snapshot_dict, current_vol=float(item.get('成交量', 0.0))))
             
             if bulk_features:
-                # 徹底拋棄量化總分，計算全市場真實雙核勝率
                 probs = brain.predict_win_rates(bulk_features)
                 bullish_ratio = float(np.mean(np.array(probs) >= 0.50)) * 100
                 st.metric("🤖 AI 明日全市場強勢看多標的比率 (勝率>50%)", f"{bullish_ratio:.1f}%")
@@ -229,7 +228,6 @@ else:
                 processed = []
                 for idx, item in enumerate(valid_items):
                     prob = probs[idx]
-                    # 🔥 極度嚴格的防禦網：只允許勝率大於等於 50% 的進入候選池！
                     if prob >= 0.50:
                         ep = float(item.get('現價', 0.0))
                         res = float(item.get('Res_20', ep*1.05))
@@ -275,7 +273,6 @@ else:
                                 sub_feats.append(brain.extract_features(code, ep, snapshot_dict, current_vol=float(item.get('成交量', 0.0))))
                         
                         if sub_items:
-                            # 產業鏈也全面導入真實勝率計算
                             probs = brain.predict_win_rates(sub_feats)
                             for i in range(len(sub_items)):
                                 sub_items[i]['雙核勝率'] = f"{probs[i]*100:.1f}%"
@@ -297,7 +294,6 @@ else:
                 snapshot_dict = get_snapshot_dict(snapshot)
                 current_names = st.session_state.stock_names.copy()
                 
-                # 1. 抓出有效標的並算勝率 (抹除舊評分)
                 valid_items, bulk_features = [], []
                 for item in raw_list:
                     ticker = str(item.get('代號', '')).split('.')[0].strip()
@@ -315,13 +311,12 @@ else:
                         item['win_prob'] = probs[idx]
                         candidates.append(item)
                         
-                    # 🔥 2. 只讓勝率大於等於 50% 的高優質標的參與對撞開獎
                     candidates = sorted(candidates, key=lambda x: x['win_prob'], reverse=True)
                     top_candidates = [c for c in candidates if c['win_prob'] >= 0.50][:15]
                     
                     if not top_candidates:
                         highest = max(probs) if len(probs)>0 else 0
-                        st.warning(f"⚪ 昨晚快取數據中無勝率達標 (>50%) 的標的（最高僅 {highest*100:.1f}%），AI 強烈建議空手觀望，今日無開獎清單。")
+                        st.warning(f"⚪ 昨晚快取數據中無勝率達標 (>50%) 的標的（最高僅 {highest*100:.1f}%），今日無開獎清單。")
                     else:
                         st.info(f"⏳ 正在調度高併發線路，針對 {len(top_candidates)} 檔高勝率標的進行開獎...")
                         clash_rows = []
@@ -365,10 +360,23 @@ else:
                 st.warning("ℹ️ 快取檔案異常或無數據。")
             
     with tab6:
-        res_adv = fetch_advanced_backtest(initial_cap=user_capital, max_pos=user_max_pos)
-        if res_adv.get("status") == "ready":
-            c1, c2, c3 = st.columns(3)
-            with c1: render_backtest_metric_card("AI 真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", "", "#4ade80")
-            with c2: render_backtest_metric_card("帳戶總淨利", f"${res_adv['net_profit_twd']:,.0f}", "", "#4ade80")
-            with c3: render_backtest_metric_card("總報酬", f"{res_adv['account_pct']:.2f}%", "", "#4ade80")
-            st.line_chart(pd.DataFrame(res_adv['equity']).set_index("date_str")[["strat_cum_pct", "market_cum_pct"]])
+        st.markdown("#### 🔬 實盤自動優化回測分析")
+        with st.spinner("正在從資料庫拉取歷史特徵並進行回測運算..."):
+            res_adv = fetch_advanced_backtest(initial_cap=user_capital, max_pos=user_max_pos)
+            status = res_adv.get("status")
+            
+            # 🔥 關鍵修復：補上所有的 else 狀態判斷，確保畫面永遠不會白掉
+            if status == "ready":
+                c1, c2, c3 = st.columns(3)
+                with c1: render_backtest_metric_card("AI 真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", "", "#4ade80")
+                with c2: render_backtest_metric_card("帳戶總淨利", f"${res_adv['net_profit_twd']:,.0f}", "", "#4ade80")
+                with c3: render_backtest_metric_card("總報酬", f"{res_adv['account_pct']:.2f}%", "", "#4ade80")
+                st.line_chart(pd.DataFrame(res_adv['equity']).set_index("date_str")[["strat_cum_pct", "market_cum_pct"]])
+            elif status == "no_key":
+                st.warning("🔑 缺少 Supabase 資料庫金鑰。請在 Streamlit Secrets 中設定 `SUPABASE_URL` 與 `SUPABASE_KEY`。")
+            elif status == "empty":
+                st.info("ℹ️ 資料庫中目前無足夠的歷史資料可供回測。")
+            elif status == "pending":
+                st.info("⏳ 條件過於嚴格，當前回測區間內沒有符合的交易訊號。")
+            else:
+                st.error(f"❌ 回測系統發生錯誤: {res_adv.get('msg', '未知錯誤')}")
