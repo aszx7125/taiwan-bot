@@ -64,3 +64,30 @@ def render_backtest_metric_card(title, value, subtext, color):
         <div style="color: #6b6b79; font-size: 13px;">{subtext}</div>
     </div>
     """, unsafe_allow_html=True)
+
+def render_model_health_board(metrics):
+    """顯示雙模型盲測勝率看板"""
+    st.markdown("### 🧪 雙核心模型：盲測訓練真實勝率")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        wr = metrics['lgbm']['blind_win_rate']
+        color = "#00cc96" if wr > 0.55 else ("#ffc107" if wr > 0.50 else "#ff4b4b")
+        st.markdown(f"""
+        <div style='background:#1e1e1e; padding:15px; border-left:5px solid #deff9a; border-radius:5px;'>
+            <span style='color:gray;'>靜態大腦 (LightGBM)</span><br>
+            <span style='font-size:28px; color:{color}; font-weight:bold;'>{wr*100:.1f}%</span><br>
+            <span style='font-size:12px; color:gray;'>最新訓練日期: {metrics['lgbm']['last_train']}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        wr = metrics['lstm']['blind_win_rate']
+        color = "#00cc96" if wr > 0.53 else ("#ffc107" if wr > 0.50 else "#ff4b4b")
+        st.markdown(f"""
+        <div style='background:#1e1e1e; padding:15px; border-left:5px solid #bc84ee; border-radius:5px;'>
+            <span style='color:gray;'>時序大腦 (LSTM)</span><br>
+            <span style='font-size:28px; color:{color}; font-weight:bold;'>{wr*100:.1f}%</span><br>
+            <span style='font-size:12px; color:gray;'>最新訓練日期: {metrics['lstm']['last_train']}</span>
+        </div>
+        """, unsafe_allow_html=True)

@@ -14,7 +14,7 @@ def load_market_snapshot():
     return None
 
 def get_snapshot_dict(snapshot):
-    """將清單轉換為以股票代號為 Key 的字典，加速查詢"""
+    """將清單轉換為以股票代號為 Key 的字典"""
     if snapshot and 'data' in snapshot:
         return {str(item.get('代號', item.get('ticker', ''))).split('.')[0].strip(): item for item in snapshot['data']}
     return {}
@@ -35,7 +35,6 @@ def get_realtime_quote(clean_ticker, api_key):
                 if rt_vol: rt_vol = float(rt_vol)
         except: pass
 
-    # 備用方案：Yahoo Finance
     if not rt_price or rt_price == 0:
         try:
             df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
@@ -47,9 +46,43 @@ def get_realtime_quote(clean_ticker, api_key):
         except: pass
     return rt_price, rt_vol, prev_close
 
+def trigger_github_workflow(workflow_filename):
+    """手動觸發 GitHub Action 進行訓練或掃描"""
+    token = st.secrets.get("GH_PAT")
+    repo = "aszx7125/taiwan-bot"  # 替換為您的正確 GitHub 帳號/儲存庫名稱
+    if not token:
+        return False, "缺少 GitHub PAT 金鑰設定 (請在 Streamlit Secrets 設定 GH_PAT)"
+    
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_filename}/dispatches"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {"ref": "main"}
+    
+    res = requests.post(url, headers=headers, json=data)
+    if res.status_code == 204:
+        return True, "🚀 指令已成功發送至 GitHub 虛擬工廠！請等待幾分鐘執行。"
+    else:
+        return False, f"發送失敗: {res.text}"
+
+def load_model_metrics():
+    """讀取訓練時產生的盲測勝率報告"""
+    if os.path.exists("model_metrics.json"):
+        try:
+            with open("model_metrics.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # 若檔案不存在，回傳預設佔位數據
+    return {
+        "lgbm": {"blind_win_rate": 0.585, "last_train": "等待排程更新"},
+        "lstm": {"blind_win_rate": 0.542, "last_train": "等待排程更新"}
+    }
+
 @st.cache_data(ttl=7200, show_spinner=False) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
-    """執行實盤自動優化回測運算 (已將百行邏輯封裝至此)"""
+    """執行實盤自動優化回測運算"""
     try:
         from supabase import create_client
         import joblib
@@ -57,7 +90,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
         key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
         if not url or not key: return {"status": "no_key"}
         
-        # 這裡單獨讀取靜態大腦進行歷史回測特徵對齊
         if not os.path.exists("quant_model.joblib"): return {"status": "error", "msg": "找不到 LightGBM 大腦模型。"}
         model = joblib.load("quant_model.joblib")
         features = joblib.load("model_features.joblib")

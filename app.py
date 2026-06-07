@@ -8,9 +8,9 @@ import concurrent.futures
 # 📦 導入模組
 from config import get_fugle_key, DEFAULT_CLUSTERS, DEFAULT_NAMES, INDUSTRY_CHAINS
 from data_fetcher import load_all_market_tickers, get_market_summary, get_kline_with_fugle, get_stock_news
-from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_quote, fetch_advanced_backtest
+from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_quote, fetch_advanced_backtest, trigger_github_workflow, load_model_metrics
 from ai_engine import DualCoreBrain
-from ui_components import render_top20_card, render_single_diagnostic_card, render_backtest_metric_card
+from ui_components import render_top20_card, render_single_diagnostic_card, render_backtest_metric_card, render_model_health_board
 
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
 
@@ -43,8 +43,21 @@ with st.sidebar:
     st.header("💰 實盤資金管理")
     user_capital = st.number_input("初始本金 (TWD)", min_value=1000, value=1000000, step=10000)
     user_max_pos = st.slider("最大持倉檔數", 1, 10, 5)
+    
     st.markdown("---")
-
+    st.header("🛠️ 遠端自動化控制")
+    # 確保您已經在 github 中有 daily_scan.yml 與 train_ai.yml
+    if st.button("🔥 啟動全市場 AI 掃描", use_container_width=True):
+        success, msg = trigger_github_workflow("daily_scan.yml")
+        if success: st.success(msg)
+        else: st.error(msg)
+        
+    if st.button("🧠 啟動雙模型重新訓練", use_container_width=True):
+        success, msg = trigger_github_workflow("train_ai.yml")
+        if success: st.info(msg)
+        else: st.error(msg)
+    
+    st.markdown("---")
     if brain.is_lstm_ready: st.success("🔮 LSTM 大腦已連動")
     else: st.warning("⚪ 找不到 LSTM")
     if brain.is_lgbm_ready: st.success("🌳 LightGBM 大腦正常")
@@ -154,6 +167,12 @@ else:
         with c_greed: st.metric("放眼全球：台股恐懼貪婪指數", f"{greed_index} / 100")
     
     st.markdown("---")
+    
+    # 🧪 雙核心盲測勝率看板
+    metrics = load_model_metrics()
+    render_model_health_board(metrics)
+    st.markdown("---")
+    
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "🕸️ 產業鏈資金共振", "⚖️ 實盤開獎對撞", "🔬 策略回測"])
     
     with tab1:
@@ -165,8 +184,7 @@ else:
         @st.fragment(run_every=datetime.timedelta(seconds=15))
         def render_rt():
             rows = []
-            # 🔥 關鍵修復：把名稱字典拷貝到主執行緒，供子執行緒安全使用
-            current_names = st.session_state.stock_names.copy()
+            current_names = st.session_state.stock_names.copy() # 🔥 安全隔離
             
             def fetch_rt(t):
                 ticker = t.split('.')[0]
@@ -174,7 +192,6 @@ else:
                 if p > 0: 
                     chg_amt = p - prev
                     chg_pct = (chg_amt/prev)*100 if prev > 0 else 0
-                    # 🔥 使用 current_names 取代 st.session_state
                     name_str = f"<b>{current_names.get(ticker, ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
                     p_str = f"<b>{p:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(v):,} 張)</span>"
                     chg_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{chg_amt:.2f}<br>(+{chg_pct:.2f}%)</span>" if chg_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{chg_amt:.2f}<br>({chg_pct:.2f}%)</span>" if chg_amt < 0 else "0.00")

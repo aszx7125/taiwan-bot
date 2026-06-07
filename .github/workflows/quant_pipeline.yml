@@ -1,10 +1,12 @@
 name: 台股 AI 雙核量化管線工廠
 
+
 on:
   schedule:
     - cron: '0 10 * * 1-5'  # 每天下午台股收盤後自動收錄特徵
     - cron: '0 18 * * 6'    # 每週六晚上 18:00 (UTC 10:00) 自動啟動大腦重新訓練
-
+  workflow_dispatch:  # ✨ 加入這行，允許點按鈕啟動
+  
 jobs:
   # (原本每天抓資料的 Job 保留，此處僅展示新增的週末訓練 Job)
   train_weekly_lstm:
