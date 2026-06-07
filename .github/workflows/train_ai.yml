@@ -39,19 +39,20 @@ jobs:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-    - name: 💾 將進化後的 AI 大腦 (.joblib) 封裝回儲存庫
+    - name: Commit and Push Updated Models
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "AI Trainer Bot"
+          git config --local user.email "bot@quant.factory"
+          git config --local user.name "AI-Trainer-Bot"
+          
+          # 將有變動的檔案加入暫存區
+          git add quant_model.joblib model_features.joblib lstm_momentum_brain.h5 model_metrics.json
+          
+          # 提交變更 (如果沒有變動則略過)
+          git commit -m "🤖 自動更新：雙核深度大腦與真實勝率報告 [Skip CI]" || echo "No changes to commit"
+          
+          # 🔥 關鍵防撞車機制：在推播前，先以 rebase 方式拉取遠端最新程式碼
+          git pull --rebase origin main
+          
+          # 最後再安全地推播上去
+          git push
         
-        # 將訓練產出的模型檔案加入 Git
-        git add quant_model.joblib model_features.joblib
-        
-        # 檢查檔案是否有變動，有的話才 Commit 並 Push
-        if [ -n "$(git status --porcelain quant_model.joblib)" ]; then
-          git commit -m "🧠 AI 模型自動重訓與權重更新 [skip ci]"
-          git push origin main
-          echo "✅ 新版 AI 大腦已成功部署至倉庫！"
-        else
-          echo "✅ 模型權重無顯著變化，無需更新。"
-        fi
