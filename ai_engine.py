@@ -11,7 +11,6 @@ class DualCoreBrain:
     """
     
     def __init__(self, lgbm_path="quant_model.joblib", feats_path="model_features.joblib", lstm_path="lstm_momentum_brain.h5"):
-        # 實例化時，立刻載入模型並保存在物件的記憶體中 (self)
         self.lgbm_model = None
         self.features_list = None
         self.lstm_model = None
@@ -58,7 +57,7 @@ class DualCoreBrain:
             if vol_raw is not None:
                 try: base_vol = float(vol_raw)
                 except: pass
-                
+            
             pat_raw = item.get('pattern', item.get('Pattern', item.get('型態', pat)))
             if pat_raw: pat = str(pat_raw)
             
@@ -100,7 +99,11 @@ class DualCoreBrain:
         if not self.is_lstm_ready or not features_list: 
             return np.full(len(features_list), 0.50)
             
-        LSTM_FEATURE_ORDER = ['daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 'turnover', 'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection']
+        # 🔥 確保這裡有 11 個特徵，與 train_lstm.py 保持對齊！
+        LSTM_FEATURE_ORDER = [
+            'daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 
+            'turnover', 'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection'
+        ]
         
         try:
             all_seqs = []
@@ -123,9 +126,7 @@ class DualCoreBrain:
             return np.full(len(features_list), 0.50)
 
     def predict_win_rates(self, features_list):
-        """
-        核心對外接口：輸入特徵陣列，直接輸出雙核加權後的最終勝率陣列！
-        """
+        """核心對外接口：輸入特徵陣列，輸出雙核加權後的最終勝率陣列"""
         if not self.is_lgbm_ready:
             return np.full(len(features_list), 0.0)
             

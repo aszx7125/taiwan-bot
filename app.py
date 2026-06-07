@@ -46,7 +46,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("🛠️ 遠端自動化控制")
-    # 確保您已經在 github 中有 daily_scan.yml 與 train_ai.yml
     if st.button("🔥 啟動全市場 AI 掃描", use_container_width=True):
         success, msg = trigger_github_workflow("daily_scan.yml")
         if success: st.success(msg)
@@ -184,7 +183,11 @@ else:
         @st.fragment(run_every=datetime.timedelta(seconds=15))
         def render_rt():
             rows = []
-            current_names = st.session_state.stock_names.copy() # 🔥 安全隔離
+            current_names = st.session_state.stock_names.copy() # 安全隔離
+            
+            # 🔥 讀取全市場快取，解決股票名稱顯示為代號的問題
+            snapshot = load_market_snapshot()
+            snapshot_dict = get_snapshot_dict(snapshot)
             
             def fetch_rt(t):
                 ticker = t.split('.')[0]
@@ -192,7 +195,11 @@ else:
                 if p > 0: 
                     chg_amt = p - prev
                     chg_pct = (chg_amt/prev)*100 if prev > 0 else 0
-                    name_str = f"<b>{current_names.get(ticker, ticker)}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
+                    
+                    # 🔥 雙重字典抓取名稱
+                    stock_name = snapshot_dict.get(ticker, {}).get('名稱', current_names.get(ticker, ticker))
+                    
+                    name_str = f"<b>{stock_name}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
                     p_str = f"<b>{p:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(v):,} 張)</span>"
                     chg_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{chg_amt:.2f}<br>(+{chg_pct:.2f}%)</span>" if chg_amt > 0 else (f"<span style='color:#00cc96;font-weight:bold;'>{chg_amt:.2f}<br>({chg_pct:.2f}%)</span>" if chg_amt < 0 else "0.00")
                     return {"標的": name_str, "及時價 (成交量)": p_str, "今日漲跌幅": chg_str}
