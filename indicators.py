@@ -63,9 +63,15 @@ def add_advanced_indicators(df, market_ret_20=None):
     df['Net_Money_Flow'] = df['Volume'] * np.where(df['Close'] > df['Open'], df['Buying_Pressure'], - (1 - df['Buying_Pressure']))
     df['Broker_Concentration'] = df['Net_Money_Flow'].rolling(5).sum() / (df['Vol_SMA5'] * 5 + 1e-10)
 
-    if market_ret_20 is not None and not market_ret_20.empty:
-        stock_ret = df['Close'].pct_change(20)
-        df['RS_Index'] = stock_ret - market_ret_20.reindex(df.index, method='ffill')
+    # 🔥 核心修正：安全處理 market_ret_20 為純數字或 Pandas Series 的兩種情況
+    stock_ret = df['Close'].pct_change(20)
+    if market_ret_20 is not None:
+        if hasattr(market_ret_20, 'empty') and not market_ret_20.empty:
+            df['RS_Index'] = (stock_ret - market_ret_20.reindex(df.index, method='ffill')) * 100
+        elif isinstance(market_ret_20, (int, float)):
+            df['RS_Index'] = (stock_ret - market_ret_20) * 100
+        else:
+            df['RS_Index'] = 0.0
     else: 
         df['RS_Index'] = 0.0
 
@@ -100,16 +106,12 @@ def add_intraday_indicators(df):
     if df.empty or len(df) < 10: 
         return df
     
-    # 1. 小時區均線與成交量
     df['SMA_20_1h'] = df['Close'].rolling(20).mean()
     df['Vol_SMA5_1h'] = df['Volume'].rolling(5).mean()
     
-    # 2. 小時區 MACD (捕捉極短線轉折)
     df['MACD_1h'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
     df['Signal_1h'] = df['MACD_1h'].ewm(span=9, adjust=False).mean()
     
-    # 3. 🎯 微觀狙擊板機判定 (Micro-Structure Breakout Trigger)
-    # 邏輯：小時 K 線收盤站上小時均線，且 MACD 剛發生金叉，且量能放大
     df['MACD_Cross_Up'] = (df['MACD_1h'] > df['Signal_1h']) & (df['MACD_1h'].shift(1) <= df['Signal_1h'].shift(1))
     df['Vol_Surge_1h'] = df['Volume'] > (df['Vol_SMA5_1h'] * 1.5)
     

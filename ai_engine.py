@@ -5,134 +5,76 @@ import joblib
 import tensorflow as tf
 
 class DualCoreBrain:
-    """
-    台股量化雙核運算引擎 (OOP 封裝版)
-    結合 LightGBM (靜態特徵) 與 LSTM (時序動能) 進行混合決策推論
-    """
-    
     def __init__(self, lgbm_path="quant_model.joblib", feats_path="model_features.joblib", lstm_path="lstm_momentum_brain.h5"):
-        self.lgbm_model = None
-        self.features_list = None
-        self.lstm_model = None
-        
-        self.is_lgbm_ready = False
-        self.is_lstm_ready = False
-        
+        self.lgbm_model, self.features_list, self.lstm_model = None, None, None
+        self.is_lgbm_ready, self.is_lstm_ready = False, False
         self._load_models(lgbm_path, feats_path, lstm_path)
 
     def _load_models(self, lgbm_path, feats_path, lstm_path):
-        """內部方法：負責安全載入模型檔"""
         if os.path.exists(lgbm_path) and os.path.exists(feats_path):
             try:
                 self.lgbm_model = joblib.load(lgbm_path)
                 self.features_list = joblib.load(feats_path)
                 self.is_lgbm_ready = True
-                print("🌳 LightGBM 靜態大腦載入成功")
-            except Exception as e:
-                print(f"❌ LightGBM 載入失敗: {e}")
-
+            except: pass
         if os.path.exists(lstm_path):
             try:
                 self.lstm_model = tf.keras.models.load_model(lstm_path)
                 self.is_lstm_ready = True
-                print("🔮 LSTM 深度大腦載入成功")
-            except Exception as e:
-                print(f"❌ LSTM 載入失敗: {e}")
+            except: pass
 
-    def extract_features(self, clean_ticker, current_price, snapshot_dict, current_vol=0.0, fallback_rs=0.0, fallback_atr=None, fallback_pattern="", fallback_vol=0.0):
-        """將原始市場資料轉換為 AI 看得懂的特徵字典"""
-        rs_idx = fallback_rs
-        pat = fallback_pattern
-        anchor_price = current_price
-        base_vol = fallback_vol 
-        atr = fallback_atr if fallback_atr else (anchor_price * 0.05)
-        vol_ratio = 1.0
-        broker_conc = 0.0
-
+    def extract_features(self, clean_ticker, current_price, snapshot_dict, current_vol=0.0):
+        feat = {col: 0.0 for col in ['is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection', 'rs_index', 'vol_ratio', 'volatility', 'turnover', 'broker_conc']}
+        recent_returns = [0.0] * 10 # 預設序列
+        
         if snapshot_dict and clean_ticker in snapshot_dict:
             item = snapshot_dict[clean_ticker]
-            anchor_price = float(item.get('現價', item.get('close_price', item.get('Close', anchor_price))))
+            pat = str(item.get('pattern', ''))
+            feat['is_pullback'] = 1.0 if "量縮回踩" in pat else 0.0
+            feat['is_squeeze'] = 1.0 if "區間壓縮" in pat else 0.0
+            feat['is_divergence'] = 1.0 if "底背離" in pat else 0.0
+            feat['is_liquidity_sweep'] = 1.0 if "流動性掠奪" in pat else 0.0
+            feat['is_poc_rejection'] = 1.0 if "POC" in pat else 0.0
+            feat['rs_index'] = float(item.get('rs_index', 0.0))
+            feat['vol_ratio'] = float(item.get('vol_ratio', 1.0))
+            feat['volatility'] = float(item.get('volatility', item.get('ATR_14', 0.0) / (float(item.get('現價', 1)) or 1)))
+            feat['turnover'] = float(item.get('turnover', float(item.get('現價', 0)) * item.get('成交量', 0)))
+            feat['broker_conc'] = float(item.get('broker_conc', 0.0))
+            # 🔥 讀取真實的過去 10 日歷史軌跡！
+            recent_returns = item.get('recent_returns', [0.0] * 10)
             
-            vol_raw = item.get('成交量', item.get('Volume', item.get('volume', None)))
-            if vol_raw is not None:
-                try: base_vol = float(vol_raw)
-                except: pass
-            
-            pat_raw = item.get('pattern', item.get('Pattern', item.get('型態', pat)))
-            if pat_raw: pat = str(pat_raw)
-            
-            rs_raw = item.get('RS_Index', item.get('rs_index', None))
-            if rs_raw is not None:
-                try: rs_idx = float(str(rs_raw).replace('%', '').strip())
-                except: pass
-                
-            atr_raw = item.get('ATR_14', item.get('atr_14', None))
-            if atr_raw is not None:
-                try: atr = float(atr_raw)
-                except: pass
-                
-            vol_ratio = float(item.get('vol_ratio', item.get('Vol_Ratio', 1.0)))
-            broker_conc = float(item.get('broker_conc', item.get('Broker_Concentration', 0.0)))
-
-        if base_vol <= 0 and current_vol > 0: base_vol = current_vol
-        if anchor_price <= 0: anchor_price = 1.0
-
-        volatility = float(atr / anchor_price)
-        turnover = float(anchor_price * base_vol)
-        if 0 < turnover < 100_000_000: turnover *= 1000
-
-        return {
-            'is_pullback': 1.0 if "量縮回踩" in pat else 0.0,
-            'is_squeeze': 1.0 if "區間壓縮" in pat else 0.0,
-            'is_divergence': 1.0 if "底背離" in pat else 0.0,
-            'is_liquidity_sweep': 1.0 if "流動性掠奪" in pat else 0.0,
-            'is_poc_rejection': 1.0 if "POC" in pat else 0.0,
-            'rs_index': float(rs_idx),
-            'vol_ratio': float(vol_ratio),
-            'volatility': float(volatility),
-            'turnover': float(turnover),
-            'broker_conc': float(broker_conc)
-        }
+        feat['recent_returns'] = recent_returns
+        return feat
 
     def _compute_lstm_batch(self, features_list):
-        """內部方法：LSTM 極速矩陣批次運算"""
-        if not self.is_lstm_ready or not features_list: 
-            return np.full(len(features_list), 0.50)
-            
-        # 🔥 維度防線：死守這 11 個特徵！與 train_lstm.py 完全對齊
-        LSTM_FEATURE_ORDER = [
-            'daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 
-            'turnover', 'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection'
-        ]
+        if not self.is_lstm_ready or not features_list: return np.full(len(features_list), 0.50)
         
+        LSTM_ORDER = ['daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 'turnover', 'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection']
         try:
             all_seqs = []
             for feat in features_list:
                 seq = []
+                ret_list = feat.get('recent_returns', [0.0]*10)
+                # 確保長度精準為 10
+                if len(ret_list) < 10: ret_list = [0.0]*(10-len(ret_list)) + ret_list
+                ret_list = ret_list[-10:] 
+                
+                # 🔥 廢除人工幻覺，改用真實的 10 日軌跡餵給神經網路！
                 for i in range(10):
-                    decay = 1.0 - (0.01 * (9 - i))
                     day_feat = feat.copy()
-                    day_feat['daily_return'] = float(feat.get('rs_index', 0.0) * 0.001 * decay)
-                    day_feat['vol_ratio'] = float(feat.get('vol_ratio', 1.0) * decay)
-                    ordered_feat = [day_feat.get(col, 0.0) for col in LSTM_FEATURE_ORDER]
-                    seq.append(ordered_feat)
+                    day_feat['daily_return'] = float(ret_list[i])
+                    seq.append([day_feat.get(col, 0.0) for col in LSTM_ORDER])
                 all_seqs.append(seq)
                 
             tensor_3d = np.array(all_seqs, dtype=np.float32)
-            scores = self.lstm_model.predict(tensor_3d, batch_size=512, verbose=0).flatten()
-            return scores
+            return self.lstm_model.predict(tensor_3d, batch_size=512, verbose=0).flatten()
         except Exception as e: 
             print(f"LSTM 矩陣運算異常: {e}")
             return np.full(len(features_list), 0.50)
 
     def predict_win_rates(self, features_list):
-        """核心對外接口：輸入特徵陣列，輸出雙核加權後的最終勝率陣列"""
-        if not self.is_lgbm_ready:
-            return np.full(len(features_list), 0.0)
-            
-        input_df = pd.DataFrame(features_list, columns=self.features_list).astype(float).fillna(0)
+        if not self.is_lgbm_ready: return np.full(len(features_list), 0.0)
+        input_df = pd.DataFrame(features_list)[self.features_list]
         base_probs = self.lgbm_model.predict_proba(input_df)[:, 1]
-        
         lstm_scores = self._compute_lstm_batch(features_list)
-        final_probs = (base_probs * 0.6) + (lstm_scores * 0.4)
-        return final_probs
+        return (base_probs * 0.6) + (lstm_scores * 0.4)

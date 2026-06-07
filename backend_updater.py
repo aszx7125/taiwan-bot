@@ -14,118 +14,81 @@ def run_backend_update():
     print(f"[{now_tw.strftime('%Y-%m-%d %H:%M:%S')}] 🚀 啟動背景雲端量化引擎...")
     
     csv_df = load_all_market_tickers()
-    if csv_df.empty:
-        print("❌ 找不到全市場股票清單 (all_tw_stocks.csv)，跳過運算。")
-        return
+    if csv_df.empty: return
         
     tickers = csv_df['Ticker'].tolist()
     names_dict = DEFAULT_NAMES.copy()
     for index, row in csv_df.iterrows():
         code = str(row['Ticker']).split('.')[0]
-        if code not in names_dict:
-            names_dict[code] = str(row['Name'])
+        if code not in names_dict: names_dict[code] = str(row['Name'])
 
     market_ret_20 = get_precalculated_market_ret()
     results = []
-    total = len(tickers)
-    completed = 0
-    print(f"📊 預計掃描 {total} 檔標的...")
     
-    # 🚀 將併發數降至 10，避免觸發 Yahoo 防火牆
+    print(f"📊 預計掃描 {len(tickers)} 檔標的...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_ret_20, {}, names_dict, "score"): t for t in tickers}
+        future_to_ticker = {executor.submit(_fetch_and_score_sync, t, market_ret_20): t for t in tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
-            completed += 1
-            if completed % 100 == 0:
-                print(f"⏳ 運算進度: {completed} / {total}")
             try:
                 res = future.result()
                 if res: results.append(res)
-            except Exception as e:
-                pass
+            except Exception: pass
 
+    # 🔥 修復快取毒化邏輯：判斷是否為新鮮數據
+    is_fresh_data = True
     final_data = []
+    
     if len(results) < 50:
-        print("⚠️ 抓取到的有效標的過少。嘗試保留舊有快取資料...")
+        is_fresh_data = False
+        print("⚠️ 抓取到的有效標的過少。嘗試保留舊有快取資料以供網頁顯示...")
         if os.path.exists("market_snapshot.json"):
             try:
                 with open("market_snapshot.json", "r", encoding="utf-8") as f:
-                    old_snapshot = json.load(f)
-                    final_data = old_snapshot.get("data", [])
+                    final_data = json.load(f).get("data", [])
             except: pass
     else:
-        df_res = pd.DataFrame(results).sort_values("量化總分", ascending=False)
+        df_res = pd.DataFrame(results)
         final_data = df_res.to_dict(orient="records")
 
-    if not final_data:
-        print("❌ 無法生成任何資料，結束程式。")
+    if not final_data: return
+
+    with open("market_snapshot.json", "w", encoding="utf-8") as f:
+        json.dump({"update_time": now_tw.strftime("%Y-%m-%d %H:%M:%S"), "data": final_data}, f, ensure_ascii=False, indent=2)
+    print(f"✅ 快取更新成功！共萃取 {len(final_data)} 檔標的。")
+
+    # 🔥 如果是讀取舊快取，絕對不可寫入資料庫，防止記憶錯亂！
+    if not is_fresh_data:
+        print("🛑 因為使用舊快取，跳過資料庫寫入，保護機器學習記憶的純潔性。")
         return
 
-    # 1. 寫入本地 JSON 供 Streamlit 網頁極速讀取
-    output_data = {
-        "update_time": now_tw.strftime("%Y-%m-%d %H:%M:%S"),
-        "data": final_data
-    }
-    with open("market_snapshot.json", "w", encoding="utf-8") as f:
-        json.dump(output_data, f, ensure_ascii=False, indent=2)
-    print(f"✅ 更新成功！共萃取 {len(final_data)} 檔標的，已儲存至 market_snapshot.json")
-
-    # ==========================================
-    # 🧠 機器學習記憶中樞：將數據推送到 Supabase
-    # ==========================================
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")
     
     if supabase_url and supabase_key:
-        print(f"🔗 偵測到資料庫金鑰 (URL: {supabase_url[:15]}...)，開始連線與上傳...")
         try:
             supabase: Client = create_client(supabase_url, supabase_key)
-            
             db_records = []
             for item in final_data:
-                try: rs_val = float(str(item.get("大盤相對強度", "0")).replace("%", ""))
-                except: rs_val = 0.0
-                
-                # 🚀 嚴格對齊 Supabase Schema，完整補齊缺失的神經網路特徵！
-                # 若前線 _fetch_and_score_sync 尚未傳回這些變數，則設定安全的預設值以防止報錯或 NULL。
-                volatility = float(item.get("volatility", item.get("Volatility", 0.0)))
-                turnover = float(item.get("turnover", item.get("Turnover", 0.0)))
-                vol_ratio = float(item.get("vol_ratio", item.get("Vol_Ratio", 1.0)))
-                broker_conc = float(item.get("broker_conc", item.get("Broker_Concentration", 0.0)))
-                
                 db_records.append({
                     "date": today_str,
                     "ticker": str(item.get("代號")),
-                    "name": str(item.get("名稱")),
-                    "score": int(item.get("量化總分", 0)),
-                    "pattern": str(item.get("機構籌碼/型態", "")),
+                    "name": str(item.get("名稱", names_dict.get(str(item.get("代號")), ""))),
+                    "pattern": str(item.get("pattern", "")),
                     "close_price": float(item.get("現價", 0)),
-                    "rs_index": rs_val,
-                    "volatility": volatility,
-                    "turnover": turnover,
-                    "vol_ratio": round(vol_ratio, 2),
-                    "broker_conc": broker_conc
+                    "rs_index": float(item.get("rs_index", 0.0)),
+                    "volatility": float(item.get("volatility", 0.0)),
+                    "turnover": float(item.get("turnover", 0.0)),
+                    "vol_ratio": float(item.get("vol_ratio", 1.0)),
+                    "broker_conc": float(item.get("broker_conc", 0.0)),
+                    "score": 0 # 舊欄位給 0 防呆
                 })
             
             if db_records:
-                print(f"   ⬆️ 嘗試寫入首批資料...")
-                response = supabase.table("quant_history").insert(db_records[:10]).execute()
-                
-                if len(db_records) > 10:
-                    batch_size = 500
-                    for i in range(10, len(db_records), batch_size):
-                        batch = db_records[i:i + batch_size]
-                        supabase.table("quant_history").insert(batch).execute()
-                
-                print(f"✅ 歷史記憶已成功封裝入 Supabase 資料庫！共寫入 {len(db_records)} 筆。")
-            else:
-                print("⚠️ 沒有有效資料可供寫入。")
-                
-        except Exception as e:
-            print(f"❌ 嚴重錯誤：寫入 Supabase 失敗！詳細原因：{str(e)}")
-            raise e 
-    else:
-        print("⚠️ 未設定 SUPABASE_URL 或 SUPABASE_KEY，跳過資料庫寫入。")
+                # 寫入前先切片避免 payload 過大
+                for i in range(0, len(db_records), 500):
+                    supabase.table("quant_history").insert(db_records[i:i+500]).execute()
+                print(f"✅ 歷史記憶已成功封裝入 Supabase！共寫入 {len(db_records)} 筆。")
+        except Exception as e: print(f"❌ 寫入 Supabase 失敗：{e}")
 
 if __name__ == "__main__":
     run_backend_update()
