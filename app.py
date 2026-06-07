@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import datetime
 import random 
+import time
 import concurrent.futures
 
 # 📦 導入模組
@@ -183,9 +184,8 @@ else:
         @st.fragment(run_every=datetime.timedelta(seconds=15))
         def render_rt():
             rows = []
-            current_names = st.session_state.stock_names.copy() # 安全隔離
+            current_names = st.session_state.stock_names.copy() 
             
-            # 🔥 讀取全市場快取，解決股票名稱顯示為代號的問題
             snapshot = load_market_snapshot()
             snapshot_dict = get_snapshot_dict(snapshot)
             
@@ -196,7 +196,7 @@ else:
                     chg_amt = p - prev
                     chg_pct = (chg_amt/prev)*100 if prev > 0 else 0
                     
-                    # 🔥 雙重字典抓取名稱
+                    # 雙重字典對齊：解決非科技股名稱變代號的問題
                     stock_name = snapshot_dict.get(ticker, {}).get('名稱', current_names.get(ticker, ticker))
                     
                     name_str = f"<b>{stock_name}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
@@ -205,9 +205,16 @@ else:
                     return {"標的": name_str, "及時價 (成交量)": p_str, "今日漲跌幅": chg_str}
                 return None
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-                for res in ex.map(fetch_rt, cluster_stocks):
-                    if res: rows.append(res)
+            # 🔥 關鍵修復：降至 5 個 max_workers 並配合 as_completed 與 time.sleep 防禦反爬蟲
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                future_to_ticker = {ex.submit(fetch_rt, t): t for t in cluster_stocks}
+                for future in concurrent.futures.as_completed(future_to_ticker):
+                    try:
+                        res = future.result()
+                        if res: rows.append(res)
+                        time.sleep(0.05) # 喘息 0.05 秒防封鎖
+                    except Exception:
+                        pass
                     
             if rows: 
                 html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')

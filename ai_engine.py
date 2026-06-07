@@ -99,7 +99,7 @@ class DualCoreBrain:
         if not self.is_lstm_ready or not features_list: 
             return np.full(len(features_list), 0.50)
             
-        # 🔥 確保這裡有 11 個特徵，與 train_lstm.py 保持對齊！
+        # 🔥 維度防線：死守這 11 個特徵！與 train_lstm.py 完全對齊
         LSTM_FEATURE_ORDER = [
             'daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 
             'turnover', 'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection'
@@ -130,13 +130,9 @@ class DualCoreBrain:
         if not self.is_lgbm_ready:
             return np.full(len(features_list), 0.0)
             
-        # 1. 喚醒靜態大腦
         input_df = pd.DataFrame(features_list, columns=self.features_list).astype(float).fillna(0)
         base_probs = self.lgbm_model.predict_proba(input_df)[:, 1]
         
-        # 2. 喚醒動態大腦
         lstm_scores = self._compute_lstm_batch(features_list)
-        
-        # 3. 雙核矩陣融合 (0.6 : 0.4)
         final_probs = (base_probs * 0.6) + (lstm_scores * 0.4)
         return final_probs

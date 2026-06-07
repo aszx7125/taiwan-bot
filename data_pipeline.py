@@ -20,36 +20,44 @@ def get_snapshot_dict(snapshot):
     return {}
 
 def get_realtime_quote(clean_ticker, api_key):
-    """向 Fugle 或 Yahoo 抓取即時報價"""
+    """向 Fugle 或 Yahoo 抓取即時報價 (強固防崩潰版)"""
     rt_price, rt_vol, prev_close = 0.0, 0.0, 0.0
+    
+    # 1. 優先 Fugle API
     if api_key:
         try:
             res = requests.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{clean_ticker}", headers={"X-API-KEY": api_key}, timeout=2)
             if res.status_code == 200:
                 data = res.json()
-                rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price')
-                prev_close = data.get('previousClose') or data.get('referencePrice')
-                rt_vol = data.get('total', {}).get('tradeVolume', 0)
+                rt_price = data.get('closePrice') or data.get('lastTrade', {}).get('price', 0.0)
+                prev_close = data.get('previousClose') or data.get('referencePrice', 0.0)
+                rt_vol = data.get('total', {}).get('tradeVolume', 0.0)
                 if rt_price: rt_price = float(rt_price)
                 if prev_close: prev_close = float(prev_close)
                 if rt_vol: rt_vol = float(rt_vol)
-        except: pass
+        except Exception: 
+            pass
 
+    # 2. 備用方案：Yahoo Finance (配合 data_fetcher 新防摔安全氣囊)
     if not rt_price or rt_price == 0:
         try:
             df = fetch_yahoo_robust(f"{clean_ticker}.TW", period="5d", interval="1d")
-            if df.empty: df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
+            if df.empty: 
+                df = fetch_yahoo_robust(f"{clean_ticker}.TWO", period="5d", interval="1d")
+                
             if not df.empty and len(df) >= 2:
                 c, p = df.iloc[-1], df.iloc[-2]
                 rt_price, prev_close = float(c['Close']), float(p['Close'])
-                rt_vol = float(c['Volume'])
-        except: pass
+                rt_vol = float(c.get('Volume', 0.0))
+        except Exception: 
+            pass
+            
     return rt_price, rt_vol, prev_close
 
 def trigger_github_workflow(workflow_filename):
     """手動觸發 GitHub Action 進行訓練或掃描"""
     token = st.secrets.get("GH_PAT")
-    repo = "aszx7125/taiwan-bot"  # 替換為您的正確 GitHub 帳號/儲存庫名稱
+    repo = "aszx7125/taiwan-bot"
     if not token:
         return False, "缺少 GitHub PAT 金鑰設定 (請在 Streamlit Secrets 設定 GH_PAT)"
     
@@ -74,7 +82,6 @@ def load_model_metrics():
                 return json.load(f)
         except Exception:
             pass
-    # 若檔案不存在，回傳預設佔位數據
     return {
         "lgbm": {"blind_win_rate": 0.585, "last_train": "等待排程更新"},
         "lstm": {"blind_win_rate": 0.542, "last_train": "等待排程更新"}
