@@ -144,7 +144,7 @@ if target_ticker:
                     for idx, n in enumerate(news_s[:3]):
                         if isinstance(n, dict): st.markdown(f"📢 **情報 {idx+1}：** [{n.get('title', '檢視')}]({n.get('link', '#')})")
                 else:
-                    st.write("⚪ 暫無即時個股催化劑新聞。")
+                    st.write("⚪ 暫觀即時個股催化劑新聞。")
                 with st.expander("🌍 國際總經環境解讀"):
                     st.write("🟢 總體經濟環境處於常態偏多格局。")
             st.markdown("---")
@@ -195,8 +195,6 @@ else:
                 if p > 0: 
                     chg_amt = p - prev
                     chg_pct = (chg_amt/prev)*100 if prev > 0 else 0
-                    
-                    # 雙重字典對齊：解決非科技股名稱變代號的問題
                     stock_name = snapshot_dict.get(ticker, {}).get('名稱', current_names.get(ticker, ticker))
                     
                     name_str = f"<b>{stock_name}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
@@ -205,14 +203,13 @@ else:
                     return {"標的": name_str, "及時價 (成交量)": p_str, "今日漲跌幅": chg_str}
                 return None
             
-            # 🔥 關鍵修復：降至 5 個 max_workers 並配合 as_completed 與 time.sleep 防禦反爬蟲
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
                 future_to_ticker = {ex.submit(fetch_rt, t): t for t in cluster_stocks}
                 for future in concurrent.futures.as_completed(future_to_ticker):
                     try:
                         res = future.result()
                         if res: rows.append(res)
-                        time.sleep(0.05) # 喘息 0.05 秒防封鎖
+                        time.sleep(0.05)
                     except Exception:
                         pass
                     
@@ -296,9 +293,73 @@ else:
                             st.dataframe(display_df.sort_values("量化分數", ascending=False), hide_index=True)
 
     with tab5:
+        # --------------------------------------------------------
+        # ⚖️ 🔥 實盤開獎對撞面板 - 核心功能完整解鎖版
+        # --------------------------------------------------------
         st.markdown("#### ⚖️ 昨晚 AI 趨勢預測 x 今日實盤開獎比對面板")
-        if st.button("🔄 執行即時對撞比對"):
-            st.info("連線報價 API 並進行特徵萃取中...")
+        if st.button("🔄 執行即時對撞比對", key="run_clash_realtime_btn"):
+            snapshot = load_market_snapshot()
+            if snapshot and 'data' in snapshot:
+                raw_list = snapshot['data']
+                snapshot_dict = get_snapshot_dict(snapshot)
+                current_names = st.session_state.stock_names.copy()
+                
+                # 篩選前 15 檔高分/有效標的進行開獎，兼顧效能與限流
+                valid_items = [item for item in raw_list if float(item.get('現價', 0.0)) > 0][:15]
+                
+                if not valid_items:
+                    st.warning("⚪ 歷史快取中無有效個股資料可供對撞。")
+                else:
+                    st.info(f"⏳ 正在調度高併發線路連線實盤 API，開獎對撞中...")
+                    clash_rows = []
+                    
+                    def fetch_clash(item):
+                        ticker = str(item.get('代號', '')).split('.')[0].strip()
+                        stock_name = snapshot_dict.get(ticker, {}).get('名稱', current_names.get(ticker, ticker))
+                        
+                        # 昨晚快取數值
+                        last_price = float(item.get('現價', 0.0))
+                        ai_score = int(item.get('量化總分', 50))
+                        
+                        # 現場抓今日最新價
+                        rt_p, _, _ = get_realtime_quote(ticker, FUGLE_API_KEY)
+                        
+                        if rt_p > 0 and last_price > 0:
+                            clash_pct = ((rt_p - last_price) / last_price) * 100
+                            return {
+                                "股票代號": ticker,
+                                "股票名稱": stock_name,
+                                "昨晚 AI 總分": f"{ai_score} 分",
+                                "預測基準價 (昨)": f"${last_price:.2f}",
+                                "實盤即時價 (今)": f"${rt_p:.2f}",
+                                "實盤開獎漲跌": f"{clash_pct:+.2f}%",
+                                "_score_raw": ai_score
+                            }
+                        return None
+
+                    # 使用修復後的防封鎖安全線路
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                        future_to_item = {ex.submit(fetch_clash, item): item for item in valid_items}
+                        for future in concurrent.futures.as_completed(future_to_item):
+                            try:
+                                res = future.result()
+                                if res: clash_rows.append(res)
+                                time.sleep(0.05)
+                            except Exception:
+                                pass
+                    
+                    if clash_rows:
+                        clash_df = pd.DataFrame(clash_rows)
+                        # 依據 AI 總分進行高低排序
+                        clash_df = clash_df.sort_values(by="_score_raw", ascending=False)
+                        display_df = clash_df.drop(columns=["_score_raw"])
+                        
+                        st.success("✅ 實盤對撞數據已成功產出！")
+                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.error("❌ 無法成功取得今日即時開獎報價，請稍後再試。")
+            else:
+                st.warning("ℹ️ 快取檔案 `market_snapshot.json` 無數據，請先點選側邊欄啟動全市場 AI 掃描。")
             
     with tab6:
         res_adv = fetch_advanced_backtest(initial_cap=user_capital, max_pos=user_max_pos)
