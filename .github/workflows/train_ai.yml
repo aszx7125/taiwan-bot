@@ -34,6 +34,7 @@ jobs:
     - name: 🧠 啟動機器學習深度訓練 (連線 Supabase)
       run: python train_tools/ai_trainer.py
       env:
+        PYTHONPATH: .
         # 🔑 從 GitHub Secrets 自動抓取金鑰
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
