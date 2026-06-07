@@ -28,19 +28,28 @@ def load_all_market_tickers():
         return pd.DataFrame(columns=['ticker', 'name'])
 
 def get_market_summary():
-    """獲取大盤與指數即時概要"""
+    """獲取大盤與指數即時概要 (週末防呆版)"""
     summary = {}
     try:
-        df = fetch_yahoo_robust("^TWII", period="2d", interval="1d")
-        if not df.empty and len(df) >= 2:
-            c, p = df.iloc[-1]['Close'], df.iloc[-2]['Close']
-            summary["加權指數"] = {"price": c, "change": c - p, "pct": ((c - p) / p) * 100}
-    except Exception:
+        # 🔥 將 period 從 "2d" 改為 "5d"，確保週末也能撈到上週四、五的真實 K 線
+        df = fetch_yahoo_robust("^TWII", period="5d", interval="1d")
+        
+        # 確保資料表不是空的，且去掉週末可能產生的 NaN 空值
+        if not df.empty:
+            df = df.dropna(subset=['Close'])
+            if len(df) >= 2:
+                # 抓取「最後一個交易日」與「倒數第二個交易日」
+                c = float(df.iloc[-1]['Close'])
+                p = float(df.iloc[-2]['Close'])
+                summary["加權指數"] = {"price": c, "change": c - p, "pct": ((c - p) / p) * 100}
+    except Exception as e:
+        print(f"大盤獲取失敗: {e}")
         pass
     
-    # 預設防空置
+    # 預設防空置 (如果 Yahoo 完全斷線時的最後防線)
     if not summary:
         summary["加權指數"] = {"price": 22000.0, "change": 0.0, "pct": 0.0}
+        
     return summary
 
 def get_kline_with_fugle(ticker, api_key):
