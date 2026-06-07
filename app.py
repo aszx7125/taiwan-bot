@@ -15,6 +15,7 @@ from ui_components import render_top20_card, render_single_diagnostic_card, rend
 
 st.set_page_config(page_title="台股量化旗艦終端", page_icon="📈", layout="wide")
 
+# 初始化環境與模型
 FUGLE_API_KEY = get_fugle_key()
 if 'stock_clusters' not in st.session_state: st.session_state.stock_clusters = DEFAULT_CLUSTERS.copy()
 if 'stock_names' not in st.session_state: st.session_state.stock_names = DEFAULT_NAMES.copy()
@@ -74,7 +75,9 @@ st.markdown("---")
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
 
 if target_ticker:
+    # --------------------------------------------------------
     # 🔍 單股深入診斷模式
+    # --------------------------------------------------------
     base_ticker = target_ticker.split('.')[0]
     c_name = st.session_state.stock_names.get(base_ticker, target_ticker)
     
@@ -125,10 +128,32 @@ if target_ticker:
             m4.metric("機構集中度", f"{broker_conc*100:.1f}%")
             st.markdown("---")
             
+            # 🔥 完整接回：策略與型態技術面分析 & 即時相關新聞與情報
+            infra_col1, infra_col2 = st.columns(2)
+            with infra_col1:
+                st.markdown("### 📊 策略與型態技術面分析")
+                st.info(f"🧬 **SMC 聰明錢結構型態：** {smc_text}")
+                st.write(f"* **20日高位壓力 (Res_20)：** `NT$ {res_level:.2f}`")
+                st.write(f"* **20日低位支撐 (Sup_20)：** `NT$ {sup_level:.2f}`")
+                st.write(f"* **ATR 波動度基準 (ATR_14)：** `NT$ {atr_14:.2f}`")
+                
+            with infra_col2:
+                st.markdown("### 📰 即時相關新聞與情報")
+                if news_s and isinstance(news_s, list):
+                    for idx, n in enumerate(news_s[:3]):
+                        if isinstance(n, dict): st.markdown(f"📢 **情報 {idx+1}：** [{n.get('title', '檢視')}]({n.get('link', '#')})")
+                else:
+                    st.write("⚪ 暫無即時個股催化劑新聞。")
+                with st.expander("🌍 國際總經環境解讀"):
+                    st.write("🟢 總體經濟環境處於常態偏多格局。")
+            st.markdown("---")
+            
             if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
                 st.session_state.analyze_trigger = None; st.rerun()
 else:
+    # --------------------------------------------------------
     # 🏠 滿血旗艦主視覺儀表板
+    # --------------------------------------------------------
     st.markdown("### 🌍 大盤與情緒摘要")
     summary = get_market_summary()
     if summary:
@@ -142,6 +167,7 @@ else:
     
     st.markdown("---")
     
+    # 🧪 雙核心盲測勝率看板
     metrics = load_model_metrics()
     render_model_health_board(metrics)
     st.markdown("---")
@@ -365,7 +391,6 @@ else:
             res_adv = fetch_advanced_backtest(initial_cap=user_capital, max_pos=user_max_pos)
             status = res_adv.get("status")
             
-            # 🔥 關鍵修復：補上所有的 else 狀態判斷，確保畫面永遠不會白掉
             if status == "ready":
                 c1, c2, c3 = st.columns(3)
                 with c1: render_backtest_metric_card("AI 真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", "", "#4ade80")

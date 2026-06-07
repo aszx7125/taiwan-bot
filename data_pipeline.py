@@ -89,7 +89,7 @@ def load_model_metrics():
 
 @st.cache_data(ttl=7200, show_spinner=False) 
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
-    """執行實盤自動優化回測運算"""
+    """執行實盤自動優化回測運算 (修復 yfinance 索引與時區衝突版)"""
     try:
         from supabase import create_client
         import joblib
@@ -107,8 +107,11 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
         market_k = market_k.sort_index()
         market_k['market_sma20'] = market_k['Close'].rolling(window=20).mean()
         market_k['market_pct'] = market_k['Close'].pct_change()
-        market_k = market_k.reset_index()
-        market_k['date_norm'] = pd.to_datetime(market_k['index']).dt.normalize()
+        
+        # 🔥 核心修復：直接從 index 取時間，並強制移除時區 (tz_localize(None))，避免 KeyError 與合併失敗
+        market_k['date_norm'] = pd.to_datetime(market_k.index).tz_localize(None).normalize()
+        market_k = market_k.reset_index(drop=True) 
+        
         market_brief = market_k[['date_norm', 'Close', 'market_sma20', 'market_pct']].rename(columns={'Close': 'market_close'})
 
         supabase = create_client(url, key)
@@ -122,7 +125,8 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
         if not all_data: return {"status": "empty"}
         
         df = pd.DataFrame(all_data)
-        df['date'] = pd.to_datetime(df['date'])
+        # 🔥 確保資料庫的時間也移除時區，兩邊才能完美 Join
+        df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
         df['date_norm'] = df['date'].dt.normalize()
         df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
         df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
@@ -140,13 +144,18 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
 
         input_df = df[features].astype(float).fillna(0)
         df['ai_prob'] = model.predict_proba(input_df)[:, 1]
+        
+        # 進行大盤數據合併
         df = pd.merge(df, market_brief, on='date_norm', how='left')
+        
         df['entry_price_real'] = df.groupby('ticker')['close_price'].shift(-1)
         df['future_close_6d'] = df.groupby('ticker')['close_price'].shift(-6)
         df['return_5d'] = (df['future_close_6d'] - df['entry_price_real']) / df['entry_price_real']
 
-        if use_market_filter: signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
-        else: signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
+        if use_market_filter: 
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['market_close'] >= df['market_sma20']) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
+        else: 
+            signals = df[(df['ai_prob'] >= ai_prob_threshold) & (df['entry_price_real'].notna()) & (df['future_close_6d'].notna())].copy()
 
         if len(signals) == 0: return {"status": "pending"}
 
@@ -175,7 +184,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
             daily_equity.append({
                 'date_str': current_date.strftime('%Y-%m-%d'), 
                 'strat_cum_pct': ((current_equity - initial_cap) / initial_cap) * 100,
-                'market_cum_pct': daily_sigs.iloc[0]['market_cum'] if 'market_cum' in daily_sigs else 0
+                'market_cum_pct': daily_sigs.iloc[0]['market_cum_pct'] if 'market_cum_pct' in daily_sigs else 0
             })
 
         if not executed_trades: return {"status": "empty"}
