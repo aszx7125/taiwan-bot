@@ -23,27 +23,46 @@ class DualCoreBrain:
                 self.is_lstm_ready = True
             except: pass
 
-    def extract_features(self, clean_ticker, current_price, snapshot_dict, current_vol=0.0):
-        feat = {col: 0.0 for col in ['is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection', 'rs_index', 'vol_ratio', 'volatility', 'turnover', 'broker_conc']}
-        recent_returns = [0.0] * 10 # 預設序列
+    # 🔥 關鍵修復：加回 fallback 參數，完美支援「單股即時掃描」模式
+    def extract_features(self, clean_ticker, current_price, snapshot_dict, current_vol=0.0, fallback_rs=0.0, fallback_atr=None, fallback_pattern="", fallback_vol=0.0):
+        # 1. 優先採用 Fallback (針對單股現場計算的數據)
+        pat = fallback_pattern
+        rs = fallback_rs
+        atr = fallback_atr if fallback_atr else (current_price * 0.05)
+        vol = current_vol if current_vol > 0 else fallback_vol
+        vol_ratio = 1.0
+        broker_conc = 0.0
+        recent_returns = [0.0] * 10
         
+        # 2. 如果快取有昨晚的高精度數據，則覆蓋過去
         if snapshot_dict and clean_ticker in snapshot_dict:
             item = snapshot_dict[clean_ticker]
-            pat = str(item.get('pattern', ''))
-            feat['is_pullback'] = 1.0 if "量縮回踩" in pat else 0.0
-            feat['is_squeeze'] = 1.0 if "區間壓縮" in pat else 0.0
-            feat['is_divergence'] = 1.0 if "底背離" in pat else 0.0
-            feat['is_liquidity_sweep'] = 1.0 if "流動性掠奪" in pat else 0.0
-            feat['is_poc_rejection'] = 1.0 if "POC" in pat else 0.0
-            feat['rs_index'] = float(item.get('rs_index', 0.0))
-            feat['vol_ratio'] = float(item.get('vol_ratio', 1.0))
-            feat['volatility'] = float(item.get('volatility', item.get('ATR_14', 0.0) / (float(item.get('現價', 1)) or 1)))
-            feat['turnover'] = float(item.get('turnover', float(item.get('現價', 0)) * item.get('成交量', 0)))
-            feat['broker_conc'] = float(item.get('broker_conc', 0.0))
-            # 🔥 讀取真實的過去 10 日歷史軌跡！
+            pat = str(item.get('pattern', pat))
+            rs = float(item.get('rs_index', rs))
+            vol_ratio = float(item.get('vol_ratio', vol_ratio))
+            
+            atr_raw = item.get('ATR_14', item.get('atr_14'))
+            if atr_raw is not None:
+                atr = float(atr_raw)
+                
+            vol = float(item.get('成交量', vol))
+            broker_conc = float(item.get('broker_conc', broker_conc))
             recent_returns = item.get('recent_returns', [0.0] * 10)
             
+        # 3. 組合出雙核大腦需要的 11 維度特徵
+        feat = {}
+        feat['is_pullback'] = 1.0 if "量縮回踩" in pat else 0.0
+        feat['is_squeeze'] = 1.0 if "區間壓縮" in pat else 0.0
+        feat['is_divergence'] = 1.0 if "底背離" in pat else 0.0
+        feat['is_liquidity_sweep'] = 1.0 if "流動性掠奪" in pat else 0.0
+        feat['is_poc_rejection'] = 1.0 if "POC" in pat else 0.0
+        feat['rs_index'] = float(rs)
+        feat['vol_ratio'] = float(vol_ratio)
+        feat['volatility'] = float(atr / current_price if current_price > 0 else 0.0)
+        feat['turnover'] = float(current_price * vol)
+        feat['broker_conc'] = float(broker_conc)
         feat['recent_returns'] = recent_returns
+        
         return feat
 
     def _compute_lstm_batch(self, features_list):
@@ -55,11 +74,9 @@ class DualCoreBrain:
             for feat in features_list:
                 seq = []
                 ret_list = feat.get('recent_returns', [0.0]*10)
-                # 確保長度精準為 10
                 if len(ret_list) < 10: ret_list = [0.0]*(10-len(ret_list)) + ret_list
                 ret_list = ret_list[-10:] 
                 
-                # 🔥 廢除人工幻覺，改用真實的 10 日軌跡餵給神經網路！
                 for i in range(10):
                     day_feat = feat.copy()
                     day_feat['daily_return'] = float(ret_list[i])
