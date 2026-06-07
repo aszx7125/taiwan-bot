@@ -8,3 +8,4 @@ scikit-learn==1.7.2
 joblib
 lightgbm
 tensorflow-cpu
+yfinance
