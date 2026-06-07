@@ -63,7 +63,7 @@ def run_backend_update():
     results = []
 
     print(f"📊 預計掃描 {len(tickers)} 檔標的...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         future_to_ticker = {
             executor.submit(_fetch_and_score_sync, t, market_ret_20): t
             for t in tickers
@@ -119,7 +119,7 @@ def run_backend_update():
             # 批次計算每檔的真實 Score（使用 ThreadPool 加速）
             ticker_list = [str(item.get("代號")) for item in final_data]
             score_map   = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 future_score = {
                     executor.submit(_compute_score_for_ticker, t, market_ret_20): t
                     for t in ticker_list
