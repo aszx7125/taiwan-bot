@@ -1,4 +1,4 @@
-# data_pipeline.py — 完整滿血修正版
+# data_pipeline.py — 終極強固回測版
 import os
 import json
 import requests
@@ -110,11 +110,7 @@ def load_model_metrics():
 # ── 雙模型機率融合工具函數 ────────────────────────────────────────────────
 def blend_model_probs(lgbm_prob: float, lstm_prob: float,
                       lgbm_weight: float = 0.6, lstm_weight: float = 0.4) -> float:
-    """
-    加權融合 LightGBM 與 LSTM 的勝率預測。
-    預設 LightGBM 權重較高（特徵工程更完整），實盤與回測時引入時序動能。
-    兩個權重相加需等於 1.0。
-    """
+    """加權融合 LightGBM 與 LSTM 的勝率預測"""
     assert abs(lgbm_weight + lstm_weight - 1.0) < 1e-6, "權重合計必須等於 1.0"
     return lgbm_weight * lgbm_prob + lstm_weight * lstm_prob
 
@@ -123,14 +119,7 @@ def blend_model_probs(lgbm_prob: float, lstm_prob: float,
 @st.cache_data(ttl=7200, show_spinner=False)
 def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
                             initial_cap=1000000, max_pos=5):
-    """
-    執行實盤自動優化回測運算。
-    修正點：
-      1. 解決時序錯位：將 daily_return 計算上移至 LightGBM 預測之前，確保兩者特徵完全對齊不漏件。
-      2. market_cum_pct KeyError：改為在迴圈後統一從 market_lookup 補值，不在 daily_sigs 中存取可能不存在的欄位。
-      3. 進場條件改用 final_prob（LightGBM + LSTM 融合）取代單純 ai_prob。
-      4. LSTM 模型可選，若檔案不存在則退化為純 LightGBM 模式。
-    """
+    """執行實盤自動優化回測運算 (完全免除時序交叉污染版)"""
     try:
         from supabase import create_client
         import joblib
@@ -159,30 +148,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         except Exception:
             pass
 
-        # ── 大盤數據 ──────────────────────────────────────────────────────
-        market_k = fetch_yahoo_robust("^TWII", period="3y", interval="1d")
-        if market_k.empty:
-            return {"status": "error", "msg": "無法下載大盤。"}
-
-        market_k = market_k.sort_index()
-        market_k['market_sma20'] = market_k['Close'].rolling(window=20).mean()
-        market_k['market_pct']   = market_k['Close'].pct_change()
-        market_k['date_norm']    = pd.to_datetime(market_k.index).tz_localize(None).normalize()
-        market_k                 = market_k.reset_index(drop=True)
-
-        market_k['market_cum_pct'] = market_k['market_pct'].fillna(0).cumsum() * 100
-        market_lookup = dict(
-            zip(
-                market_k['date_norm'].dt.strftime('%Y-%m-%d'),
-                market_k['market_cum_pct']
-            )
-        )
-
-        market_brief = market_k[['date_norm', 'Close', 'market_sma20', 'market_pct']].rename(
-            columns={'Close': 'market_close'}
-        )
-
-        # ── 資料庫拉取 ────────────────────────────────────────────────────
+        # ── 1. 資料庫拉取與物理清洗 ──────────────────────────────────────────
         supabase = create_client(url, key)
         all_data, offset, limit = [], 0, 1000
         while True:
@@ -199,7 +165,15 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         df['date']       = pd.to_datetime(df['date']).dt.tz_localize(None)
         df['date_norm']  = df['date'].dt.normalize()
         df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
-        df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
+        
+        # 🛡️ 鐵律：在進行任何時序移位前，先進行個股與日期的絕對物理排序並鎖定索引
+        df = df.sort_values(by=['ticker', 'date_norm']).reset_index(drop=True)
+
+        # ── 2. 在純淨無干擾狀態下，優先計算所有時序與未來移位特徵 (解決崩潰核心) ──
+        df['daily_return'] = df.groupby('ticker')['close_price'].pct_change().fillna(0)
+        df['entry_price_real'] = df.groupby('ticker')['close_price'].shift(-1)
+        df['future_close_6d']  = df.groupby('ticker')['close_price'].shift(-6)
+        df['return_5d']        = (df['future_close_6d'] - df['entry_price_real']) / df['entry_price_real']
 
         # 形態特徵數位化
         df['pattern'] = df['pattern'].fillna("")
@@ -213,14 +187,10 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
             df[col] = pd.to_numeric(df.get(col, 0.0), errors='coerce').fillna(0.0)
         df['vol_ratio'] = pd.to_numeric(df.get('vol_ratio', 1.0), errors='coerce').fillna(1.0)
 
-        # 🔥 核心修正：將 daily_return 計算提前至此，確保 LightGBM 預測時特徵欄位完全對齊，不再產生錯位
-        df['daily_return'] = df.groupby('ticker')['close_price'].pct_change().fillna(0)
-
-        # ── LightGBM 預測 ─────────────────────────────────────────────────
+        # ── 3. 雙核模型雙管預測 ─────────────────────────────────────────────
         input_df   = df[features].astype(float).fillna(0)
         df['ai_prob'] = model.predict_proba(input_df)[:, 1]
 
-        # ── LSTM 預測（若可用）────────────────────────────────────────────
         if use_lstm:
             TIME_STEPS   = 10
             feature_cols = ['daily_return', 'vol_ratio', 'broker_conc', 'rs_index',
@@ -230,7 +200,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
 
             lstm_probs = np.full(len(df), 0.5)
             for ticker, group in df.groupby('ticker'):
-                group = group.sort_values('date').reset_index(drop=False)
+                group = group.sort_values('date_norm').reset_index(drop=False)
                 if len(group) < TIME_STEPS:
                     continue
                 feat_arr = group[feature_cols].astype(float).fillna(0).values
@@ -251,14 +221,24 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         else:
             df['final_prob'] = df['ai_prob']
 
-        # ── 大盤合併 ──────────────────────────────────────────────────────
+        # ── 4. 安全合併大盤數據 (移位結束後再合併，絕不干擾移位索引) ────────────────
+        market_k = fetch_yahoo_robust("^TWII", period="3y", interval="1d")
+        if market_k.empty:
+            return {"status": "error", "msg": "無法下載大盤。"}
+
+        market_k = market_k.sort_index()
+        market_k['market_sma20'] = market_k['Close'].rolling(window=20).mean()
+        market_k['market_pct']   = market_k['Close'].pct_change()
+        market_k['date_norm']    = pd.to_datetime(market_k.index).tz_localize(None).normalize()
+        market_k                 = market_k.reset_index(drop=True)
+
+        market_k['market_cum_pct'] = market_k['market_pct'].fillna(0).cumsum() * 100
+        market_lookup = dict(zip(market_k['date_norm'].dt.strftime('%Y-%m-%d'), market_k['market_cum_pct']))
+
+        market_brief = market_k[['date_norm', 'Close', 'market_sma20']].rename(columns={'Close': 'market_close'})
         df = pd.merge(df, market_brief, on='date_norm', how='left')
 
-        df['entry_price_real'] = df.groupby('ticker')['close_price'].shift(-1)
-        df['future_close_6d']  = df.groupby('ticker')['close_price'].shift(-6)
-        df['return_5d']        = (df['future_close_6d'] - df['entry_price_real']) / df['entry_price_real']
-
-        # ── 訊號篩選（使用 final_prob）────────────────────────────────────
+        # ── 5. 訊號篩選與實盤資金模擬 ──────────────────────────────────────────
         base_mask = (
             (df['final_prob'] >= ai_prob_threshold) &
             (df['entry_price_real'].notna()) &
@@ -272,7 +252,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         if len(signals) == 0:
             return {"status": "pending"}
 
-        # ── 模擬交易 ──────────────────────────────────────────────────────
         pos_size       = initial_cap / max_pos
         current_equity = initial_cap
         active_trades, executed_trades, daily_equity = [], [], []
