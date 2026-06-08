@@ -124,7 +124,10 @@ with st.sidebar:
     st.header("🛠️ 遠端自動化控制")
     if st.button("🔥 啟動全市場 AI 掃描", use_container_width=True):
         success, msg = trigger_github_workflow("daily_scan.yml")
-        st.success(msg) if success else st.error(msg)
+        if success:
+            st.success(msg)
+        else:
+            st.error(msg)
 
     if st.button("🧠 啟動雙模型重新訓練", use_container_width=True):
         success, msg = trigger_github_workflow("train_ai.yml")
