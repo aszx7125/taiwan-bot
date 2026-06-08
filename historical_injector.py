@@ -5,7 +5,7 @@ import datetime
 import os
 import concurrent.futures
 from supabase import create_client, Client
-from data_fetcher import fetch_yahoo_robust
+from data_fetcher import fetch_yahoo_robust, get_historical_twii_series
 from indicators import add_advanced_indicators
 from config import DEFAULT_CLUSTERS, INDUSTRY_CHAINS, DEFAULT_NAMES
 
@@ -104,7 +104,7 @@ def inject_history_data(target_tickers, days_back=730):
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
     # 🔥 改為獲取歷史序列
-    market_ret_series = get_historical_twii_series()
+    market_ret_series = get_historical_twii_series() 
     names_dict = DEFAULT_NAMES.copy()
     
     end_date = datetime.datetime.now()

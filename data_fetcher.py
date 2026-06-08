@@ -168,7 +168,19 @@ def get_precalculated_market_ret() -> float:
     except Exception:
         pass
     return 0.0
-
+def get_historical_twii_series() -> pd.Series:
+    """
+    獲取真實歷史大盤序列，供回補歷史資料庫使用，
+    徹底解決 RS_Index 時序錯亂與資料毒化問題。
+    """
+    try:
+        twii = fetch_yahoo_robust("^TWII", period="3y", interval="1d")
+        if not twii.empty:
+            twii.index = pd.to_datetime(twii.index).tz_localize(None).normalize()
+            return twii['Close'].pct_change(20).dropna()
+    except Exception as e:
+        print(f"⚠️ 獲取大盤歷史序列失敗: {e}")
+    return pd.Series(dtype=float)
 
 def _fetch_and_score_sync(ticker: str, market_ret: float) -> dict | None:
     """
@@ -240,3 +252,4 @@ def _fetch_and_score_sync(ticker: str, market_ret: float) -> dict | None:
         }
     except Exception:
         return None
+    
