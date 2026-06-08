@@ -1,14 +1,4 @@
-# data_pipeline.py — 修正版
-# 修正點：
-#   1. fetch_advanced_backtest：market_cum_pct KeyError 修正，
-#      改為在 daily_equity 組裝完後統一從 market_lookup 填入，
-#      不再在 daily_sigs 中取不存在的欄位。
-#   2. 加入 LSTM + LightGBM 加權融合（0.6 / 0.4），
-#      final_prob 作為實盤進場訊號，讓雙核架構真正發揮作用。
-#   3. fetch_advanced_backtest 進場條件改用 final_prob（融合後），
-#      而非單純 ai_prob（LightGBM only）。
-#   4. load_model_metrics 維持原有邏輯不變。
-
+# data_pipeline.py — 完整滿血修正版
 import os
 import json
 import requests
@@ -98,17 +88,23 @@ def trigger_github_workflow(workflow_filename):
 
 # ── 模型績效報告 ──────────────────────────────────────────────────────────
 def load_model_metrics():
-    """讀取訓練時產生的盲測勝率報告"""
+    """讀取訓練時產生的盲測勝率報告 (具備缺漏防護機制)"""
+    default_metrics = {
+        "lgbm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"},
+        "lstm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"}
+    }
+
     if os.path.exists("model_metrics.json"):
         try:
             with open("model_metrics.json", "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if "lgbm" in data:
+                    default_metrics["lgbm"] = data["lgbm"]
+                if "lstm" in data:
+                    default_metrics["lstm"] = data["lstm"]
         except Exception:
             pass
-    return {
-        "lgbm": {"blind_win_rate": 0.585, "last_train": "等待排程更新"},
-        "lstm": {"blind_win_rate": 0.542, "last_train": "等待排程更新"}
-    }
+    return default_metrics
 
 
 # ── 雙模型機率融合工具函數 ────────────────────────────────────────────────
@@ -116,7 +112,7 @@ def blend_model_probs(lgbm_prob: float, lstm_prob: float,
                       lgbm_weight: float = 0.6, lstm_weight: float = 0.4) -> float:
     """
     加權融合 LightGBM 與 LSTM 的勝率預測。
-    預設 LightGBM 權重較高（特徵工程更完整），LSTM 補捉時序動能。
+    預設 LightGBM 權重較高（特徵工程更完整），實盤與回測時引入時序動能。
     兩個權重相加需等於 1.0。
     """
     assert abs(lgbm_weight + lstm_weight - 1.0) < 1e-6, "權重合計必須等於 1.0"
@@ -130,10 +126,10 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
     """
     執行實盤自動優化回測運算。
     修正點：
-      1. market_cum_pct KeyError：改為在迴圈後統一從 market_lookup 補值，
-         不在 daily_sigs 中存取可能不存在的欄位。
-      2. 進場條件改用 final_prob（LightGBM + LSTM 融合）取代單純 ai_prob。
-      3. LSTM 模型可選，若檔案不存在則退化為純 LightGBM 模式。
+      1. 解決時序錯位：將 daily_return 計算上移至 LightGBM 預測之前，確保兩者特徵完全對齊不漏件。
+      2. market_cum_pct KeyError：改為在迴圈後統一從 market_lookup 補值，不在 daily_sigs 中存取可能不存在的欄位。
+      3. 進場條件改用 final_prob（LightGBM + LSTM 融合）取代單純 ai_prob。
+      4. LSTM 模型可選，若檔案不存在則退化為純 LightGBM 模式。
     """
     try:
         from supabase import create_client
@@ -156,7 +152,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         use_lstm    = False
         try:
             import tensorflow as tf
-            from sklearn.preprocessing import StandardScaler
             if os.path.exists("lstm_momentum_brain.h5") and os.path.exists("lstm_scaler.joblib"):
                 lstm_model  = tf.keras.models.load_model("lstm_momentum_brain.h5")
                 lstm_scaler = joblib.load("lstm_scaler.joblib")
@@ -175,7 +170,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         market_k['date_norm']    = pd.to_datetime(market_k.index).tz_localize(None).normalize()
         market_k                 = market_k.reset_index(drop=True)
 
-        # market_cum_pct 在這裡就算好，之後用 dict 查找，不在 df.merge 後的 row 裡取
         market_k['market_cum_pct'] = market_k['market_pct'].fillna(0).cumsum() * 100
         market_lookup = dict(
             zip(
@@ -219,6 +213,9 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
             df[col] = pd.to_numeric(df.get(col, 0.0), errors='coerce').fillna(0.0)
         df['vol_ratio'] = pd.to_numeric(df.get('vol_ratio', 1.0), errors='coerce').fillna(1.0)
 
+        # 🔥 核心修正：將 daily_return 計算提前至此，確保 LightGBM 預測時特徵欄位完全對齊，不再產生錯位
+        df['daily_return'] = df.groupby('ticker')['close_price'].pct_change().fillna(0)
+
         # ── LightGBM 預測 ─────────────────────────────────────────────────
         input_df   = df[features].astype(float).fillna(0)
         df['ai_prob'] = model.predict_proba(input_df)[:, 1]
@@ -231,9 +228,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
                             'is_pullback', 'is_squeeze', 'is_divergence',
                             'is_liquidity_sweep', 'is_poc_rejection']
 
-            df['daily_return'] = df.groupby('ticker')['close_price'].pct_change().fillna(0)
-
-            lstm_probs = np.full(len(df), 0.5)   # 預設 0.5（中性）
+            lstm_probs = np.full(len(df), 0.5)
             for ticker, group in df.groupby('ticker'):
                 group = group.sort_values('date').reset_index(drop=False)
                 if len(group) < TIME_STEPS:
@@ -245,18 +240,15 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
                     for i in range(len(feat_arr) - TIME_STEPS + 1)
                 ], dtype=np.float32)
                 preds = lstm_model.predict(X_seq, verbose=0).flatten()
-                # preds[i] 對應 group row (TIME_STEPS-1+i)
                 for i, pred in enumerate(preds):
                     row_idx = group.iloc[TIME_STEPS - 1 + i]['index']
                     lstm_probs[row_idx] = pred
 
             df['lstm_prob'] = lstm_probs
-            # 加權融合
             df['final_prob'] = df.apply(
                 lambda r: blend_model_probs(r['ai_prob'], r['lstm_prob']), axis=1
             )
         else:
-            # 無 LSTM 時，final_prob 等同 LightGBM ai_prob
             df['final_prob'] = df['ai_prob']
 
         # ── 大盤合併 ──────────────────────────────────────────────────────
@@ -298,7 +290,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
 
             for _, row in daily_sigs.iterrows():
                 if len(active_trades) < max_pos:
-                    net_return_5d = row['return_5d'] - 0.005   # 扣除手續費
+                    net_return_5d = row['return_5d'] - 0.005
                     profit_twd    = pos_size * net_return_5d
                     active_trades.append({
                         'exit_date': current_date + pd.Timedelta(days=7),
@@ -313,7 +305,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
             daily_equity.append({
                 'date_str':      date_str,
                 'strat_cum_pct': ((current_equity - initial_cap) / initial_cap) * 100,
-                # 修正：從 market_lookup dict 取值，避免 KeyError
                 'market_cum_pct': market_lookup.get(date_str, 0.0),
             })
 
