@@ -2,14 +2,7 @@
 # GitHub Actions 專用：台股輕量化 LSTM 週末自動訓練引擎
 #
 # 修正點：
-#   1. 時序資料洩漏：改用 TimeSeriesSplit 取代 validation_split=0.2（隨機切割），
-#      確保 validation 集永遠是「未來」的資料，貼近實盤情境。
-#   2. 特徵標準化：加入 StandardScaler，解決 turnover 與 daily_return
-#      尺度差異過大導致 LSTM 梯度不穩定的問題。
-#   3. Scaler 序列化：訓練完畢後將 scaler 存為 lstm_scaler.joblib，
-#      供 data_pipeline.py 實盤推論時使用同一個縮放基準。
-#   4. 儲存訓練後的盲測勝率至 model_metrics.json，讓 ui_components
-#      的看板可以讀到最新數據。
+#   1. 加入無限大 (Infinity) 抹除機制：避免 Yahoo 髒數據導致 StandardScaler 崩潰。
 
 import os
 import json
@@ -66,6 +59,9 @@ numeric_cols = ['daily_return', 'vol_ratio', 'broker_conc',
 for col in numeric_cols:
     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+# 🔥 核心防護網：徹底抹除無限大 (Infinity) 數值，防止 StandardScaler 當機
+df.replace([np.inf, -np.inf], 0, inplace=True)
+
 feature_cols = numeric_cols + [
     'is_pullback', 'is_squeeze', 'is_divergence',
     'is_liquidity_sweep', 'is_poc_rejection'
@@ -77,7 +73,6 @@ FUTURE_DAYS  = 5
 
 print(f"🔪 正在按標的切碎時間序列 (Time Steps: {TIME_STEPS})...")
 
-# 先收集所有樣本的「時間索引」，用於 TimeSeriesSplit 的有序切割
 all_X, all_y, all_dates = [], [], []
 
 for ticker, group in df.groupby('ticker'):
@@ -85,6 +80,8 @@ for ticker, group in df.groupby('ticker'):
     group['future_return'] = (
         group['close_price'].shift(-FUTURE_DAYS) / group['close_price'].shift(-1) - 1
     )
+    # 🔥 在標籤計算時也加入防護，避免 inf 污染
+    group.replace([np.inf, -np.inf], 0, inplace=True)
     group['target_label'] = (group['future_return'] > 0.02).astype(int)
 
     for i in range(len(group) - TIME_STEPS - FUTURE_DAYS):
@@ -103,9 +100,7 @@ if len(all_X) == 0:
 
 print(f"✅ 切割完成，共產出 {len(all_X)} 個時間序列樣本。")
 
-# ── 5. StandardScaler（修正：解決尺度差異導致梯度爆炸）────────────────────
-#
-# 需要在 2D 上 fit（samples × features），再 reshape 回 3D。
+# ── 5. StandardScaler ─────────────────────────────────────────────────────
 n_samples, n_steps, n_features = all_X.shape
 X_2d = all_X.reshape(-1, n_features)
 
@@ -117,9 +112,7 @@ X_scaled    = X_2d_scaled.reshape(n_samples, n_steps, n_features)
 joblib.dump(scaler, "lstm_scaler.joblib")
 print("✅ StandardScaler 已序列化至 lstm_scaler.joblib")
 
-# ── 6. TimeSeriesSplit（修正：消除時序資料洩漏）────────────────────────────
-#
-# 按時間排序索引（因為來自多個 ticker，要按照日期排序）
+# ── 6. TimeSeriesSplit ────────────────────────────────────────────────────
 sorted_idx = np.argsort(all_dates)
 X_sorted   = X_scaled[sorted_idx]
 y_sorted   = all_y[sorted_idx]
@@ -130,7 +123,7 @@ val_scores = []
 print("🔍 TimeSeriesSplit 交叉驗證（取最後一折作為最終 validation）...")
 best_val_fold = None
 for fold, (train_idx, val_idx) in enumerate(tscv.split(X_sorted)):
-    best_val_fold = (train_idx, val_idx)   # 最後一折保留
+    best_val_fold = (train_idx, val_idx)
 
 train_idx, val_idx = best_val_fold
 X_train, X_val = X_sorted[train_idx], X_sorted[val_idx]
@@ -139,7 +132,7 @@ y_train, y_val = y_sorted[train_idx], y_sorted[val_idx]
 print(f"   訓練集大小: {len(X_train)}, 驗證集大小: {len(X_val)}")
 print(f"   （驗證集為時間上最新的 {len(X_val)} 筆，模擬實盤前向驗證）")
 
-# ── 7. 模型定義（輕量化，確保 CPU 15 分鐘內完成）────────────────────────
+# ── 7. 模型定義 ───────────────────────────────────────────────────────────
 model = Sequential([
     LSTM(64, input_shape=(TIME_STEPS, n_features), return_sequences=True),
     Dropout(0.3),
@@ -167,7 +160,7 @@ history = model.fit(
     X_train, y_train,
     epochs=100,
     batch_size=128,
-    validation_data=(X_val, y_val),   # 使用時序切割的 val set
+    validation_data=(X_val, y_val),
     callbacks=[early_stop],
     verbose=1
 )
