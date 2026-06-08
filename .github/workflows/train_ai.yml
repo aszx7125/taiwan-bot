@@ -28,31 +28,39 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        # 雙重保險，確保機器學習套件有安裝
-        pip install scikit-learn joblib
+        pip install scikit-learn joblib tensorflow supabase pandas numpy
 
-    - name: 🧠 啟動機器學習深度訓練 (連線 Supabase)
+    - name: 🌳 啟動靜態大腦訓練 (LightGBM)
       run: python train_tools/ai_trainer.py
       env:
         PYTHONPATH: .
-        # 🔑 從 GitHub Secrets 自動抓取金鑰
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-    - name: Commit and Push Updated Models
+    - name: 🔮 啟動時序大腦訓練 (LSTM)
+      run: python train_lstm.py
+      env:
+        PYTHONPATH: .
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+    - name: 📤 Commit and Push Updated Models
       run: |
-          git config --local user.email "bot@quant.factory"
-          git config --local user.name "AI-Trainer-Bot"
-          
-          # 將有變動的檔案加入暫存區
-          git add quant_model.joblib model_features.joblib lstm_momentum_brain.h5 market_snapshot.json
-          
-          # 提交變更 (如果沒有變動則略過)
-          git commit -m "🤖 自動更新：雙核深度大腦與真實勝率報告 [Skip CI]" || echo "No changes to commit"
+        git config --local user.email "bot@quant.factory"
+        git config --local user.name "AI-Trainer-Bot"
+        
+        # 將兩個大腦的檔案與勝率報告都加入暫存區 (包含最新的 lstm_scaler.joblib)
+        git add quant_model.joblib model_features.joblib lstm_momentum_brain.h5 lstm_scaler.joblib model_metrics.json
+        
+        # 檢查是否有變動，有變動才 commit
+        if git diff --quiet && git diff --cached --quiet; then
+          echo "沒有變更需要提交。"
+        else
+          git commit -m "🤖 自動更新：雙核深度大腦與真實勝率報告 [Skip CI]"
           
           # 🔥 關鍵防撞車機制：在推播前，先以 rebase 方式拉取遠端最新程式碼
           git pull --rebase origin main
           
           # 最後再安全地推播上去
-          git push
-        
+          git push origin main
+        fi

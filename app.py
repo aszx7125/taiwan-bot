@@ -131,7 +131,6 @@ with st.sidebar:
 
     if st.button("🧠 啟動雙模型重新訓練", use_container_width=True):
         success, msg = trigger_github_workflow("train_ai.yml")
-        success, msg = trigger_github_workflow("quant_pipeline.yml")
         if success:
             st.success(msg)
         else:
