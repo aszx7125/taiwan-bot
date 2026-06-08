@@ -1,4 +1,4 @@
-# data_pipeline.py — 終極強固回測版
+# data_pipeline.py — 終極強固防爆回測版
 import os
 import json
 import requests
@@ -169,7 +169,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         # 🛡️ 鐵律：在進行任何時序移位前，先進行個股與日期的絕對物理排序並鎖定索引
         df = df.sort_values(by=['ticker', 'date_norm']).reset_index(drop=True)
 
-        # ── 2. 在純淨無干擾狀態下，優先計算所有時序與未來移位特徵 (解決崩潰核心) ──
+        # ── 2. 計算時序與未來移位特徵 ──
         df['daily_return'] = df.groupby('ticker')['close_price'].pct_change().fillna(0)
         df['entry_price_real'] = df.groupby('ticker')['close_price'].shift(-1)
         df['future_close_6d']  = df.groupby('ticker')['close_price'].shift(-6)
@@ -186,6 +186,9 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
         for col in ['rs_index', 'volatility', 'turnover', 'broker_conc']:
             df[col] = pd.to_numeric(df.get(col, 0.0), errors='coerce').fillna(0.0)
         df['vol_ratio'] = pd.to_numeric(df.get('vol_ratio', 1.0), errors='coerce').fillna(1.0)
+
+        # 🔥🔥🔥 核心防爆修正：抹除所有因為運算產生之無限大 (Infinity) 數值
+        df.replace([np.inf, -np.inf], 0, inplace=True)
 
         # ── 3. 雙核模型雙管預測 ─────────────────────────────────────────────
         input_df   = df[features].astype(float).fillna(0)
