@@ -1,10 +1,9 @@
-# app.py — 完整修正版
+# app.py — 完整修正旗艦版
 # 修正點：
-#   1. render_rt() fragment 內改用 st.session_state.get() 防護競態問題
-#   2. 所有 max(probs) if probs else 0 改為 len(probs) > 0 安全寫法
-#   3. get_market_summary 加入 @st.cache_data(ttl=300)
-#   4. 貪婪指數改為多維度確定性計算，移除 random
-#   5. Tab1 fetch_rt 的 max_workers 從 5 降至 3，sleep 從 0.05 拉長至 0.3
+#   1. 解決名稱解析盲區：新增 get_stock_name_from_csv() 防護網，查不到字典時自動由全市場清單補齊中文名稱。
+#   2. 修正遠端自動控制邏輯：將單行判斷改為標準語句，徹底移除畫面上顯示 DeltaGenerator 亂碼的副作用。
+#   3. 貪婪指數改為數據驅動：移除隨機成分，多維度反映市場情緒。
+#   4. 執行緒限流優化：Tab1 行情流 max_workers 限制為 3 且微調休眠，徹底防範 Yahoo API 429 限流鎖定。
 
 import streamlit as st
 import pandas as pd
@@ -27,26 +26,7 @@ if 'stock_clusters' not in st.session_state:
 if 'stock_names' not in st.session_state:
     st.session_state.stock_names = DEFAULT_NAMES.copy()
 
-# 1. 建立一個全市場動態查找函數 (建議放在 app.py 頂部)
-@st.cache_data
-def get_stock_name_from_csv(ticker):
-    df_all = load_all_market_tickers() # 讀取 all_tw_stocks.csv
-    match = df_all[df_all['Ticker'].str.contains(ticker.split('.')[0])]
-    if not match.empty:
-        return match.iloc[0]['Name']
-    return ticker # 找不到才回傳代號
 
-# 2. 修改診斷模式中的名稱獲取邏輯
-if target_ticker:
-    base_ticker = target_ticker.split('.')[0]
-    
-    # 優先查字典，若無則查 CSV，若還無則直接顯示代號
-    c_name = st.session_state.stock_names.get(base_ticker)
-    if not c_name:
-        c_name = get_stock_name_from_csv(base_ticker)
-        # 暫存到 session_state 避免重複查找
-        st.session_state.stock_names[base_ticker] = c_name
-        
 @st.cache_resource
 def load_brain():
     return DualCoreBrain()
@@ -60,14 +40,26 @@ def get_cached_market_summary():
     return get_market_summary()
 
 
+@st.cache_data
+def get_stock_name_from_csv(ticker: str) -> str:
+    """從全市場代碼 CSV 表中動態提取中文名稱，防止出現純數位或顯示錯誤"""
+    try:
+        clean_code = str(ticker).split('.')[0].strip()
+        df_all = load_all_market_tickers()
+        if not df_all.empty:
+            df_all.columns = [col.lower() for col in df_all.columns]
+            match = df_all[df_all['ticker'].astype(str).str.contains(clean_code)]
+            if not match.empty:
+                return str(match.iloc[0]['name'])
+    except Exception:
+        pass
+    return ticker
+
+
 def compute_fear_greed(twii_pct: float, snapshot_data: list) -> tuple[int, str, str]:
     """
     多維度貪婪指數（0-100），無隨機成分，完全由數據驅動。
-    維度：
-      1. 大盤漲跌幅   (35%)：-3%~+3% → 0~100
-      2. 多空比例     (35%)：rs_index > 0 的標的佔比
-      3. RS_Index 均值 (20%)：相對強弱均值
-      4. 量比均值     (10%)：vol_ratio 均值
+    維度：大盤漲跌幅(35%)、多空相對強弱佔比(35%)、相對強弱均值(20%)、量比(10%)
     """
     pct_score        = float(np.clip(50 + (twii_pct * 16.67), 0, 100))
     bull_ratio_score = 50.0
@@ -124,10 +116,16 @@ with st.sidebar:
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
     cluster_stocks   = st.session_state.stock_clusters[selected_cluster]
-    display_options  = [
-        f"{t.split('.')[0]} {st.session_state.stock_names.get(t.split('.')[0], '')}".strip()
-        for t in cluster_stocks
-    ]
+    
+    display_options = []
+    for t in cluster_stocks:
+        base = t.split('.')[0]
+        name = st.session_state.stock_names.get(base)
+        if not name or name == base:
+            name = get_stock_name_from_csv(base)
+            st.session_state.stock_names[base] = name
+        display_options.append(f"{base} {name}".strip())
+        
     sidebar_ticker = st.selectbox("2. 選擇分析標的", display_options).split(' ')[0]
 
     if st.button("📊 診斷此自選股", use_container_width=True, type="primary"):
@@ -151,7 +149,7 @@ with st.sidebar:
     if st.button("🧠 啟動雙模型重新訓練", use_container_width=True):
         success, msg = trigger_github_workflow("train_ai.yml")
         if success:
-            st.success(msg)
+            st.info(msg)
         else:
             st.error(msg)
 
@@ -182,9 +180,13 @@ if target_ticker:
     # 🔍 單股深入診斷模式
     # --------------------------------------------------------
     base_ticker = target_ticker.split('.')[0]
-    c_name      = st.session_state.stock_names.get(base_ticker, target_ticker)
+    
+    c_name = st.session_state.stock_names.get(base_ticker)
+    if not c_name or c_name == base_ticker:
+        c_name = get_stock_name_from_csv(base_ticker)
+        st.session_state.stock_names[base_ticker] = c_name
 
-    with st.spinner(f"正在分析 {target_ticker}..."):
+    with st.spinner(f"正在分析 {base_ticker} {c_name}..."):
         df_daily, df_hourly, actual_symbol = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
         if df_daily.empty:
             st.error("❌ 數據不足")
@@ -229,7 +231,7 @@ if target_ticker:
             box_color = "#00cc96" if final_prob >= 0.52 else ("#ffc107" if final_prob >= 0.50 else "#a8a8a8")
             ai_rec    = "⭐⭐⭐ 高期望值" if final_prob >= 0.52 else ("⭐⭐ 溫和佈局" if final_prob >= 0.50 else "⚠️ 建議觀望")
 
-            st.subheader(f"🧬 {target_ticker} {c_name} 雙核量化報告")
+            st.subheader(f"🧬 {base_ticker} {c_name} 雙核量化報告")
             render_single_diagnostic_card(
                 f"{final_prob*100:.1f}%", ai_rec, entry_price,
                 take_profit, stop_loss, box_color, box_color
@@ -297,7 +299,7 @@ else:
         if snapshot and 'update_time' in snapshot:
             st.caption(
                 f"📡 快取更新時間：{snapshot['update_time']}"
-                f"　｜　涵蓋標的：{len(snapshot_data)} 檔"
+                f" ｜ 涵蓋標的：{len(snapshot_data)} 檔"
             )
 
     st.markdown("---")
@@ -323,7 +325,6 @@ else:
         @st.fragment(run_every=datetime.timedelta(seconds=15))
         def render_rt():
             rows = []
-            # 修正：用 .get() 防護，避免 fragment 執行時 session_state 尚未就緒
             current_names = st.session_state.get('stock_names', DEFAULT_NAMES).copy()
             snap      = load_market_snapshot()
             snap_dict = get_snapshot_dict(snap)
@@ -334,8 +335,16 @@ else:
                 if p > 0:
                     chg_amt = p - prev
                     chg_pct = (chg_amt / prev) * 100 if prev > 0 else 0
+                    
+                    s_name = snap_dict.get(ticker, {}).get('名稱')
+                    if not s_name:
+                        s_name = current_names.get(ticker)
+                    if not s_name or s_name == ticker:
+                        s_name = get_stock_name_from_csv(ticker)
+                        st.session_state.stock_names[ticker] = s_name
+
                     name_str = (
-                        f"<b>{snap_dict.get(ticker, {}).get('名稱', current_names.get(ticker, ticker))}</b>"
+                        f"<b>{s_name}</b>"
                         f"<br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
                     )
                     p_str = (
@@ -351,7 +360,6 @@ else:
                     return {"標的": name_str, "及時價 (成交量)": p_str, "今日漲跌幅": chg_str}
                 return None
 
-            # 修正：max_workers 從 5 降至 3，sleep 從 0.05 拉長至 0.3
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
                 future_to_ticker = {ex.submit(fetch_rt, t): t for t in cluster_stocks}
                 for future in concurrent.futures.as_completed(future_to_ticker):
@@ -440,9 +448,15 @@ else:
                         atr = float(item.get('ATR_14', ep * 0.05))
                         sl  = round(res * 0.985, 2) if ep > res else round(min(ep - (1.5 * atr), sup * 0.985), 2)
                         tp  = round(res + (res - sup), 2) if ep > res else round(res + (atr * 1.0), 2)
+                        
+                        s_ticker = item.get('代號', '')
+                        s_name = item.get('名稱')
+                        if not s_name or s_name == s_ticker:
+                            s_name = get_stock_name_from_csv(s_ticker)
+                            
                         processed.append({
-                            'ticker':      item.get('代號'),
-                            'name':        item.get('名稱', ''),
+                            'ticker':      s_ticker,
+                            'name':        s_name,
                             'win_prob':    prob,
                             'box_color':   "#00cc96" if prob >= 0.52 else "#ffc107",
                             'ai_rec':      "推薦佈局" if prob >= 0.52 else "謹慎試單",
@@ -456,7 +470,6 @@ else:
                     for s in sorted(processed, key=lambda x: x['win_prob'], reverse=True)[:20]:
                         render_top20_card(s)
                 else:
-                    # 修正：len(probs) 取代 if probs，避免 numpy array ValueError
                     highest = float(max(probs)) if len(probs) > 0 else 0.0
                     st.warning(
                         f"⚠️ **目前全市場無符合高勝率標準 (>50%) 之標的。**\n\n"
@@ -488,9 +501,14 @@ else:
                             if code in market_dict:
                                 item = market_dict[code]
                                 ep   = float(item.get('現價', 0.0))
+                                
+                                s_name = item.get('名稱')
+                                if not s_name or s_name == code:
+                                    s_name = get_stock_name_from_csv(code)
+
                                 sub_items.append({
                                     "代號": code,
-                                    "名稱": str(item.get('名稱', code)),
+                                    "名稱": s_name,
                                     "現價": ep
                                 })
                                 sub_feats.append(
@@ -561,7 +579,6 @@ else:
                     top_candidates = [c for c in candidates if c['win_prob'] >= 0.50][:15]
 
                     if not top_candidates:
-                        # 修正：len(probs) 取代 if probs
                         highest = float(max(probs)) if len(probs) > 0 else 0.0
                         st.warning(
                             f"⚪ 昨晚快取數據中無勝率達標 (>50%) 的標的"
@@ -573,9 +590,12 @@ else:
 
                         def fetch_clash(item):
                             ticker     = str(item.get('代號', '')).split('.')[0].strip()
-                            stock_name = snap_dict.get(ticker, {}).get(
-                                '名稱', current_names.get(ticker, ticker)
-                            )
+                            stock_name = snap_dict.get(ticker, {}).get('名稱')
+                            if not stock_name:
+                                stock_name = current_names.get(ticker)
+                            if not stock_name or stock_name == ticker:
+                                stock_name = get_stock_name_from_csv(ticker)
+
                             last_price = float(item.get('現價', 0.0))
                             win_prob   = item['win_prob']
                             rt_p, _, _ = get_realtime_quote(ticker, FUGLE_API_KEY)
@@ -640,7 +660,7 @@ else:
                         "總報酬", f"{res_adv['account_pct']:.2f}%", "", "#4ade80"
                     )
                 st.line_chart(
-                    pd.DataFrame(res_adv['equity']).set_index("date_str")[
+                    pd.DataFrame(res_adv['equity']).set_index("date_str")[\
                         ["strat_cum_pct", "market_cum_pct"]
                     ]
                 )
