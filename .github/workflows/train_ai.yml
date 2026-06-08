@@ -45,7 +45,7 @@ jobs:
           git config --local user.name "AI-Trainer-Bot"
           
           # 將有變動的檔案加入暫存區
-          git add quant_model.joblib model_features.joblib lstm_momentum_brain.h5 model_metrics.json
+          git add quant_model.joblib model_features.joblib lstm_momentum_brain.h5 market_snapshot.json
           
           # 提交變更 (如果沒有變動則略過)
           git commit -m "🤖 自動更新：雙核深度大腦與真實勝率報告 [Skip CI]" || echo "No changes to commit"
