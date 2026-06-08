@@ -1,151 +1,147 @@
+# ai_trainer.py — 雙核同步滿血版
+# 負責訓練 LightGBM 靜態大腦，並與 LSTM 共享相同的特徵工程與評估標準
+
 import os
-import pandas as pd
+import json
+import datetime
 import numpy as np
-from supabase import create_client, Client
-from lightgbm import LGBMClassifier, early_stopping, log_evaluation
-from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
+import pandas as pd
 import joblib
+import lightgbm as lgb
+from sklearn.model_selection import TimeSeriesSplit
+from supabase import create_client
 
-# 🔑 Supabase 金鑰設定
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "請填入您的_SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "請填入您的_SUPABASE_KEY")
+# ── 1. 初始化 Supabase ────────────────────────────────────────────────────
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-def fetch_training_data():
-    """從 Supabase 撈取核心教材"""
-    print("🔗 正在連線至大腦記憶庫撈取全市場均衡教材...")
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    
-    all_data = []
-    offset = 0
-    limit = 1000
-    
-    while True:
-        response = supabase.table("quant_history").select("*").range(offset, offset + limit - 1).execute()
-        if not response.data: break
-        all_data.extend(response.data)
-        offset += limit
-        
-    df = pd.DataFrame(all_data)
-    if df.empty:
-        raise ValueError("❌ 資料庫是空的，請先執行歷史大回補！")
-        
-    df['date'] = pd.to_datetime(df['date'])
-    # 確保嚴格按照時間排序，這是避免未來函數的第一步
-    df = df.sort_values(by=['date', 'ticker']).reset_index(drop=True)
-    return df
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("❌ 錯誤：找不到 Supabase 環境變數金鑰，終止訓練。")
+    exit(1)
 
-def prepare_features_and_labels(df, holding_period=5):
-    """特徵清洗與高維度矩陣擴充 (完美對齊當前 DB Schema)"""
-    print(f"🧹 正在清洗數據與擴充高維度特徵矩陣 (目標預測 {holding_period} 天後突破)...")
-    
-    # 1. 嚴格標註未來解答 (設定 1.5% 的實質獲利門檻，濾除盤整雜訊)
-    df[f'future_close_{holding_period}d'] = df.groupby('ticker')['close_price'].shift(-holding_period)
-    df = df.dropna(subset=[f'future_close_{holding_period}d']).copy()
-    
-    # 計算真實報酬率 R = (Close_future - Close_current) / Close_current
-    df['future_return'] = (df[f'future_close_{holding_period}d'] - df['close_price']) / df['close_price']
-    df['is_win'] = (df['future_return'] > 0.015).astype(int) # 漲幅 > 1.5% 才算有效突破
-    
-    # 2. SMC 特徵解耦與型態萃取
-    df['pattern'] = df['pattern'].fillna("")
-    df['is_pullback'] = df['pattern'].str.contains("量縮回踩").astype(int)
-    df['is_squeeze'] = df['pattern'].str.contains("區間壓縮").astype(int)
-    df['is_divergence'] = df['pattern'].str.contains("底背離").astype(int)
-    
-    # 精確分離流動性掠奪與 POC，避免神經網路混淆市場結構
-    df['is_liquidity_sweep'] = df['pattern'].str.contains("流動性掠奪").astype(int)
-    df['is_poc_rejection'] = df['pattern'].str.contains("POC").astype(int)
-    
-    # 3. 基礎量化指標對齊
-    df['rs_index'] = pd.to_numeric(df['rs_index'], errors='coerce').fillna(0)
-    df['vol_ratio'] = pd.to_numeric(df['vol_ratio'], errors='coerce').fillna(1.0) # 成交量放大倍數
-    
-    # 4. 防禦武器與微觀籌碼
-    df['volatility'] = pd.to_numeric(df['volatility'], errors='coerce').fillna(0)
-    df['turnover'] = pd.to_numeric(df['turnover'], errors='coerce').fillna(0)
-    df['broker_conc'] = pd.to_numeric(df['broker_conc'], errors='coerce').fillna(0)
-    
-    # 對齊所有高維度特徵 (共 10 大特徵)
-    feature_columns = [
-        'is_pullback', 'is_squeeze', 'is_divergence', 
-        'is_liquidity_sweep', 'is_poc_rejection', 
-        'rs_index', 'vol_ratio', 'volatility', 'turnover',
-        'broker_conc'
-    ]
-    
-    # 5. 🛠️ 嚴格時間序列切分 (消滅未來函數)
-    split_index = int(len(df) * 0.8)
-    
-    train_df = df.iloc[:split_index]
-    test_df = df.iloc[split_index:]
-    
-    X_train = train_df[feature_columns]
-    y_train = train_df['is_win']
-    X_test = test_df[feature_columns]
-    y_test = test_df['is_win']
-    
-    print(f"📊 切分完成: 訓練集 {len(X_train)} 筆 (過去), 盲測集 {len(X_test)} 筆 (近期)")
-    return X_train, X_test, y_train, y_test, feature_columns
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def train_ai_model():
-    df = fetch_training_data()
-    
+# ── 2. 拉取全歷史資料庫 ───────────────────────────────────────────────────
+print("📡 正在從 Supabase 拔取 quant_history 全量資料...")
+all_data, offset, limit = [], 0, 1000
+while True:
+    res = supabase.table("quant_history").select("*").range(offset, offset+limit-1).execute()
+    if not res.data:
+        break
+    all_data.extend(res.data)
+    offset += limit
+
+df = pd.DataFrame(all_data)
+df['date']        = pd.to_datetime(df['date'])
+df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
+df = df.sort_values(by=['ticker', 'date']).reset_index(drop=True)
+print(f"✅ 資料拉取完成，共 {len(df)} 筆樣本。")
+
+# ── 3. 特徵工程 (與 LSTM 嚴格對齊) ──────────────────────────────────────────
+print("🛠️ 執行特徵空間數位化手術...")
+df['pattern'] = df['pattern'].fillna("")
+df['is_pullback']        = df['pattern'].str.contains("量縮回踩").astype(float)
+df['is_squeeze']         = df['pattern'].str.contains("區間壓縮").astype(float)
+df['is_divergence']      = df['pattern'].str.contains("底背離").astype(float)
+df['is_liquidity_sweep'] = df['pattern'].str.contains("流動性掠奪").astype(float)
+df['is_poc_rejection']   = df['pattern'].str.contains("POC").astype(float)
+
+df['daily_return'] = df.groupby('ticker')['close_price'].pct_change().fillna(0)
+
+numeric_cols = ['daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 'turnover']
+for col in numeric_cols:
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+# 🔥 核心防護網：徹底抹除無限大 (Infinity) 數值
+df.replace([np.inf, -np.inf], 0, inplace=True)
+
+feature_cols = numeric_cols + [
+    'is_pullback', 'is_squeeze', 'is_divergence',
+    'is_liquidity_sweep', 'is_poc_rejection'
+]
+
+# ── 4. 標籤建立與資料清理 ─────────────────────────────────────────────────
+FUTURE_DAYS = 5
+df['future_return'] = df.groupby('ticker')['close_price'].shift(-FUTURE_DAYS) / df.groupby('ticker')['close_price'].shift(-1) - 1
+df.replace([np.inf, -np.inf], 0, inplace=True)
+
+# 刪除尚未開獎的最新幾天資料
+df_clean = df.dropna(subset=['future_return']).copy()
+df_clean['target_label'] = (df_clean['future_return'] > 0.02).astype(int)
+
+# 依時間排序，確保不發生未來數據洩漏
+df_clean = df_clean.sort_values('date').reset_index(drop=True)
+
+X = df_clean[feature_cols]
+y = df_clean['target_label']
+
+if len(X) < 100:
+    print("❌ 樣本過少，無法訓練 LightGBM。")
+    exit(1)
+
+print(f"✅ 特徵萃取完成，有效樣本數: {len(X)}")
+
+# ── 5. TimeSeriesSplit 交叉驗證與訓練 ──────────────────────────────────────
+tscv = TimeSeriesSplit(n_splits=5)
+best_val_fold = None
+for train_idx, val_idx in tscv.split(X):
+    best_val_fold = (train_idx, val_idx)
+
+train_idx, val_idx = best_val_fold
+X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+
+print(f"🌳 啟動 LightGBM 靜態大腦煉丹 (Train: {len(X_train)}, Val: {len(X_val)})...")
+
+model = lgb.LGBMClassifier(
+    n_estimators=200,
+    learning_rate=0.05,
+    max_depth=5,
+    num_leaves=31,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42,
+    importance_type='gain',
+    verbose=-1
+)
+
+# 訓練並加入 Early Stopping
+model.fit(
+    X_train, y_train,
+    eval_set=[(X_val, y_val)],
+    callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
+)
+
+# ── 6. 盲測勝率計算 ───────────────────────────────────────────────────────
+val_preds = model.predict(X_val)
+blind_win_rate = float(np.mean(val_preds == y_val))
+print(f"🎯 盲測勝率 (Val Accuracy): {blind_win_rate * 100:.2f}%")
+
+# ── 7. 儲存模型與特徵清單 ─────────────────────────────────────────────────
+joblib.dump(model, "quant_model.joblib")
+joblib.dump(feature_cols, "model_features.joblib")
+print("✅ LightGBM 模型與特徵清單已儲存 (quant_model.joblib, model_features.joblib)")
+
+# ── 8. 寫入 model_metrics.json (核心補齊邏輯) ─────────────────────────────
+metrics_path = "model_metrics.json"
+metrics = {}
+
+# 先讀取舊有的數據 (保留 LSTM 剛寫入的紀錄)
+if os.path.exists(metrics_path):
     try:
-        X_train, X_test, y_train, y_test, feature_cols = prepare_features_and_labels(df, holding_period=5)
-    except Exception as e:
-        print(f"⚠️ 特徵處理失敗: {e}")
-        return
-        
-    if len(X_train) < 100:
-        print("⚠️ 有效樣本數不足，請確保歷史回補成功。")
-        return
-    
-    print("🤖 啟動 LightGBM 殘差鏈式學習引擎 (具備早停機制)...")
-    
-    model = LGBMClassifier(
-        n_estimators=500,        
-        learning_rate=0.03,      
-        max_depth=5,             
-        num_leaves=20,           
-        subsample=0.8,           
-        colsample_bytree=0.8,    
-        random_state=42,
-        class_weight='balanced', 
-        n_jobs=-1 
-    )
-    
-    # 深度訓練與早停監控
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_test, y_test)],
-        eval_metric='auc',
-        callbacks=[
-            early_stopping(stopping_rounds=30), 
-            log_evaluation(period=50)           
-        ]
-    )
-    
-    # 嚴格盲測評估
-    y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1]
-    
-    acc = accuracy_score(y_test, y_pred)
-    auc = roc_auc_score(y_test, y_prob)
-    
-    print(f"\n✅ LightGBM 訓練完成！")
-    print(f"   - 盲測準確率 (Accuracy): {acc * 100:.2f}%")
-    print(f"   - 模型鑑別力 (AUC Score): {auc:.4f}")
-    
-    print("\n🔬 LightGBM 萃取出的全市場股性特徵權重分布：")
-    importances = model.feature_importances_
-    for col, imp in sorted(zip(feature_cols, importances), key=lambda x: x[1], reverse=True):
-        if imp > 0:
-            print(f"   - {col}: {imp} 次有效分裂裂變")
-        
-    # 封裝檔案
-    joblib.dump(model, "quant_model.joblib")
-    joblib.dump(feature_cols, "model_features.joblib")
-    print("\n💾 旗艦版 LightGBM 大腦已成功封裝！隨時可供前線即時推論使用。")
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            metrics = json.load(f)
+    except Exception:
+        pass
 
-if __name__ == "__main__":
-    train_ai_model()
+# 更新 LightGBM 的數據
+metrics["lgbm"] = {
+    "blind_win_rate": round(blind_win_rate, 4),
+    "last_train": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+}
+
+# 寫回檔案
+with open(metrics_path, "w", encoding="utf-8") as f:
+    json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+print("✅ model_metrics.json 已成功更新 LightGBM 勝率！")
