@@ -27,7 +27,26 @@ if 'stock_clusters' not in st.session_state:
 if 'stock_names' not in st.session_state:
     st.session_state.stock_names = DEFAULT_NAMES.copy()
 
+# 1. 建立一個全市場動態查找函數 (建議放在 app.py 頂部)
+@st.cache_data
+def get_stock_name_from_csv(ticker):
+    df_all = load_all_market_tickers() # 讀取 all_tw_stocks.csv
+    match = df_all[df_all['Ticker'].str.contains(ticker.split('.')[0])]
+    if not match.empty:
+        return match.iloc[0]['Name']
+    return ticker # 找不到才回傳代號
 
+# 2. 修改診斷模式中的名稱獲取邏輯
+if target_ticker:
+    base_ticker = target_ticker.split('.')[0]
+    
+    # 優先查字典，若無則查 CSV，若還無則直接顯示代號
+    c_name = st.session_state.stock_names.get(base_ticker)
+    if not c_name:
+        c_name = get_stock_name_from_csv(base_ticker)
+        # 暫存到 session_state 避免重複查找
+        st.session_state.stock_names[base_ticker] = c_name
+        
 @st.cache_resource
 def load_brain():
     return DualCoreBrain()
