@@ -1,4 +1,3 @@
-# app.py — 終極優化旗艦版
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -50,25 +49,34 @@ def get_stock_name_from_csv(ticker: str) -> str:
 
 
 def compute_fear_greed(twii_pct: float, snapshot_data: list) -> tuple[int, str, str]:
-    """多維度數據驅動貪婪指數"""
-    pct_score        = float(np.clip(50 + (twii_pct * 16.67), 0, 100))
+    """多維度數據驅動貪婪指數 - 🔥 修復版"""
+    # 🔥 修復：清理輸入避免inf
+    twii_pct = np.nan_to_num(twii_pct, nan=0.0, posinf=5.0, neginf=-5.0)
+    twii_pct = np.clip(twii_pct, -10, 10)
+    
+    pct_score = float(np.clip(50 + (twii_pct * 16.67), 0, 100))
     bull_ratio_score = 50.0
-    rs_score         = 50.0
-    vol_score        = 50.0
+    rs_score = 50.0
+    vol_score = 50.0
 
     if snapshot_data and len(snapshot_data) > 0:
         df = pd.DataFrame(snapshot_data)
         if 'rs_index' in df.columns:
             df['rs_index'] = pd.to_numeric(df['rs_index'], errors='coerce').fillna(0)
+            # 🔥 修復：清理極值
+            df['rs_index'] = df['rs_index'].replace([np.inf, -np.inf], 0).clip(-100, 100)
             bull_ratio_score = float((df['rs_index'] > 0).mean()) * 100
-            mean_rs  = float(df['rs_index'].mean())
+            mean_rs = float(df['rs_index'].mean())
             rs_score = float(np.clip(50 + (mean_rs * 5), 0, 100))
+        
         if 'vol_ratio' in df.columns:
             df['vol_ratio'] = pd.to_numeric(df['vol_ratio'], errors='coerce').fillna(1.0)
-            mean_vol  = float(df['vol_ratio'].mean())
+            # 🔥 修復：清理極值
+            df['vol_ratio'] = df['vol_ratio'].replace([np.inf, -np.inf], 1.0).clip(0.1, 10)
+            mean_vol = float(df['vol_ratio'].mean())
             vol_score = float(np.clip(50 + (mean_vol - 1.0) * 50, 0, 100))
 
-    final     = pct_score * 0.35 + bull_ratio_score * 0.35 + rs_score * 0.20 + vol_score * 0.10
+    final = pct_score * 0.35 + bull_ratio_score * 0.35 + rs_score * 0.20 + vol_score * 0.10
     index_val = int(np.clip(final, 0, 100))
 
     if index_val >= 75:   label, color = "極度貪婪", "#ff4b4b"
@@ -102,7 +110,7 @@ def render_fear_greed_gauge(index_val: int, label: str, color: str):
 with st.sidebar:
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
-    cluster_stocks   = st.session_state.stock_clusters[selected_cluster]
+    cluster_stocks = st.session_state.stock_clusters[selected_cluster]
     
     display_options = []
     for t in cluster_stocks:
@@ -171,18 +179,24 @@ if target_ticker:
         if df_daily.empty:
             st.error("❌ 數據不足")
         else:
-            news_s      = get_stock_news(c_name)
-            today       = df_daily.iloc[-1]
-            yesterday   = df_daily.iloc[-2]
+            news_s = get_stock_news(c_name)
+            today = df_daily.iloc[-1]
+            yesterday = df_daily.iloc[-2]
             entry_price = float(today.get('Close', 0.0))
-            y_close     = float(yesterday.get('Close', entry_price))
+            y_close = float(yesterday.get('Close', entry_price))
             rt_p, rt_v, _ = get_realtime_quote(base_ticker, FUGLE_API_KEY)
             if rt_p > 0: entry_price = rt_p
 
-            p_change    = ((entry_price - y_close) / y_close) * 100 if y_close > 0 else 0.0
-            res_level   = float(today.get('Res_20', entry_price * 1.05))
-            sup_level   = float(today.get('Sup_20', entry_price * 0.95))
-            atr_14      = float(yesterday.get('ATR_14', entry_price * 0.05))
+            # 🔥 修復：安全計算漲跌幅
+            if y_close > 0.01:
+                p_change = ((entry_price - y_close) / max(y_close, 0.01)) * 100
+                p_change = np.nan_to_num(p_change, nan=0.0, posinf=20.0, neginf=-20.0)
+            else:
+                p_change = 0.0
+            
+            res_level = float(today.get('Res_20', entry_price * 1.05))
+            sup_level = float(today.get('Sup_20', entry_price * 0.95))
+            atr_14 = float(yesterday.get('ATR_14', entry_price * 0.05))
             broker_conc = float(today.get('Broker_Concentration', 0.0))
 
             micro_status_text = "⚪ 1h 均線下弱勢震盪"
@@ -192,26 +206,30 @@ if target_ticker:
                 elif bool(last_hour.get('MACD_Cross_Up', False)): micro_status_text = "📈 1h MACD 金叉發動"
                 elif bool(last_hour.get('Vol_Surge_1h', False)): micro_status_text = "🌊 1h 微觀異常爆量"
 
-            low_vol_pb  = bool(today.get('Low_Vol_Pullback', False))
-            smc_text    = "量縮回踩" if low_vol_pb else "一般常態箱體震盪"
-            stop_loss   = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
+            low_vol_pb = bool(today.get('Low_Vol_Pullback', False))
+            smc_text = "量縮回踩" if low_vol_pb else "一般常態箱體震盪"
+            stop_loss = round(min(entry_price - (1.5 * atr_14), sup_level * 0.985), 2)
             take_profit = round(res_level, 2) if low_vol_pb else round(res_level + (atr_14 * 1.0), 2)
 
             snapshot_dict = get_snapshot_dict(load_market_snapshot())
-            feat_dict     = brain.extract_features(base_ticker, entry_price, snapshot_dict, current_vol=rt_v, fallback_atr=atr_14, fallback_pattern=smc_text)
+            feat_dict = brain.extract_features(base_ticker, entry_price, snapshot_dict, current_vol=rt_v, fallback_atr=atr_14, fallback_pattern=smc_text)
             final_prob = brain.predict_win_rates([feat_dict])[0]
+            
+            # 🔥 修復：清理勝率
+            final_prob = np.nan_to_num(final_prob, nan=0.5, posinf=0.99, neginf=0.01)
+            final_prob = float(np.clip(final_prob, 0.01, 0.99))
 
             box_color = "#00cc96" if final_prob >= 0.52 else ("#ffc107" if final_prob >= 0.50 else "#a8a8a8")
-            ai_rec    = "⭐⭐⭐ 高期望值" if final_prob >= 0.52 else ("⭐⭐ 溫和佈局" if final_prob >= 0.50 else "⚠️ 建議觀望")
+            ai_rec = "⭐⭐⭐ 高期望值" if final_prob >= 0.52 else ("⭐⭐ 溫和佈局" if final_prob >= 0.50 else "⚠️ 建議觀望")
 
             st.subheader(f"🧬 {base_ticker} {c_name} 雙核量化報告")
             render_single_diagnostic_card(f"{final_prob*100:.1f}%", ai_rec, entry_price, take_profit, stop_loss, box_color, box_color)
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("當前現價",    f"{entry_price:.2f}", f"{p_change:+.2f}%")
-            m2.metric("SMC 結構",    smc_text)
+            m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
+            m2.metric("SMC 結構", smc_text)
             m3.metric("1h 微觀狀態", micro_status_text)
-            m4.metric("機構集中度",  f"{broker_conc*100:.1f}%")
+            m4.metric("機構集中度", f"{broker_conc*100:.1f}%")
             st.markdown("---")
 
             infra_col1, infra_col2 = st.columns(2)
@@ -238,13 +256,13 @@ if target_ticker:
 else:
     # ── 滿血旗艦主視覺儀表板 ──
     st.markdown("### 🌍 大盤與情緒摘要")
-    summary       = get_cached_market_summary()
-    snapshot      = load_market_snapshot()
+    summary = get_cached_market_summary()
+    snapshot = load_market_snapshot()
     snapshot_data = snapshot.get('data', []) if snapshot else []
 
     if summary:
         twii_data = summary.get("加權指數", {"pct": 0.0, "price": 0.0, "change": 0.0})
-        twii_pct  = float(twii_data.get('pct', 0.0))
+        twii_pct = float(twii_data.get('pct', 0.0))
         greed_val, greed_label, greed_color = compute_fear_greed(twii_pct, snapshot_data)
 
         c_idx, c_greed = st.columns([3, 1])
@@ -262,7 +280,6 @@ else:
     render_model_health_board(metrics)
     st.markdown("---")
 
-    # 🌟 核心修正二：拔除原本的 Tab 4 "🕷️ 產業鏈資金共振"，縮減為 5 大核心分頁
     tab1, tab2, tab3, tab5, tab6 = st.tabs([
         "📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "⚖️ 實盤開獎對撞", "🔬 策略回測"
     ])
@@ -285,8 +302,14 @@ else:
                 ticker = t.split('.')[0]
                 p, v, prev = get_realtime_quote(ticker, FUGLE_API_KEY)
                 if p > 0:
-                    chg_amt = p - prev
-                    chg_pct = (chg_amt / prev) * 100 if prev > 0 else 0
+                    # 🔥 修復：安全計算漲跌
+                    if prev > 0.01:
+                        chg_amt = p - prev
+                        chg_pct = (chg_amt / max(prev, 0.01)) * 100
+                        chg_pct = np.nan_to_num(chg_pct, nan=0.0, posinf=20.0, neginf=-20.0)
+                    else:
+                        chg_amt, chg_pct = 0, 0
+                    
                     s_name = snap_dict.get(ticker, {}).get('名稱') or current_names.get(ticker)
                     if not s_name or s_name == ticker:
                         s_name = get_stock_name_from_csv(ticker)
@@ -315,34 +338,34 @@ else:
 
         render_rt()
 
-    # ── Tab2：每日收盤趨勢 (核心修正三：徹底解決 0% 的顯示死局) ──
+    # ── Tab2：每日收盤趨勢 ──
     with tab2:
         st.markdown("#### 🔮 全市場雙核勝率分佈狀態透視")
         snap = load_market_snapshot()
         if snap and 'data' in snap and len(snap['data']) > 0:
-            raw_list      = snap['data']
-            snap_dict     = get_snapshot_dict(snap)
+            raw_list = snap['data']
+            snap_dict = get_snapshot_dict(snap)
             bulk_features = []
             for item in raw_list:
                 ticker = str(item.get('代號', '')).split('.')[0].strip()
-                ep     = float(item.get('現價', item.get('close_price', 0.0)))
+                ep = float(item.get('現價', item.get('close_price', 0.0)))
                 if ep > 0:
                     bulk_features.append(brain.extract_features(ticker, ep, snap_dict, current_vol=float(item.get('成交量', 0.0))))
             
             if bulk_features:
                 probs = np.array(brain.predict_win_rates(bulk_features))
+                # 🔥 修復：清理probs
+                probs = np.nan_to_num(probs, nan=0.5, posinf=0.99, neginf=0.01)
+                probs = np.clip(probs, 0.01, 0.99)
                 
-                # 1. 算出多元期望值指標，不只看單一門檻
                 avg_win_rate = float(np.mean(probs)) * 100
                 bullish_ratio = float(np.mean(probs >= 0.50)) * 100
                 highest_prob = float(np.max(probs)) * 100
                 
-                # 2. 進行多階梯隊分佈統計
                 tier_alpha = int(np.sum(probs >= 0.52))
-                tier_beta  = int(np.sum((probs >= 0.48) & (probs < 0.52)))
+                tier_beta = int(np.sum((probs >= 0.48) & (probs < 0.52)))
                 tier_gamma = int(np.sum(probs < 0.48))
                 
-                # 3. 三維矩陣儀表盤
                 c1, c2, c3 = st.columns(3)
                 c1.metric("🤖 絕對多頭標的比率 (勝率 ≥ 50%)", f"{bullish_ratio:.1f}%", help="全市場達到絕對勝率門檻的股票比例")
                 c2.metric("📊 全市場 AI 平均勝率期望值", f"{avg_win_rate:.1f}%", help="當前大腦對全台股總體動能的信心分佈")
@@ -351,7 +374,6 @@ else:
                 st.markdown("---")
                 st.markdown("##### 📦 雙核大腦全市場標的「勝率梯隊分佈」")
                 
-                # 4. 視覺化模擬進度條展示梯隊分佈
                 st.markdown(f"""
                 <div style="display: flex; width: 100%; height: 24px; border-radius: 6px; overflow: hidden; margin-bottom: 15px;">
                     <div style="background: #00cc96; width: {(tier_alpha/len(probs))*100}%; text-align: center; color: white; font-size: 12px; line-height: 24px;">{tier_alpha} 檔</div>
@@ -375,39 +397,43 @@ else:
         st.markdown("#### 🎯 全市場 AI 進出場戰術面板 (TOP 20)")
         snap = load_market_snapshot()
         if snap and 'data' in snap:
-            raw_list      = snap['data']
-            snap_dict     = get_snapshot_dict(snap)
+            raw_list = snap['data']
+            snap_dict = get_snapshot_dict(snap)
             valid_items, bulk_features = [], []
 
             for item in raw_list:
                 ticker = str(item.get('代號', '')).split('.')[0].strip()
-                ep     = float(item.get('現價', item.get('close_price', 0.0)))
+                ep = float(item.get('現價', item.get('close_price', 0.0)))
                 if ep > 0:
                     valid_items.append(item)
                     bulk_features.append(brain.extract_features(ticker, ep, snap_dict, current_vol=float(item.get('成交量', 0.0))))
 
             if valid_items:
-                probs     = brain.predict_win_rates(bulk_features)
+                probs = brain.predict_win_rates(bulk_features)
+                # 🔥 修復：清理probs
+                probs = np.nan_to_num(probs, nan=0.5, posinf=0.99, neginf=0.01)
+                probs = np.clip(probs, 0.01, 0.99)
+                
                 processed = []
                 for idx, item in enumerate(valid_items):
                     prob = probs[idx]
                     if prob >= 0.50:
-                        ep  = float(item.get('現價', 0.0))
+                        ep = float(item.get('現價', 0.0))
                         res = float(item.get('Res_20', ep * 1.05))
                         sup = float(item.get('Sup_20', ep * 0.95))
                         atr = float(item.get('ATR_14', ep * 0.05))
-                        sl  = round(res * 0.985, 2) if ep > res else round(min(ep - (1.5 * atr), sup * 0.985), 2)
-                        tp  = round(res + (res - sup), 2) if ep > res else round(res + (atr * 1.0), 2)
+                        sl = round(res * 0.985, 2) if ep > res else round(min(ep - (1.5 * atr), sup * 0.985), 2)
+                        tp = round(res + (res - sup), 2) if ep > res else round(res + (atr * 1.0), 2)
                         
                         s_ticker = item.get('代號', '')
                         s_name = item.get('名稱')
                         if not s_name or s_name == s_ticker: s_name = get_stock_name_from_csv(s_ticker)
                             
                         processed.append({
-                            'ticker':      s_ticker, 'name':        s_name, 'win_prob':    prob,
-                            'box_color':   "#00cc96" if prob >= 0.52 else "#ffc107",
-                            'ai_rec':      "推薦佈局" if prob >= 0.52 else "謹慎試單",
-                            'entry_price': ep, 'take_profit': tp, 'stop_loss':   sl, 'profit_reason': "波段"
+                            'ticker': s_ticker, 'name': s_name, 'win_prob': prob,
+                            'box_color': "#00cc96" if prob >= 0.52 else "#ffc107",
+                            'ai_rec': "推薦佈局" if prob >= 0.52 else "謹慎試單",
+                            'entry_price': ep, 'take_profit': tp, 'stop_loss': sl, 'profit_reason': "波段"
                         })
 
                 if processed:
@@ -423,21 +449,22 @@ else:
         if st.button("🔄 執行即時對撞比對", key="run_clash_realtime_btn"):
             snap = load_market_snapshot()
             if snap and 'data' in snap:
-                raw_list      = snap['data']
-                snap_dict     = get_snapshot_dict(snap)
+                raw_list = snap['data']
+                snap_dict = get_snapshot_dict(snap)
                 current_names = st.session_state.get('stock_names', DEFAULT_NAMES).copy()
                 valid_items, bulk_features = [], []
 
                 for item in raw_list:
                     ticker = str(item.get('代號', '')).split('.')[0].strip()
-                    ep     = float(item.get('現價', item.get('close_price', 0.0)))
+                    ep = float(item.get('現價', item.get('close_price', 0.0)))
                     if ep > 0:
                         valid_items.append(item)
                         bulk_features.append(brain.extract_features(ticker, ep, snap_dict, current_vol=float(item.get('成交量', 0.0))))
 
                 if not valid_items: st.warning("⚪ 歷史快取中無有效個股資料。")
                 else:
-                    probs      = brain.predict_win_rates(bulk_features)
+                    probs = brain.predict_win_rates(bulk_features)
+                    probs = np.nan_to_num(probs, nan=0.5, posinf=0.99, neginf=0.01)
                     candidates = sorted([{**item, 'win_prob': float(probs[i])} for i, item in enumerate(valid_items)], key=lambda x: x['win_prob'], reverse=True)
                     top_candidates = [c for c in candidates if c['win_prob'] >= 0.50][:15]
 
@@ -449,19 +476,21 @@ else:
                         clash_rows = []
 
                         def fetch_clash(item):
-                            ticker     = str(item.get('代號', '')).split('.')[0].strip()
+                            ticker = str(item.get('代號', '')).split('.')[0].strip()
                             stock_name = snap_dict.get(ticker, {}).get('名稱') or current_names.get(ticker)
                             if not stock_name or stock_name == ticker: stock_name = get_stock_name_from_csv(ticker)
 
                             last_price = float(item.get('現價', 0.0))
-                            win_prob   = item['win_prob']
+                            win_prob = item['win_prob']
                             rt_p, _, _ = get_realtime_quote(ticker, FUGLE_API_KEY)
-                            if rt_p > 0 and last_price > 0:
-                                clash_pct = ((rt_p - last_price) / last_price) * 100
+                            if rt_p > 0 and last_price > 0.01:
+                                # 🔥 修復：安全計算
+                                clash_pct = ((rt_p - last_price) / max(last_price, 0.01)) * 100
+                                clash_pct = np.nan_to_num(clash_pct, nan=0.0, posinf=20.0, neginf=-20.0)
                                 return {
-                                    "股票代號":        ticker, "股票名稱":        stock_name,
-                                    "雙核預測勝率":    f"{win_prob*100:.1f}%", "預測基準價 (昨)": f"${last_price:.2f}",
-                                    "實盤即時價 (今)": f"${rt_p:.2f}", "實盤開獎漲跌":    f"{clash_pct:+.2f}%", "_win_prob_raw":    win_prob
+                                    "股票代號": ticker, "股票名稱": stock_name,
+                                    "雙核預測勝率": f"{win_prob*100:.1f}%", "預測基準價 (昨)": f"${last_price:.2f}",
+                                    "實盤即時價 (今)": f"${rt_p:.2f}", "實盤開獎漲跌": f"{clash_pct:+.2f}%", "_win_prob_raw": win_prob
                                 }
                             return None
 
@@ -486,7 +515,7 @@ else:
         st.markdown("#### 🔬 實盤自動優化回測分析")
         with st.spinner("正在從資料庫拉取歷史特徵並進行回測運算..."):
             res_adv = fetch_advanced_backtest(initial_cap=user_capital, max_pos=user_max_pos)
-            status  = res_adv.get("status")
+            status = res_adv.get("status")
 
             if status == "ready":
                 c1, c2, c3 = st.columns(3)
