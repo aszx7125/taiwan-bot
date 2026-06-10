@@ -82,11 +82,16 @@ def trigger_github_workflow(workflow_filename):
     return False, f"發送失敗: {res.text}"
 
 
+@st.cache_data(ttl=60)  # 🔥 修改：從7200改為60秒，確保及時更新
 def load_model_metrics():
-    """讀取訓練時產生的盲測勝率報告"""
+    """讀取訓練時產生的盲測勝率報告 - 支援四核心"""
     default_metrics = {
         "lgbm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"},
-        "lstm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"}
+        "lstm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"},
+        "short": {  # 🔥 新增：空頭模型預設值
+            "lgbm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"},
+            "lstm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"}
+        }
     }
 
     if os.path.exists("model_metrics.json"):
@@ -97,8 +102,11 @@ def load_model_metrics():
                     default_metrics["lgbm"] = data["lgbm"]
                 if "lstm" in data:
                     default_metrics["lstm"] = data["lstm"]
-        except Exception:
-            pass
+                if "short" in data:  # 🔥 新增：讀取空頭數據
+                    default_metrics["short"] = data["short"]
+        except Exception as e:
+            print(f"讀取 model_metrics.json 失敗: {e}")
+    
     return default_metrics
 
 
@@ -106,7 +114,6 @@ def blend_model_probs(lgbm_prob: float, lstm_prob: float,
                       lgbm_weight: float = 0.6, lstm_weight: float = 0.4) -> float:
     """加權融合 LightGBM 與 LSTM 的勝率預測"""
     assert abs(lgbm_weight + lstm_weight - 1.0) < 1e-6, "權重合計必須等於 1.0"
-    # 🔥 新增：清理輸入
     lgbm_prob = np.nan_to_num(lgbm_prob, nan=0.5, posinf=0.99, neginf=0.01)
     lstm_prob = np.nan_to_num(lstm_prob, nan=0.5, posinf=0.99, neginf=0.01)
     return lgbm_weight * lgbm_prob + lstm_weight * lstm_prob
@@ -178,7 +185,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
             df[col] = pd.to_numeric(df.get(col, 0.0), errors='coerce').fillna(0.0)
         df['vol_ratio'] = pd.to_numeric(df.get('vol_ratio', 1.0), errors='coerce').fillna(1.0)
 
-        # 🔥 核心防護：抹除inf
         df.replace([np.inf, -np.inf], 0, inplace=True)
         df = df.fillna(0)
 
@@ -199,7 +205,6 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True,
                 if len(group) < TIME_STEPS:
                     continue
                 
-                # 🔥 核心修復：三層防護
                 feat_arr = group[feature_cols].astype(float).fillna(0).values
                 feat_arr = np.nan_to_num(feat_arr, nan=0.0, posinf=1.0, neginf=-1.0)
                 feat_arr = np.clip(feat_arr, -10, 10)
