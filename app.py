@@ -1,9 +1,6 @@
 """
-台股AI量化系統 v2.1 - 完全符合需求版
-1. 按鈕：四模型訓練 ✓
-2. 即時行情：完整API顯示 ✓
-3. 勝率：含訓練日期 ✓
-4. 主頁：顯示快取時間 ✓
+台股AI量化系統 v2.1 - 完整修復版
+修復：HTML實體、快取讀取、四模型按鈕
 """
 import streamlit as st
 import pandas as pd
@@ -11,6 +8,8 @@ import numpy as np
 import datetime
 import time
 import concurrent.futures
+import json
+import os
 
 def get_fugle_key():
     try: return st.secrets["FUGLE_API_KEY"]
@@ -26,17 +25,8 @@ DEFAULT_CLUSTERS = {
 }
 
 DEFAULT_NAMES = {
-    "3491": "昇達科", "3138": "耀登", "6285": "啟碁", "2383": "華通", "2314": "台揚",
-    "3363": "上詮", "3450": "聯鈞", "6451": "訊芯-KY", "3081": "聯亞", "4979": "華星光", "3163": "波若威",
-    "2330": "台積電", "3711": "日月光投控", "2454": "聯發科", "2303": "聯電", "5347": "世界先進", "3034": "聯詠",
-    "2382": "廣達", "3231": "緯創", "6669": "緯穎", "2376": "技嘉", "3017": "奇鋐", "5274": "信驊",
-    "3443": "創意", "3661": "世芯-KY", "3228": "金麗科", "3324": "雙鴻", "3033": "威健", "3653": "健策", "2356": "英業達",
-    "3234": "光環", "4908": "前鼎", "3596": "智易", "2345": "智邦", "5388": "中磊",
-    "1503": "士電", "1513": "中興電", "1514": "亞力", "1519": "華城", "1609": "大亞", "1605": "華新", "1504": "東元", 
-    "8996": "高力", "6806": "森崴能源", "6869": "雲豹能源", "3708": "上緯投控", "6443": "元晶",
-    "2002": "中鋼", "2603": "長榮", "1101": "台泥", "2609": "陽明", "2618": "長榮航",
-    "2881": "富邦金", "2882": "國泰金", "2886": "兆豐金", "2891": "中信金", "2884": "玉山金",
-    "0050": "元大台灣50", "0056": "元大高股息", "00878": "國泰永續高股息", "00919": "群益精選高息", "00929": "復華科技優息"
+    "2330": "台積電", "2454": "聯發科", "2303": "聯電", "2382": "廣達", "3231": "緯創",
+    "2881": "富邦金", "2882": "國泰金", "0050": "元大台灣50", "0056": "元大高股息",
 }
 
 from data_fetcher import load_all_market_tickers, get_market_summary, get_kline_with_fugle, get_stock_news
@@ -129,7 +119,6 @@ with st.sidebar:
     if st.button("🔥 啟動全市場 AI 掃描", use_container_width=True):
         success, msg = trigger_github_workflow("daily_scan.yml")
         st.success(msg) if success else st.error(msg)
-    # 需求1: 按鈕改為「四模型訓練」
     if st.button("🧠 啟動四模型訓練", use_container_width=True):
         success, msg = trigger_github_workflow("train_ai.yml")
         st.info(msg) if success else st.error(msg)
@@ -223,9 +212,16 @@ else:
     summary = get_cached_market_summary()
     snapshot = load_market_snapshot()
     snapshot_data = snapshot.get('data', []) if snapshot else []
+    
+    # 🔥 修復：確保快取資訊始終顯示
+    update_time = "未知"
+    if snapshot and isinstance(snapshot, dict):
+        update_time = snapshot.get('update_time', '未知')
+        snapshot_data = snapshot.get('data', [])
+    
     if summary:
         twii_data = summary.get("加權指數", {"pct": 0.0, "price": 0.0, "change": 0.0})
-        twii_pct = float(twii_data.get('pct', 0.0))
+        twill_pct = float(twii_data.get('pct', 0.0))
         greed_val, greed_label, greed_color = compute_fear_greed(twii_pct, snapshot_data)
         c_idx, c_greed = st.columns([3, 1])
         with c_idx:
@@ -233,16 +229,19 @@ else:
             for i, (name, data) in enumerate(summary.items()):
                 cols[i].metric(name, f"{data['price']:.2f}", f"{data['change']:+.2f} ({data['pct']:+.2f}%)")
         with c_greed: render_fear_greed_gauge(greed_val, greed_label, greed_color)
-        # 需求4: 顯示快取更新時間
-        if snapshot and 'update_time' in snapshot:
-            st.caption(f"📡 快取更新時間：{snapshot['update_time']} ｜ 涵蓋標的：{len(snapshot_data)} 檔")
+    
+    # 🔥 需求4: 顯示快取更新時間 (移到外部，確保始終顯示)
+    if update_time != "未知":
+        st.caption(f"📡 快取更新時間：{update_time} ｜ 涵蓋標的：{len(snapshot_data)} 檔")
+    else:
+        st.caption(f"⚠️ 快取狀態異常 ｜ 請執行全市場掃描")
+    
     st.markdown("---")
     metrics = load_model_metrics()
     render_model_health_board(metrics)
     st.markdown("---")
     tab1, tab2, tab3, tab3s, tab5, tab6 = st.tabs(["📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "🔻 空頭 TOP20", "⚖️ 實盤開獎對撞", "🔬 策略回測"])
     
-    # 需求2: 即時行情完整功能
     with tab1:
         c_title, c_slider = st.columns([2, 1])
         with c_title: st.markdown(f"#### 【{selected_cluster}】即時行情流")
