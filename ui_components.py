@@ -1,93 +1,107 @@
+"""
+UI組件 - 完整版
+"""
 import streamlit as st
 
+
 def render_top20_card(s):
-    """渲染全市場 Top 20 戰術卡片"""
+    """渲染 TOP20 卡片"""
+    color = s.get('box_color', '#00cc96')
+    prob = s.get('win_prob', 0) * 100
+    
     st.markdown(f"""
-    <div style="border: 2px solid {s['box_color']}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 15px;">
-        <h4 style="color: {s['box_color']}; margin-top: 0;">🎯 {s['ticker']} {s['name']}</h4>
-        <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 150px;">
-                <span style="color: gray; font-size: 14px;">雙核勝率</span><br>
-                <b style="font-size: 22px; color: {s['box_color']};">{s['win_prob']*100:.1f}%</b><br>
-                <span style="font-size: 12px; font-weight: bold; color: {s['box_color']};">{s['ai_rec']}</span>
+    <div style="border: 2px solid {color}; border-radius: 10px; padding: 18px; 
+                background-color: #1e1e1e; margin-bottom: 12px;">
+        <h4 style="color: {color}; margin-top: 0;">🎯 {s['ticker']} {s['name']}</h4>
+        <div style="display: flex; justify-content: space-between;">
+            <div>
+                <span style="color: gray; font-size: 13px;">勝率</span><br>
+                <b style="font-size: 22px; color: {color};">{prob:.1f}%</b>
             </div>
-            <div style="flex: 1; min-width: 120px;">
-                <span style="color: gray; font-size: 14px;">進場價</span><br>
+            <div style="text-align: right;">
+                <span style="color: gray; font-size: 13px;">進場</span><br>
                 <b style="font-size: 20px;">{s['entry_price']:.2f}</b>
             </div>
-            <div style="flex: 1; min-width: 150px;">
-                <span style="color: gray; font-size: 14px;">停利點</span><br>
-                <b style="font-size: 20px; color: #00cc96;">{s['take_profit']:.2f}</b><br>
-                <span style="font-size: 12px; color: #00cc96;">{s['profit_reason']}</span>
-            </div>
-            <div style="flex: 1; min-width: 120px;">
-                <span style="color: gray; font-size: 14px;">防守價</span><br>
-                <b style="font-size: 20px; color: #ff4b4b;">{s['stop_loss']:.2f}</b>
-            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
+
 
 def render_single_diagnostic_card(win_rate_str, recommendation, entry_price, take_profit, stop_loss, box_color, text_color):
-    """渲染單股專注模式的雙核主卡片"""
+    """單股診斷卡"""
     st.markdown(f"""
-    <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;">
-        <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 雙核戰術計畫</h4>
+    <div style="border: 2px solid {box_color}; border-radius: 10px; padding: 20px; 
+                background-color: #1e1e1e; margin-bottom: 20px;">
+        <h4 style="color: {box_color}; margin-top: 0;">🎯 AI 戰術計畫</h4>
         <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 180px; margin-bottom: 10px;">
-                <span style="color: gray; font-size: 14px;">1. 雙核加權真實勝率</span><br>
+            <div style="flex: 1; min-width: 150px;">
+                <span style="color: gray; font-size: 14px;">勝率</span><br>
                 <b style="font-size: 24px; color: {box_color};">{win_rate_str}</b><br>
-                <span style="font-size: 14px; font-weight: bold; color: {text_color};">{recommendation}</span>
+                <span style="font-size: 13px; color: {text_color};">{recommendation}</span>
             </div>
-            <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                <span style="color: gray; font-size: 14px;">2. 建議進場價</span><br>
-                <b style="font-size: 22px;">{entry_price:.2f}</b>
+            <div style="flex: 1; min-width: 120px;">
+                <span style="color: gray; font-size: 14px;">進場</span><br>
+                <b style="font-size: 20px;">{entry_price:.2f}</b>
             </div>
-            <div style="flex: 1; min-width: 200px; margin-bottom: 10px;">
-                <span style="color: gray; font-size: 14px;">3. 結構停利點</span><br>
-                <b style="font-size: 22px; color: #00cc96;">{take_profit:.2f}</b>
+            <div style="flex: 1; min-width: 120px;">
+                <span style="color: gray; font-size: 14px;">停利</span><br>
+                <b style="font-size: 20px; color: #00cc96;">{take_profit:.2f}</b>
             </div>
-            <div style="flex: 1; min-width: 130px; margin-bottom: 10px;">
-                <span style="color: gray; font-size: 14px;">4. 嚴格防守價</span><br>
-                <b style="font-size: 22px; color: #ff4b4b;">{stop_loss:.2f}</b>
+            <div style="flex: 1; min-width: 120px;">
+                <span style="color: gray; font-size: 14px;">停損</span><br>
+                <b style="font-size: 20px; color: #ff4b4b;">{stop_loss:.2f}</b>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
+
 def render_backtest_metric_card(title, value, subtext, color):
-    """渲染回測專用的績效方塊"""
+    """回測指標卡"""
     st.markdown(f"""
-    <div style="background-color: #121218; padding: 22px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #2a2a35;">
-        <div style="color: #8b8b99; font-size: 14px; margin-bottom: 8px;">{title}</div>
-        <div style="color: {color}; font-size: 32px; font-weight: 700; margin-bottom: 5px;">{value}</div>
-        <div style="color: #6b6b79; font-size: 13px;">{subtext}</div>
+    <div style="background-color: #121218; padding: 20px; border-radius: 10px; 
+                margin-bottom: 15px; border: 1px solid #2a2a35;">
+        <div style="color: #8b8b99; font-size: 13px; margin-bottom: 6px;">{title}</div>
+        <div style="color: {color}; font-size: 28px; font-weight: 700;">{value}</div>
+        <div style="color: #6b6b79; font-size: 12px;">{subtext}</div>
     </div>
     """, unsafe_allow_html=True)
 
+
 def render_model_health_board(metrics):
-    """顯示雙模型盲測勝率看板"""
-    st.markdown("### 🧪 雙核心模型：盲測訓練真實勝率")
+    """四核心健康度"""
+    st.markdown("### 🧪 四核心AI大腦")
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        wr = metrics['lgbm']['blind_win_rate']
-        color = "#00cc96" if wr > 0.55 else ("#ffc107" if wr > 0.50 else "#ff4b4b")
-        st.markdown(f"""
-        <div style='background:#1e1e1e; padding:15px; border-left:5px solid #deff9a; border-radius:5px;'>
-            <span style='color:gray;'>靜態大腦 (LightGBM)</span><br>
-            <span style='font-size:28px; color:{color}; font-weight:bold;'>{wr*100:.1f}%</span><br>
-            <span style='font-size:12px; color:gray;'>最新訓練日期: {metrics['lgbm']['last_train']}</span>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown("**🟢 多頭**")
+        wr_l = metrics.get('lgbm', {}).get('blind_win_rate', 0)
+        c_l = "#00cc96" if wr_l > 0.55 else "#ffc107"
+        st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #00cc96;'>
+                     LGBM: <b style='color:{c_l}'>{wr_l*100:.1f}%</b></div>", unsafe_allow_html=True)
+        
+        wr_ll = metrics.get('lstm', {}).get('blind_win_rate', 0)
+        c_ll = "#00cc96" if wr_ll > 0.53 else "#ffc107"
+        st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #00cc96;margin-top:5px;'>
+                     LSTM: <b style='color:{c_ll}'>{wr_ll*100:.1f}%</b></div>", unsafe_allow_html=True)
+    
     with col2:
-        wr = metrics['lstm']['blind_win_rate']
-        color = "#00cc96" if wr > 0.53 else ("#ffc107" if wr > 0.50 else "#ff4b4b")
-        st.markdown(f"""
-        <div style='background:#1e1e1e; padding:15px; border-left:5px solid #bc84ee; border-radius:5px;'>
-            <span style='color:gray;'>時序大腦 (LSTM)</span><br>
-            <span style='font-size:28px; color:{color}; font-weight:bold;'>{wr*100:.1f}%</span><br>
-            <span style='font-size:12px; color:gray;'>最新訓練日期: {metrics['lstm']['last_train']}</span>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("**🔴 空頭**")
+        wr_s = metrics.get('short', {}).get('lgbm', {}).get('blind_win_rate', 0)
+        if wr_s > 0:
+            c_s = "#ff4b4b" if wr_s > 0.55 else "#ff9966"
+            st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #ff4b4b;'>
+                         LGBM: <b style='color:{c_s}'>{wr_s*100:.1f}%</b></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='background:#1e1e1e;padding:10px;border-left:3px solid #666; color:#666;'>
+                         LGBM: 未訓練</div>", unsafe_allow_html=True)
+        
+        wr_ls = metrics.get('short', {}).get('lstm', {}).get('blind_win_rate', 0)
+        if wr_ls > 0:
+            c_ls = "#ff4b4b" if wr_ls > 0.53 else "#ff9966"
+            st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #ff4b4b;margin-top:5px;'>
+                         LSTM: <b style='color:{c_ls}'>{wr_ls*100:.1f}%</b></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='background:#1e1e1e;padding:10px;border-left:3px solid #666;margin-top:5px;color:#666;'>
+                         LSTM: 未訓練</div>", unsafe_allow_html=True)

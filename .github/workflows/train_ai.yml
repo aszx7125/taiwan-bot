@@ -1,9 +1,9 @@
-name: 台股量化戰情室 - 🧠 AI 大腦雲端訓練所
+name: 台股量化 - 🧠 四核大腦訓練 (多空雙向)
 
 on:
-  workflow_dispatch: # 允許您在 GitHub 網頁上手動按按鈕觸發訓練
+  workflow_dispatch:
   schedule:
-    - cron: '0 18 * * 6' # 每週六晚上 6:00 (台灣時間週日凌晨 2:00) 自動重新訓練
+    - cron: '0 18 * * 6'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -12,55 +12,78 @@ permissions:
   contents: write
 
 jobs:
-  train-model:
+  train-quad-core:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 📥 取得最新程式碼
+    - name: 📥 取得程式碼
       uses: actions/checkout@v4
 
-    - name: 🐍 設定 Python 環境
+    - name: 🐍 設定 Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
-    - name: 📦 安裝機器學習與量化套件
+    - name: 📦 安裝套件
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install scikit-learn joblib tensorflow supabase pandas numpy
+        pip install scikit-learn joblib tensorflow supabase
 
-    - name: 🌳 啟動靜態大腦訓練 (LightGBM)
+    # ── 多頭模型訓練 ─────────────────────────────────
+    - name: 🌳 訓練多頭 LightGBM
       run: python train_tools/ai_trainer.py
       env:
-        PYTHONPATH: .
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-    - name: 🔮 啟動時序大腦訓練 (LSTM)
+    - name: 🔮 訓練多頭 LSTM
       run: python train_lstm.py
       env:
-        PYTHONPATH: .
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-    - name: 📤 Commit and Push Updated Models
+    # ── 空頭模型訓練 ─────────────────────────────────
+    - name: 🌳 訓練空頭 LightGBM
+      run: python ai_trainer_short.py
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+    - name: 🔮 訓練空頭 LSTM
+      run: python train_lstm_short.py
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+    # ── 驗證 ─────────────────────────────────────────
+    - name: 📊 驗證四核心
+      run: |
+        echo "檢查模型檔案..."
+        ls -lh *.joblib *.h5
+        echo ""
+        echo "多頭模型："
+        python -c "import joblib; m=joblib.load('quant_model.joblib'); print(f'  特徵數: {m.n_features_}')"
+        echo ""
+        echo "空頭模型："
+        python -c "import joblib; m=joblib.load('quant_model_short.joblib'); print(f'  特徵數: {m.n_features_}')"
+
+    # ── 提交 ─────────────────────────────────────────
+    - name: 📤 提交四核心模型
       run: |
         git config --local user.email "bot@quant.factory"
-        git config --local user.name "AI-Trainer-Bot"
+        git config --local user.name "QuadCore-Trainer"
         
-        # 將兩個大腦的檔案與勝率報告都加入暫存區 (包含最新的 lstm_scaler.joblib)
-        git add quant_model.joblib model_features.joblib lstm_momentum_brain.h5 lstm_scaler.joblib model_metrics.json
+        git add quant_model.joblib quant_model_short.joblib \
+                model_features.joblib model_features_short.joblib \
+                lstm_momentum_brain.h5 lstm_short_brain.h5 \
+                lstm_scaler.joblib lstm_scaler_short.joblib \
+                model_metrics.json
         
-        # 檢查是否有變動，有變動才 commit
         if git diff --quiet && git diff --cached --quiet; then
-          echo "沒有變更需要提交。"
+          echo "無變更"
         else
-          git commit -m "🤖 自動更新：雙核深度大腦與真實勝率報告 [Skip CI]"
-          
-          # 🔥 關鍵防撞車機制：在推播前，先以 rebase 方式拉取遠端最新程式碼
+          git commit -m "🤖 四核大腦更新：多空雙向模型 [Skip CI]"
           git pull --rebase origin main
-          
-          # 最後再安全地推播上去
           git push origin main
         fi
