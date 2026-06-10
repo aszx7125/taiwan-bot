@@ -1,5 +1,6 @@
 """
-UI組件 - 完整版
+UI組件 - 完整版 v2.0
+支援四核心顯示與訓練日期
 """
 import streamlit as st
 
@@ -69,39 +70,99 @@ def render_backtest_metric_card(title, value, subtext, color):
 
 
 def render_model_health_board(metrics):
-    """四核心健康度"""
-    st.markdown("### 🧪 四核心AI大腦")
+    """四核心健康度 - 含訓練日期"""
+    st.markdown("### 🧪 四核心AI大腦：盲測勝率")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("**🟢 多頭**")
+        st.markdown("**🟢 多頭模型**")
+        # LightGBM Long
         wr_l = metrics.get('lgbm', {}).get('blind_win_rate', 0)
+        date_l = metrics.get('lgbm', {}).get('last_train', '未訓練')
         c_l = "#00cc96" if wr_l > 0.55 else "#ffc107"
-        st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #00cc96;'>
-                     LGBM: <b style='color:{c_l}'>{wr_l*100:.1f}%</b></div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px; margin-bottom:8px;'>
+            <div style='display:flex;justify-content:space-between;align-items:center;'>
+                <div>
+                    <span style='color:#aaa;font-size:11px;'>LightGBM</span><br>
+                    <span style='font-size:22px; color:{c_l}; font-weight:bold;'>{wr_l*100:.1f}%</span>
+                </div>
+                <div style='text-align:right;'>
+                    <span style='color:#666;font-size:10px;'>{date_l}</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
+        # LSTM Long
         wr_ll = metrics.get('lstm', {}).get('blind_win_rate', 0)
+        date_ll = metrics.get('lstm', {}).get('last_train', '未訓練')
         c_ll = "#00cc96" if wr_ll > 0.53 else "#ffc107"
-        st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #00cc96;margin-top:5px;'>
-                     LSTM: <b style='color:{c_ll}'>{wr_ll*100:.1f}%</b></div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px;'>
+            <div style='display:flex;justify-content:space-between;align-items:center;'>
+                <div>
+                    <span style='color:#aaa;font-size:11px;'>LSTM</span><br>
+                    <span style='font-size:22px; color:{c_ll}; font-weight:bold;'>{wr_ll*100:.1f}%</span>
+                </div>
+                <div style='text-align:right;'>
+                    <span style='color:#666;font-size:10px;'>{date_ll}</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        st.markdown("**🔴 空頭**")
+        st.markdown("**🔴 空頭模型**")
+        # LightGBM Short
         wr_s = metrics.get('short', {}).get('lgbm', {}).get('blind_win_rate', 0)
+        date_s = metrics.get('short', {}).get('lgbm', {}).get('last_train', '未訓練')
         if wr_s > 0:
             c_s = "#ff4b4b" if wr_s > 0.55 else "#ff9966"
-            st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #ff4b4b;'>
-                         LGBM: <b style='color:{c_s}'>{wr_s*100:.1f}%</b></div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px; margin-bottom:8px;'>
+                <div style='display:flex;justify-content:space-between;align-items:center;'>
+                    <div>
+                        <span style='color:#aaa;font-size:11px;'>LightGBM</span><br>
+                        <span style='font-size:22px; color:{c_s}; font-weight:bold;'>{wr_s*100:.1f}%</span>
+                    </div>
+                    <div style='text-align:right;'>
+                        <span style='color:#666;font-size:10px;'>{date_s}</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.markdown("<div style='background:#1e1e1e;padding:10px;border-left:3px solid #666; color:#666;'>
-                         LGBM: 未訓練</div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px; margin-bottom:8px;'>
+                <span style='color:#666;font-size:12px;'>LightGBM</span><br>
+                <span style='font-size:16px; color:#666;'>未訓練</span>
+            </div>
+            """, unsafe_allow_html=True)
         
+        # LSTM Short
         wr_ls = metrics.get('short', {}).get('lstm', {}).get('blind_win_rate', 0)
+        date_ls = metrics.get('short', {}).get('lstm', {}).get('last_train', '未訓練')
         if wr_ls > 0:
             c_ls = "#ff4b4b" if wr_ls > 0.53 else "#ff9966"
-            st.markdown(f"<div style='background:#1e1e1e;padding:10px;border-left:3px solid #ff4b4b;margin-top:5px;'>
-                         LSTM: <b style='color:{c_ls}'>{wr_ls*100:.1f}%</b></div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px;'>
+                <div style='display:flex;justify-content:space-between;align-items:center;'>
+                    <div>
+                        <span style='color:#aaa;font-size:11px;'>LSTM</span><br>
+                        <span style='font-size:22px; color:{c_ls}; font-weight:bold;'>{wr_ls*100:.1f}%</span>
+                    </div>
+                    <div style='text-align:right;'>
+                        <span style='color:#666;font-size:10px;'>{date_ls}</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.markdown("<div style='background:#1e1e1e;padding:10px;border-left:3px solid #666;margin-top:5px;color:#666;'>
-                         LSTM: 未訓練</div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px;'>
+                <span style='color:#666;font-size:12px;'>LSTM</span><br>
+                <span style='font-size:16px; color:#666;'>未訓練</span>
+            </div>
+            """, unsafe_allow_html=True)
