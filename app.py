@@ -363,8 +363,72 @@ else:
         else: st.info("快取中無數據。")
     
     with tab3s:
-        st.markdown("#### 🔻 全市場 AI 空頭戰術面板 (TOP 20)")
-        st.info("空頭模型訓練中，完成後將顯示放空名單")
+        st.markdown("#### 🔻 全市場 AI 空頭戰術面板 (TOP 20 放空名單)")
+        snap = load_market_snapshot()
+        if snap and 'data' in snap:
+            raw_list = snap['data']
+            snap_dict = get_snapshot_dict(snap)
+            valid_items, bulk_features = [], []
+
+        for item in raw_list:
+            ticker = str(item.get('代號', '')).split('.')[0].strip()
+            ep = float(item.get('現價', 0.0))
+            if ep > 0:
+                valid_items.append(item)
+                bulk_features.append(brain.extract_features(
+                    ticker, ep, snap_dict, 
+                    current_vol=float(item.get('成交量', 0.0))
+                ))
+        
+        if valid_items:
+            # 使用雙向預測
+            if hasattr(brain, 'predict_bidirectional'):
+                result = brain.predict_bidirectional(bulk_features)
+                short_probs = result['short_prob']
+                long_probs = result['long_prob']
+            else:
+                long_probs = brain.predict_win_rates(bulk_features)
+                short_probs = 1.0 - long_probs
+            
+            processed = []
+            for idx, item in enumerate(valid_items):
+                sp = float(short_probs[idx])
+                if sp >= 0.55:  # 空頭門檻
+                    ep = float(item.get('現價', 0.0))
+                    sup = float(item.get('Sup_20', ep * 0.95))
+                    res = float(item.get('Res_20', ep * 1.05))
+                    atr = float(item.get('ATR_14', ep * 0.03))
+                    
+                    take_profit = round(sup - atr, 2)
+                    stop_loss = round(res * 1.015, 2)
+                    
+                    processed.append({
+                        'ticker': item.get('代號', ''),
+                        'name': item.get('名稱', ''),
+                        'short_prob': sp,
+                        'long_prob': float(long_probs[idx]),
+                        'entry_price': ep,
+                        'take_profit': take_profit,
+                        'stop_loss': stop_loss,
+                    })
+            
+            if processed:
+                st.success(f"✅ 找到 {len(processed)} 檔空頭訊號")
+                for stock in sorted(processed, key=lambda x: x['short_prob'], reverse=True)[:20]:
+                    sp = stock['short_prob']
+                    color = "#ff0000" if sp >= 0.65 else "#ff4b4b"
+                    st.markdown(f"""
+                    <div style="border:2px solid {color};border-radius:8px;padding:15px;
+                                background:#1e1e1e;margin-bottom:10px;">
+                        <h4 style="color:{color};margin:0;">🔻 {stock['ticker']} {stock['name']}</h4>
+                        <p>空頭機率: <b>{sp*100:.1f}%</b> | 
+                           放空: {stock['entry_price']:.2f} → 
+                           停利: {stock['take_profit']:.2f} | 
+                           停損: {stock['stop_loss']:.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("💡 目前無空頭訊號 (機率>55%)")
     
     with tab5:
         st.markdown("#### ⚖️ 昨晚 AI 預測 x 今日實盤開獎比對面板")
