@@ -221,7 +221,7 @@ else:
     
     if summary:
         twii_data = summary.get("加權指數", {"pct": 0.0, "price": 0.0, "change": 0.0})
-        twill_pct = float(twii_data.get('pct', 0.0))
+        twii_pct = float(twii_data.get('pct', 0.0))
         greed_val, greed_label, greed_color = compute_fear_greed(twii_pct, snapshot_data)
         c_idx, c_greed = st.columns([3, 1])
         with c_idx:
