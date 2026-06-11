@@ -1,6 +1,6 @@
 """
-台股AI量化系統 v3.0 - 四核極值對撞終極版
-修復：參數不匹配 TypeError、DeltaGenerator 亂碼、全面導入四核心極值邏輯
+台股AI量化系統 v3.1 - 四核極值對撞防破版
+修復：取消多行 HTML 縮排，徹底防止 Markdown 程式碼區塊顯示問題
 """
 import streamlit as st
 import pandas as pd
@@ -41,7 +41,7 @@ from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_
 from ai_engine import DualCoreBrain
 from ui_components import render_top20_card, render_single_diagnostic_card, render_backtest_metric_card, render_model_health_board
 
-st.set_page_config(page_title="台股量化旗艦終端 v3.0", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股量化旗艦終端 v3.1", page_icon="📈", layout="wide")
 
 FUGLE_API_KEY = get_fugle_key()
 if 'stock_clusters' not in st.session_state: 
@@ -91,27 +91,26 @@ def compute_fear_greed(twii_pct: float, snapshot_data: list) -> tuple[int, str, 
     final = pct_score * 0.35 + bull_ratio_score * 0.35 + rs_score * 0.20 + vol_score * 0.10
     index_val = int(np.clip(final, 0, 100))
     
-    if index_val >= 75:
-        label, color = "極度貪婪", "#ff4b4b"
-    elif index_val >= 60: 
-        label, color = "貪婪", "#ffa500"
-    elif index_val >= 45: 
-        label, color = "中性偏多", "#ffc107"
-    elif index_val >= 30: 
-        label, color = "恐懼", "#00cc96"
-    else:                 
-        label, color = "極度恐懼", "#00ccff"
+    if index_val >= 75: label, color = "極度貪婪", "#ff4b4b"
+    elif index_val >= 60: label, color = "貪婪", "#ffa500"
+    elif index_val >= 45: label, color = "中性偏多", "#ffc107"
+    elif index_val >= 30: label, color = "恐懼", "#00cc96"
+    else: label, color = "極度恐懼", "#00ccff"
     
     return index_val, label, color
 
 def render_fear_greed_gauge(index_val: int, label: str, color: str):
-    st.markdown(f"""<div style="background:#1e1e1e;border-radius:12px;padding:18px;text-align:center;border:1px solid #333;">
+    html = f"""
+    <div style="background:#1e1e1e;border-radius:12px;padding:18px;text-align:center;border:1px solid #333;">
         <div style="color:#aaa;font-size:13px;margin-bottom:6px;">📊 台股恐懼貪婪指數</div>
         <div style="font-size:38px;font-weight:700;color:{color};">{index_val}</div>
         <div style="font-size:16px;color:{color};font-weight:600;margin-bottom:12px;">{label}</div>
         <div style="background:#333;border-radius:8px;height:10px;width:100%;overflow:hidden;">
             <div style="background:{color};width:{index_val}%;height:100%;border-radius:8px;"></div>
-        </div></div>""", unsafe_allow_html=True)
+        </div>
+    </div>
+    """
+    st.markdown(html.replace('\n', ''), unsafe_allow_html=True)
 
 # ==========================================
 # 🎛️ 左側控制面板
@@ -156,31 +155,23 @@ with st.sidebar:
             st.error(msg)
             
     st.markdown("---")
-    if brain.is_lstm_ready: 
-        st.success("🔮 LSTM 多頭已連動")
-    else: 
-        st.warning("⚪ LSTM 多頭未載入")
+    if brain.is_lstm_ready: st.success("🔮 LSTM 多頭已連動")
+    else: st.warning("⚪ LSTM 多頭未載入")
         
-    if brain.is_lgbm_ready: 
-        st.success("🌳 LGBM 多頭正常")
-    else: 
-        st.error("🚨 LGBM 多頭缺失")
+    if brain.is_lgbm_ready: st.success("🌳 LGBM 多頭正常")
+    else: st.error("🚨 LGBM 多頭缺失")
         
-    if hasattr(brain, 'is_lgbm_short_ready') and brain.is_lgbm_short_ready: 
-        st.success("🔴 LGBM 空頭已連動")
-    if hasattr(brain, 'is_lstm_short_ready') and brain.is_lstm_short_ready: 
-        st.success("🔴 LSTM 空頭已連動")
+    if hasattr(brain, 'is_lgbm_short_ready') and brain.is_lgbm_short_ready: st.success("🔴 LGBM 空頭已連動")
+    if hasattr(brain, 'is_lstm_short_ready') and brain.is_lstm_short_ready: st.success("🔴 LSTM 空頭已連動")
 
 # ==========================================
 # ⚡ 戰情室主視覺
 # ==========================================
-st.title("⚡ 台股戰情分析終端 v3.0")
+st.title("⚡ 台股戰情分析終端 v3.1")
 st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心極值對撞 AI 驅動")
 col1, col2 = st.columns([3, 1])
-with col1: 
-    manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed", placeholder="例如: 2330")
-with col2: 
-    analyze_manual_btn = st.button("單股掃描", use_container_width=True)
+with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed", placeholder="例如: 2330")
+with col2: analyze_manual_btn = st.button("單股掃描", use_container_width=True)
 st.markdown("---")
 
 target_ticker = st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
@@ -201,8 +192,7 @@ if target_ticker:
             entry_price = float(today.get('Close', 0.0))
             y_close = float(yesterday.get('Close', entry_price))
             rt_p, rt_v, _ = get_realtime_quote(base_ticker, FUGLE_API_KEY)
-            if rt_p > 0: 
-                entry_price = rt_p
+            if rt_p > 0: entry_price = rt_p
                 
             p_change = ((entry_price - y_close) / max(y_close, 0.01) * 100) if y_close > 0.01 else 0.0
             p_change = np.nan_to_num(p_change, nan=0.0, posinf=20.0, neginf=-20.0)
@@ -214,12 +204,9 @@ if target_ticker:
             micro_status_text = "⚪ 1h 均線下弱勢震盪"
             if not df_hourly.empty and len(df_hourly) >= 2:
                 last_hour = df_hourly.iloc[-1]
-                if bool(last_hour.get('Micro_Sniper_Trigger', False)): 
-                    micro_status_text = "🔥 帶量突破 1h 均線"
-                elif bool(last_hour.get('MACD_Cross_Up', False)): 
-                    micro_status_text = "📈 1h MACD 金叉發動"
-                elif bool(last_hour.get('Vol_Surge_1h', False)): 
-                    micro_status_text = "🌊 1h 微觀異常爆量"
+                if bool(last_hour.get('Micro_Sniper_Trigger', False)): micro_status_text = "🔥 帶量突破 1h 均線"
+                elif bool(last_hour.get('MACD_Cross_Up', False)): micro_status_text = "📈 1h MACD 金叉發動"
+                elif bool(last_hour.get('Vol_Surge_1h', False)): micro_status_text = "🌊 1h 微觀異常爆量"
             
             low_vol_pb = bool(today.get('Low_Vol_Pullback', False))
             smc_text = "量縮回踩" if low_vol_pb else "一般常態箱體震盪"
@@ -227,15 +214,12 @@ if target_ticker:
             snapshot_dict = get_snapshot_dict(load_market_snapshot())
             feat_dict = brain.extract_features(base_ticker, entry_price, snapshot_dict, current_vol=rt_v, fallback_atr=atr_14, fallback_pattern=smc_text)
             
-            # 🔥 呼叫四核心極值對撞引擎
             if hasattr(brain, 'predict_four_core'):
                 core_data = brain.predict_four_core([feat_dict])[0]
             else:
                 core_data = {'best_long': 0.5, 'best_short': 0.5, 'lgbm_long': 0.5, 'lstm_long': 0.5, 'lgbm_short': 0.5, 'lstm_short': 0.5, 'signal': 'WAIT'}
 
             st.subheader(f"🧬 {base_ticker} {c_name} 診斷報告")
-            
-            # 🔥 將完整 core_data 丟入 UI 組件
             render_single_diagnostic_card(core_data, entry_price, res_level, sup_level)
 
             m1, m2, m3, m4 = st.columns(4)
@@ -330,12 +314,9 @@ else:
                     name_str = f"<b>{s_name}</b><br><span style='font-size:0.8em;color:gray;'>{ticker}</span>"
                     p_str = f"<b>{p:.2f}</b><br><span style='font-size:0.7em;color:gray;'>({int(v):,} 張)</span>"
                     
-                    if chg_amt > 0:
-                        chg_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{chg_amt:.2f}<br>(+{chg_pct:.2f}%)</span>"
-                    elif chg_amt < 0:
-                        chg_str = f"<span style='color:#00cc96;font-weight:bold;'>{chg_amt:.2f}<br>({chg_pct:.2f}%)</span>"
-                    else:
-                        chg_str = "0.00"
+                    if chg_amt > 0: chg_str = f"<span style='color:#ff4b4b;font-weight:bold;'>+{chg_amt:.2f}<br>(+{chg_pct:.2f}%)</span>"
+                    elif chg_amt < 0: chg_str = f"<span style='color:#00cc96;font-weight:bold;'>{chg_amt:.2f}<br>({chg_pct:.2f}%)</span>"
+                    else: chg_str = "0.00"
                         
                     return {"標的": name_str, "及時價 (成交量)": p_str, "今日漲跌幅": chg_str}
                 return None
@@ -345,11 +326,9 @@ else:
                 for future in concurrent.futures.as_completed(future_to_ticker):
                     try:
                         res = future.result()
-                        if res: 
-                            rows.append(res)
+                        if res: rows.append(res)
                         time.sleep(0.3)
-                    except: 
-                        pass
+                    except: pass
                         
             if rows:
                 html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')
@@ -392,7 +371,7 @@ else:
                 
                 st.markdown("---")
                 st.markdown("##### 📦 雙核大腦全市場標的「勝率梯隊分佈」")
-                st.markdown(f"""
+                html_dist = f"""
                 <div style="display: flex; width: 100%; height: 24px; border-radius: 6px; overflow: hidden; margin-bottom: 15px;">
                     <div style="background: #00cc96; width: {(tier_alpha/len(probs))*100}%; text-align: center; color: white; font-size: 12px; line-height: 24px;">{tier_alpha} 檔</div>
                     <div style="background: #ffc107; width: {(tier_beta/len(probs))*100}%; text-align: center; color: black; font-size: 12px; line-height: 24px;">{tier_beta} 檔</div>
@@ -403,7 +382,8 @@ else:
                     <span style="color: #ffc107;">🟡 蓄勢震盪梯隊 (48% ~ 52%): <b>{tier_beta} 檔</b></span>
                     <span style="color: #888;">⚪ 防守觀望梯隊 (勝率 < 48%): <b>{tier_gamma} 檔</b></span>
                 </div>
-                """, unsafe_allow_html=True)
+                """
+                st.markdown(html_dist.replace('\n', ''), unsafe_allow_html=True)
                 
                 if bullish_ratio == 0: 
                     st.info("💡 **解讀提示**：當前看多比率為 0.0% 代表目前盤勢處於極端修正或震盪。")
@@ -501,7 +481,7 @@ else:
                         entry_p = max(stock['entry_price'], 0.01)
                         drop_pct = (1 - stock['take_profit'] / entry_p) * 100
                         risk_pct = (stock['stop_loss'] / entry_p - 1) * 100
-                        st.markdown(f"""
+                        html_s = f"""
                         <div style="border:2px solid {color};border-radius:10px;padding:16px; background:#1e1e1e;margin-bottom:12px;">
                             <div style="display:flex;justify-content:space-between;align-items:center;">
                                 <div><h4 style="color:{color};margin:0;">🔻 {stock['ticker']} {stock['name']}</h4>
@@ -513,7 +493,9 @@ else:
                                 <span>下檔支撐 (停利區): <b style="color:#00cc96;">{stock['take_profit']:.2f}</b> <small>(-{drop_pct:.1f}%)</small></span>
                                 <span>上檔壓力 (停損區): <b style="color:#ff4b4b;">{stock['stop_loss']:.2f}</b> <small>(+{risk_pct:.1f}%)</small></span>
                             </div>
-                        </div>""", unsafe_allow_html=True)
+                        </div>
+                        """
+                        st.markdown(html_s.replace('\n', ''), unsafe_allow_html=True)
                 else:
                     st.success("✅ 目前市場無明顯空頭訊號")
                     st.info("💡 所有股票空頭極值均 < 55%，市場相對安全")
