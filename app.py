@@ -1,6 +1,6 @@
 """
-台股AI量化系統 v3.2 - 四核極值對撞防破版
-修復：徹底消除 Python 字串縮排導致的 Markdown Code Block 誤判問題
+台股AI量化系統 v4.0 - 終極單檔防爆版
+修復：廢棄 ui_components.py 解決幽靈快取，改用絕對單行字串防止 Markdown 破版
 """
 import streamlit as st
 import pandas as pd
@@ -11,11 +11,122 @@ import concurrent.futures
 import json
 import os
 
-def _render_clean_html(raw_html):
-    """內部輔助函數：徹底清除所有換行與開頭空白"""
-    clean_html = "".join([line.strip() for line in raw_html.split('\n')])
-    st.markdown(clean_html, unsafe_allow_html=True)
+# ==========================================
+# 🎨 UI 渲染元件 (全部移入主程式，徹底免疫快取 Bug)
+# ==========================================
+def render_top20_card(s):
+    color = s.get('box_color', '#00cc96')
+    prob = s.get('win_prob', 0) * 100
+    html = (
+        f"<div style='border: 2px solid {color}; border-radius: 10px; padding: 18px; background-color: #1e1e1e; margin-bottom: 12px;'>"
+        f"<h4 style='color: {color}; margin-top: 0;'>🎯 {s['ticker']} {s['name']}</h4>"
+        f"<div style='display: flex; justify-content: space-between;'>"
+        f"<div><span style='color: gray; font-size: 13px;'>最高勝率極值</span><br>"
+        f"<b style='font-size: 22px; color: {color};'>{prob:.1f}%</b></div>"
+        f"<div style='text-align: right;'><span style='color: gray; font-size: 13px;'>現價</span><br>"
+        f"<b style='font-size: 20px;'>{s['entry_price']:.2f}</b></div>"
+        f"</div></div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
+def render_single_diagnostic_card(core_data, entry_price, res_level, sup_level):
+    bl = core_data['best_long'] * 100
+    bs = core_data['best_short'] * 100
+    ll = core_data['lgbm_long'] * 100
+    tl = core_data['lstm_long'] * 100
+    ls = core_data['lgbm_short'] * 100
+    ts = core_data['lstm_short'] * 100
+    signal = core_data['signal']
+
+    if signal == "STRONG_LONG": box_color, rec = "#00cc96", "⭐⭐⭐ 強勢做多 (多方輾壓)"
+    elif signal == "LONG": box_color, rec = "#4ade80", "⭐⭐ 偏多操作 (多方優勢)"
+    elif signal == "STRONG_SHORT": box_color, rec = "#ff4b4b", "⚠️⚠️ 強勢放空 (空方輾壓)"
+    elif signal == "SHORT": box_color, rec = "#ff8080", "⚠️ 偏空操作 (空方優勢)"
+    elif signal == "HIGH_VOLATILITY": box_color, rec = "#ffa500", "⚡ 多空雙巴，建議空手觀望"
+    else: box_color, rec = "#a8a8a8", "⚪ 動能不足，盤整觀望"
+
+    html = (
+        f"<div style='border: 2px solid {box_color}; border-radius: 10px; padding: 20px; background-color: #1e1e1e; margin-bottom: 20px;'>"
+        f"<h4 style='color: {box_color}; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px;'>"
+        f"⚔️ 四核心對撞結果：{rec}</h4>"
+        f"<div style='display: flex; justify-content: space-between; flex-wrap: wrap; margin-bottom: 15px;'>"
+        f"<div style='flex: 1; min-width: 200px; padding: 10px; background-color: rgba(0, 204, 150, 0.05); border-radius: 8px; margin-right: 10px;'>"
+        f"<span style='color: #00cc96; font-size: 16px; font-weight: bold;'>🟢 多頭陣營極值</span><br>"
+        f"<b style='font-size: 32px; color: #00cc96;'>{bl:.1f}%</b>"
+        f"<div style='font-size: 12px; color: gray; margin-top: 8px;'>"
+        f"▶ LGBM 靜態結構: <span style='color: white;'>{ll:.1f}%</span><br>"
+        f"▶ LSTM 時序動能: <span style='color: white;'>{tl:.1f}%</span></div></div>"
+        f"<div style='flex: 1; min-width: 200px; padding: 10px; background-color: rgba(255, 75, 75, 0.05); border-radius: 8px; margin-left: 10px;'>"
+        f"<span style='color: #ff4b4b; font-size: 16px; font-weight: bold;'>🔴 空頭陣營極值</span><br>"
+        f"<b style='font-size: 32px; color: #ff4b4b;'>{bs:.1f}%</b>"
+        f"<div style='font-size: 12px; color: gray; margin-top: 8px;'>"
+        f"▶ LGBM 靜態結構: <span style='color: white;'>{ls:.1f}%</span><br>"
+        f"▶ LSTM 時序動能: <span style='color: white;'>{ts:.1f}%</span></div></div></div>"
+        f"<div style='display: flex; justify-content: space-between; border-top: 1px solid #333; padding-top: 15px;'>"
+        f"<div style='flex: 1;'><span style='color: gray; font-size: 12px;'>現價</span><br><b style='font-size: 18px;'>{entry_price:.2f}</b></div>"
+        f"<div style='flex: 1;'><span style='color: gray; font-size: 12px;'>上檔壓力位</span><br><b style='font-size: 18px; color: #ffc107;'>{res_level:.2f}</b></div>"
+        f"<div style='flex: 1;'><span style='color: gray; font-size: 12px;'>下檔支撐位</span><br><b style='font-size: 18px; color: #00ccff;'>{sup_level:.2f}</b></div>"
+        f"</div></div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+def render_backtest_metric_card(title, value, subtext, color):
+    html = (
+        f"<div style='background-color: #121218; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #2a2a35;'>"
+        f"<div style='color: #8b8b99; font-size: 13px; margin-bottom: 6px;'>{title}</div>"
+        f"<div style='color: {color}; font-size: 28px; font-weight: 700;'>{value}</div>"
+        f"<div style='color: #6b6b79; font-size: 12px;'>{subtext}</div></div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+def render_model_health_board(metrics):
+    st.markdown("### 🧪 四核心AI大腦：盲測勝率")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**🟢 多頭模型**")
+        wr_l = metrics.get('lgbm', {}).get('blind_win_rate', 0)
+        date_l = metrics.get('lgbm', {}).get('last_train', '未訓練')
+        c_l = "#00cc96" if wr_l > 0.55 else "#ffc107"
+        st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_l}; font-weight:bold;'>{wr_l*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_l}</span></div></div></div>", unsafe_allow_html=True)
+        
+        wr_ll = metrics.get('lstm', {}).get('blind_win_rate', 0)
+        date_ll = metrics.get('lstm', {}).get('last_train', '未訓練')
+        c_ll = "#00cc96" if wr_ll > 0.53 else "#ffc107"
+        st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ll}; font-weight:bold;'>{wr_ll*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ll}</span></div></div></div>", unsafe_allow_html=True)
+        
+    with col2:
+        st.markdown("**🔴 空頭模型**")
+        wr_s = metrics.get('short', {}).get('lgbm', {}).get('blind_win_rate', 0)
+        date_s = metrics.get('short', {}).get('lgbm', {}).get('last_train', '未訓練')
+        c_s = "#ff4b4b" if wr_s > 0.55 else "#ff9966"
+        if wr_s > 0:
+            st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_s}; font-weight:bold;'>{wr_s*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_s}</span></div></div></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px; margin-bottom:8px;'><span style='color:#666;font-size:12px;'>LightGBM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>", unsafe_allow_html=True)
+        
+        wr_ls = metrics.get('short', {}).get('lstm', {}).get('blind_win_rate', 0)
+        date_ls = metrics.get('short', {}).get('lstm', {}).get('last_train', '未訓練')
+        c_ls = "#ff4b4b" if wr_ls > 0.53 else "#ff9966"
+        if wr_ls > 0:
+            st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ls}; font-weight:bold;'>{wr_ls*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ls}</span></div></div></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px;'><span style='color:#666;font-size:12px;'>LSTM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>", unsafe_allow_html=True)
+
+def render_fear_greed_gauge(index_val: int, label: str, color: str):
+    html = (
+        f"<div style='background:#1e1e1e;border-radius:12px;padding:18px;text-align:center;border:1px solid #333;'>"
+        f"<div style='color:#aaa;font-size:13px;margin-bottom:6px;'>📊 台股恐懼貪婪指數</div>"
+        f"<div style='font-size:38px;font-weight:700;color:{color};'>{index_val}</div>"
+        f"<div style='font-size:16px;color:{color};font-weight:600;margin-bottom:12px;'>{label}</div>"
+        f"<div style='background:#333;border-radius:8px;height:10px;width:100%;overflow:hidden;'>"
+        f"<div style='background:{color};width:{index_val}%;height:100%;border-radius:8px;'></div>"
+        f"</div></div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+# ==========================================
+# 主程式邏輯
+# ==========================================
 def get_fugle_key():
     try: return st.secrets["FUGLE_API_KEY"]
     except: return ""
@@ -42,9 +153,8 @@ DEFAULT_NAMES = {
 from data_fetcher import load_all_market_tickers, get_market_summary, get_kline_with_fugle, get_stock_news
 from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_quote, fetch_advanced_backtest, trigger_github_workflow, load_model_metrics
 from ai_engine import DualCoreBrain
-from ui_components import render_top20_card, render_single_diagnostic_card, render_backtest_metric_card, render_model_health_board
 
-st.set_page_config(page_title="台股量化旗艦終端 v3.2", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股量化旗艦終端 v4.0", page_icon="📈", layout="wide")
 
 FUGLE_API_KEY = get_fugle_key()
 if 'stock_clusters' not in st.session_state: 
@@ -71,8 +181,10 @@ def get_stock_name_from_csv(ticker: str) -> str:
             df_all.columns = [col.lower() for col in df_all.columns]
             df_all['clean_ticker'] = df_all['ticker'].astype(str).str.split('.').str[0].str.strip()
             match = df_all[df_all['clean_ticker'] == clean_code]
-            if not match.empty: return str(match.iloc[0]['name'])
-    except: pass
+            if not match.empty: 
+                return str(match.iloc[0]['name'])
+    except: 
+        pass
     return ticker
 
 def compute_fear_greed(twii_pct: float, snapshot_data: list) -> tuple[int, str, str]:
@@ -100,19 +212,9 @@ def compute_fear_greed(twii_pct: float, snapshot_data: list) -> tuple[int, str, 
     
     return index_val, label, color
 
-def render_fear_greed_gauge(index_val: int, label: str, color: str):
-    html = f"""
-    <div style="background:#1e1e1e;border-radius:12px;padding:18px;text-align:center;border:1px solid #333;">
-        <div style="color:#aaa;font-size:13px;margin-bottom:6px;">📊 台股恐懼貪婪指數</div>
-        <div style="font-size:38px;font-weight:700;color:{color};">{index_val}</div>
-        <div style="font-size:16px;color:{color};font-weight:600;margin-bottom:12px;">{label}</div>
-        <div style="background:#333;border-radius:8px;height:10px;width:100%;overflow:hidden;">
-            <div style="background:{color};width:{index_val}%;height:100%;border-radius:8px;"></div>
-        </div>
-    </div>
-    """
-    _render_clean_html(html)
-
+# ==========================================
+# 🎛️ 左側控制面板
+# ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
@@ -140,11 +242,17 @@ with st.sidebar:
     
     if st.button("🔥 啟動全市場 AI 掃描", use_container_width=True):
         success, msg = trigger_github_workflow("daily_scan.yml")
-        st.success(msg) if success else st.error(msg)
+        if success:
+            st.success(msg)
+        else:
+            st.error(msg)
             
     if st.button("🧠 啟動四模型訓練", use_container_width=True):
         success, msg = trigger_github_workflow("train_ai.yml")
-        st.info(msg) if success else st.error(msg)
+        if success:
+            st.info(msg)
+        else:
+            st.error(msg)
             
     st.markdown("---")
     if brain.is_lstm_ready: st.success("🔮 LSTM 多頭已連動")
@@ -156,7 +264,10 @@ with st.sidebar:
     if hasattr(brain, 'is_lgbm_short_ready') and brain.is_lgbm_short_ready: st.success("🔴 LGBM 空頭已連動")
     if hasattr(brain, 'is_lstm_short_ready') and brain.is_lstm_short_ready: st.success("🔴 LSTM 空頭已連動")
 
-st.title("⚡ 台股戰情分析終端 v3.2")
+# ==========================================
+# ⚡ 戰情室主視覺
+# ==========================================
+st.title("⚡ 台股戰情分析終端 v4.0")
 st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心極值對撞 AI 驅動")
 col1, col2 = st.columns([3, 1])
 with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed", placeholder="例如: 2330")
@@ -323,7 +434,8 @@ else:
                 html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')
                 fs_th = max(14, user_font_size - 4)
                 css = f"<style>.watch-board table{{width:100%!important;border-collapse:collapse;}}.watch-board th{{text-align:center!important;font-size:{fs_th}px!important;padding:10px!important;border-bottom:2px solid #555!important;}}.watch-board td{{text-align:center!important;font-size:{user_font_size}px!important;padding:16px!important;border-bottom:1px solid #444!important;vertical-align:middle!important;}}</style>"
-                _render_clean_html(f'{css}<div class="watch-board">{html_table}</div>')
+                html_final = f"{css}<div class='watch-board'>{html_table}</div>"
+                st.markdown(html_final, unsafe_allow_html=True)
         render_rt()
     
     with tab2:
@@ -360,21 +472,20 @@ else:
                 
                 st.markdown("---")
                 st.markdown("##### 📦 雙核大腦全市場標的「勝率梯隊分佈」")
-                html_dist = f"""
-                <div style="display: flex; width: 100%; height: 24px; border-radius: 6px; overflow: hidden; margin-bottom: 15px;">
-                    <div style="background: #00cc96; width: {(tier_alpha/len(probs))*100}%; text-align: center; color: white; font-size: 12px; line-height: 24px;">{tier_alpha} 檔</div>
-                    <div style="background: #ffc107; width: {(tier_beta/len(probs))*100}%; text-align: center; color: black; font-size: 12px; line-height: 24px;">{tier_beta} 檔</div>
-                    <div style="background: #444; width: {(tier_gamma/len(probs))*100}%; text-align: center; color: #aaa; font-size: 12px; line-height: 24px;">{tier_gamma} 檔</div>
-                </div>
-                <div style="display: flex; justify-content: space-between; font-size: 13px;">
-                    <span style="color: #00cc96;">🟢 領先多頭梯隊 (勝率 ≥ 52%): <b>{tier_alpha} 檔</b></span>
-                    <span style="color: #ffc107;">🟡 蓄勢震盪梯隊 (48% ~ 52%): <b>{tier_beta} 檔</b></span>
-                    <span style="color: #888;">⚪ 防守觀望梯隊 (勝率 < 48%): <b>{tier_gamma} 檔</b></span>
-                </div>
-                """
-                _render_clean_html(html_dist)
+                html_dist = (
+                    f"<div style='display: flex; width: 100%; height: 24px; border-radius: 6px; overflow: hidden; margin-bottom: 15px;'>"
+                    f"<div style='background: #00cc96; width: {(tier_alpha/len(probs))*100}%; text-align: center; color: white; font-size: 12px; line-height: 24px;'>{tier_alpha} 檔</div>"
+                    f"<div style='background: #ffc107; width: {(tier_beta/len(probs))*100}%; text-align: center; color: black; font-size: 12px; line-height: 24px;'>{tier_beta} 檔</div>"
+                    f"<div style='background: #444; width: {(tier_gamma/len(probs))*100}%; text-align: center; color: #aaa; font-size: 12px; line-height: 24px;'>{tier_gamma} 檔</div></div>"
+                    f"<div style='display: flex; justify-content: space-between; font-size: 13px;'>"
+                    f"<span style='color: #00cc96;'>🟢 領先多頭梯隊 (勝率 ≥ 52%): <b>{tier_alpha} 檔</b></span>"
+                    f"<span style='color: #ffc107;'>🟡 蓄勢震盪梯隊 (48% ~ 52%): <b>{tier_beta} 檔</b></span>"
+                    f"<span style='color: #888;'>⚪ 防守觀望梯隊 (勝率 < 48%): <b>{tier_gamma} 檔</b></span></div>"
+                )
+                st.markdown(html_dist, unsafe_allow_html=True)
                 
-                if bullish_ratio == 0: st.info("💡 **解讀提示**：當前看多比率為 0.0% 代表目前盤勢處於極端修正或震盪。")
+                if bullish_ratio == 0: 
+                    st.info("💡 **解讀提示**：當前看多比率為 0.0% 代表目前盤勢處於極端修正或震盪。")
         else: 
             st.info("ℹ️ 快取中無有效數據。")
     
@@ -469,21 +580,19 @@ else:
                         entry_p = max(stock['entry_price'], 0.01)
                         drop_pct = (1 - stock['take_profit'] / entry_p) * 100
                         risk_pct = (stock['stop_loss'] / entry_p - 1) * 100
-                        html_s = f"""
-                        <div style="border:2px solid {color};border-radius:10px;padding:16px; background:#1e1e1e;margin-bottom:12px;">
-                            <div style="display:flex;justify-content:space-between;align-items:center;">
-                                <div><h4 style="color:{color};margin:0;">🔻 {stock['ticker']} {stock['name']}</h4>
-                                <span style="color:#888;font-size:12px;">空頭極值 {sp*100:.1f}% | 多頭極值 {stock['long_prob']*100:.1f}%</span></div>
-                                <div style="text-align:right;"><div style="color:#888;font-size:11px;">現價</div>
-                                <div style="color:#fff;font-size:20px;font-weight:bold;">{stock['entry_price']:.2f}</div></div>
-                            </div>
-                            <div style="display:flex;justify-content:space-between;margin-top:12px; padding-top:12px;border-top:1px solid #333;font-size:13px;">
-                                <span>下檔支撐 (停利區): <b style="color:#00cc96;">{stock['take_profit']:.2f}</b> <small>(-{drop_pct:.1f}%)</small></span>
-                                <span>上檔壓力 (停損區): <b style="color:#ff4b4b;">{stock['stop_loss']:.2f}</b> <small>(+{risk_pct:.1f}%)</small></span>
-                            </div>
-                        </div>
-                        """
-                        _render_clean_html(html_s)
+                        html_s = (
+                            f"<div style='border:2px solid {color};border-radius:10px;padding:16px; background:#1e1e1e;margin-bottom:12px;'>"
+                            f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                            f"<div><h4 style='color:{color};margin:0;'>🔻 {stock['ticker']} {stock['name']}</h4>"
+                            f"<span style='color:#888;font-size:12px;'>空頭極值 {sp*100:.1f}% | 多頭極值 {stock['long_prob']*100:.1f}%</span></div>"
+                            f"<div style='text-align:right;'><div style='color:#888;font-size:11px;'>現價</div>"
+                            f"<div style='color:#fff;font-size:20px;font-weight:bold;'>{stock['entry_price']:.2f}</div></div></div>"
+                            f"<div style='display:flex;justify-content:space-between;margin-top:12px; padding-top:12px;border-top:1px solid #333;font-size:13px;'>"
+                            f"<span>下檔支撐 (停利區): <b style='color:#00cc96;'>{stock['take_profit']:.2f}</b> <small>(-{drop_pct:.1f}%)</small></span>"
+                            f"<span>上檔壓力 (停損區): <b style='color:#ff4b4b;'>{stock['stop_loss']:.2f}</b> <small>(+{risk_pct:.1f}%)</small></span>"
+                            f"</div></div>"
+                        )
+                        st.markdown(html_s, unsafe_allow_html=True)
                 else:
                     st.success("✅ 目前市場無明顯空頭訊號")
                     st.info("💡 所有股票空頭極值均 < 55%，市場相對安全")
@@ -541,9 +650,11 @@ else:
                             for future in concurrent.futures.as_completed(futures):
                                 try:
                                     res = future.result()
-                                    if res: clash_rows.append(res)
+                                    if res: 
+                                        clash_rows.append(res)
                                     time.sleep(0.3)
-                                except Exception: pass
+                                except Exception: 
+                                    pass
                         if clash_rows:
                             clash_df = pd.DataFrame(clash_rows).sort_values(by="_win_prob_raw", ascending=False)
                             st.success("✅ 實盤對撞數據已成功產出！")
@@ -560,9 +671,12 @@ else:
             status = res_adv.get("status")
             if status == "ready":
                 c1, c2, c3 = st.columns(3)
-                with c1: render_backtest_metric_card("AI 真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", "", "#4ade80")
-                with c2: render_backtest_metric_card("帳戶總淨利", f"${res_adv['net_profit_twd']:,.0f}", "", "#4ade80")
-                with c3: render_backtest_metric_card("總報酬", f"{res_adv['account_pct']:.2f}%", "", "#4ade80")
+                with c1: 
+                    render_backtest_metric_card("AI 真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", "", "#4ade80")
+                with c2: 
+                    render_backtest_metric_card("帳戶總淨利", f"${res_adv['net_profit_twd']:,.0f}", "", "#4ade80")
+                with c3: 
+                    render_backtest_metric_card("總報酬", f"{res_adv['account_pct']:.2f}%", "", "#4ade80")
                 st.line_chart(pd.DataFrame(res_adv['equity']).set_index("date_str")[["strat_cum_pct", "market_cum_pct"]])
             elif status == "no_key": 
                 st.warning("🔑 缺少 Supabase 資料庫金鑰。請在 Streamlit Secrets 中設定 `SUPABASE_URL` 與 `SUPABASE_KEY`。")
