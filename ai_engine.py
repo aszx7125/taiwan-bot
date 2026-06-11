@@ -1,6 +1,6 @@
 """
-台股AI雙向四核引擎 - 極值對撞版
-負責載入四個模型，並找出多空雙方最強烈的訊號進行對撞判斷
+台股AI四核引擎 - 終極極值對撞版
+負責載入四個模型，精準對齊特徵，並找出多空雙方最強烈的訊號
 """
 import os
 import numpy as np
@@ -56,10 +56,18 @@ class DualCoreBrain:
     def extract_features(self, clean_ticker, current_price, snapshot_dict, current_vol=0.0, fallback_atr=0.0, fallback_pattern=""):
         item = snapshot_dict.get(clean_ticker, {})
         feat_dict = {}
-        target_features = self.features_list if self.features_list else [
-            'daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 'turnover',
-            'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection'
-        ]
+        
+        # 🔥 蒐集多頭與空頭模型所需的所有特徵聯集
+        target_features = set()
+        if self.features_list: target_features.update(self.features_list)
+        if self.features_short_list: target_features.update(self.features_short_list)
+        
+        # 如果模型都還沒載入，給予預設特徵清單防止報錯
+        if not target_features:
+            target_features = [
+                'daily_return', 'vol_ratio', 'broker_conc', 'rs_index', 'volatility', 'turnover',
+                'is_pullback', 'is_squeeze', 'is_divergence', 'is_liquidity_sweep', 'is_poc_rejection'
+            ]
         
         for col in target_features:
             if col == 'is_pullback': feat_dict[col] = 1.0 if "回踩" in fallback_pattern else 0.0
@@ -74,7 +82,7 @@ class DualCoreBrain:
     def predict_four_core(self, features_list):
         """
         🔥 四核心極值對撞引擎
-        不使用平均值，而是找出多頭最強勝率與空頭最強勝率進行對決
+        分別將特徵精準餵入四個大腦，並進行多空對撞
         """
         if not features_list: return []
         df = pd.DataFrame(features_list)
@@ -84,39 +92,38 @@ class DualCoreBrain:
         lgbm_long = self.lgbm_model.predict_proba(df_lgbm)[:, 1] if self.is_lgbm_ready and not df_lgbm.empty else np.full(len(df), 0.5)
         
         # 2. LGBM 空頭
-        df_lgbm_s = df[self.features_short_list].astype(float).fillna(0) if self.features_short_list else df_lgbm
+        df_lgbm_s = df[self.features_short_list].astype(float).fillna(0) if self.features_short_list else pd.DataFrame()
         lgbm_short = self.lgbm_short_model.predict_proba(df_lgbm_s)[:, 1] if self.is_lgbm_short_ready and not df_lgbm_s.empty else np.full(len(df), 0.5)
 
-        # 3. LSTM 多頭與空頭 (單筆資料模擬序列)
+        # 3. LSTM 多頭與空頭
         lstm_long = np.full(len(df), 0.5)
         lstm_short = np.full(len(df), 0.5)
         
-        if self.is_lstm_ready or self.is_lstm_short_ready:
-            for i in range(len(df)):
-                row_vals = df.iloc[i].values
-                # 多頭 LSTM
-                if self.is_lstm_ready:
-                    scaled_l = self.lstm_scaler.transform([row_vals])
-                    seq_l = np.tile(scaled_l, (10, 1)).reshape(1, 10, -1)
-                    lstm_long[i] = self.lstm_model.predict(seq_l, verbose=0)[0][0]
-                # 空頭 LSTM
-                if self.is_lstm_short_ready:
-                    scaled_s = self.lstm_short_scaler.transform([row_vals])
-                    seq_s = np.tile(scaled_s, (10, 1)).reshape(1, 10, -1)
-                    lstm_short[i] = self.lstm_short_model.predict(seq_s, verbose=0)[0][0]
+        for i in range(len(df)):
+            # 多頭 LSTM (精準選取多頭特徵)
+            if self.is_lstm_ready and self.features_list:
+                row_vals_l = df[self.features_list].iloc[i].values
+                scaled_l = self.lstm_scaler.transform([row_vals_l])
+                seq_l = np.tile(scaled_l, (10, 1)).reshape(1, 10, -1)
+                lstm_long[i] = self.lstm_model.predict(seq_l, verbose=0)[0][0]
+                
+            # 空頭 LSTM (精準選取空頭特徵)
+            if self.is_lstm_short_ready and self.features_short_list:
+                row_vals_s = df[self.features_short_list].iloc[i].values
+                scaled_s = self.lstm_short_scaler.transform([row_vals_s])
+                seq_s = np.tile(scaled_s, (10, 1)).reshape(1, 10, -1)
+                lstm_short[i] = self.lstm_short_model.predict(seq_s, verbose=0)[0][0]
 
         results = []
         for i in range(len(df)):
-            ll = float(lgbm_long[i])
-            tl = float(lstm_long[i])
-            ls = float(lgbm_short[i])
-            ts = float(lstm_short[i])
+            ll, tl = float(lgbm_long[i]), float(lstm_long[i])
+            ls, ts = float(lgbm_short[i]), float(lstm_short[i])
             
-            # 🔥 找出多頭極值與空頭極值
+            # 🔥 取多方與空方各自的極值
             best_long = max(ll, tl)
             best_short = max(ls, ts)
             
-            # ⚔️ 極值對撞邏輯
+            # ⚔️ 極值對撞決策樹
             if best_long > 0.60 and best_long > best_short * 1.2:
                 signal = "STRONG_LONG"
             elif best_long > 0.52 and best_long > best_short:
@@ -139,7 +146,7 @@ class DualCoreBrain:
             
         return results
 
-    # 保留舊有方法以供其他分頁相容
+    # 確保與舊版分頁相容
     def predict_win_rates(self, features_list):
         if not hasattr(self, 'predict_four_core'): return [0.5] * len(features_list)
         return [res['best_long'] for res in self.predict_four_core(features_list)]
