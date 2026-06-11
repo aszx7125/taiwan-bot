@@ -1,8 +1,13 @@
 """
-UI組件 - 終極防縮排 Bug 版
-修復 HTML 被 Streamlit 誤判為程式碼區塊 (Code Block) 的問題
+UI組件 - 終極防破版 v3.2
+徹底消除 Python 字串縮排導致的 Markdown Code Block 誤判問題
 """
 import streamlit as st
+
+def _render_clean_html(raw_html):
+    """內部輔助函數：徹底清除所有換行與開頭空白，防止 Markdown 誤判"""
+    clean_html = "".join([line.strip() for line in raw_html.split('\n')])
+    st.markdown(clean_html, unsafe_allow_html=True)
 
 def render_top20_card(s):
     color = s.get('box_color', '#00cc96')
@@ -18,8 +23,7 @@ def render_top20_card(s):
         </div>
     </div>
     """
-    st.markdown(html.replace('\n', ''), unsafe_allow_html=True)
-
+    _render_clean_html(html)
 
 def render_single_diagnostic_card(core_data, entry_price, res_level, sup_level):
     bl = core_data['best_long'] * 100
@@ -67,9 +71,7 @@ def render_single_diagnostic_card(core_data, entry_price, res_level, sup_level):
         </div>
     </div>
     """
-    # 🔥 關鍵：抹除換行符號，防止 Streamlit 解析為程式碼區塊
-    st.markdown(html.replace('\n', ''), unsafe_allow_html=True)
-
+    _render_clean_html(html)
 
 def render_backtest_metric_card(title, value, subtext, color):
     html = f"""
@@ -79,8 +81,7 @@ def render_backtest_metric_card(title, value, subtext, color):
         <div style="color: #6b6b79; font-size: 12px;">{subtext}</div>
     </div>
     """
-    st.markdown(html.replace('\n', ''), unsafe_allow_html=True)
-
+    _render_clean_html(html)
 
 def render_model_health_board(metrics):
     st.markdown("### 🧪 四核心AI大腦：盲測勝率")
@@ -90,12 +91,12 @@ def render_model_health_board(metrics):
         wr_l = metrics.get('lgbm', {}).get('blind_win_rate', 0)
         date_l = metrics.get('lgbm', {}).get('last_train', '未訓練')
         c_l = "#00cc96" if wr_l > 0.55 else "#ffc107"
-        st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_l}; font-weight:bold;'>{wr_l*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_l}</span></div></div></div>", unsafe_allow_html=True)
+        _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_l}; font-weight:bold;'>{wr_l*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_l}</span></div></div></div>")
         
         wr_ll = metrics.get('lstm', {}).get('blind_win_rate', 0)
         date_ll = metrics.get('lstm', {}).get('last_train', '未訓練')
         c_ll = "#00cc96" if wr_ll > 0.53 else "#ffc107"
-        st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ll}; font-weight:bold;'>{wr_ll*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ll}</span></div></div></div>", unsafe_allow_html=True)
+        _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #00cc96; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ll}; font-weight:bold;'>{wr_ll*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ll}</span></div></div></div>")
         
     with col2:
         st.markdown("**🔴 空頭模型**")
@@ -103,14 +104,14 @@ def render_model_health_board(metrics):
         date_s = metrics.get('short', {}).get('lgbm', {}).get('last_train', '未訓練')
         c_s = "#ff4b4b" if wr_s > 0.55 else "#ff9966"
         if wr_s > 0:
-            st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_s}; font-weight:bold;'>{wr_s*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_s}</span></div></div></div>", unsafe_allow_html=True)
+            _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_s}; font-weight:bold;'>{wr_s*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_s}</span></div></div></div>")
         else:
-            st.markdown("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px; margin-bottom:8px;'><span style='color:#666;font-size:12px;'>LightGBM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>", unsafe_allow_html=True)
+            _render_clean_html("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px; margin-bottom:8px;'><span style='color:#666;font-size:12px;'>LightGBM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>")
         
         wr_ls = metrics.get('short', {}).get('lstm', {}).get('blind_win_rate', 0)
         date_ls = metrics.get('short', {}).get('lstm', {}).get('last_train', '未訓練')
         c_ls = "#ff4b4b" if wr_ls > 0.53 else "#ff9966"
         if wr_ls > 0:
-            st.markdown(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ls}; font-weight:bold;'>{wr_ls*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ls}</span></div></div></div>", unsafe_allow_html=True)
+            _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ls}; font-weight:bold;'>{wr_ls*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ls}</span></div></div></div>")
         else:
-            st.markdown("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px;'><span style='color:#666;font-size:12px;'>LSTM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>", unsafe_allow_html=True)
+            _render_clean_html("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px;'><span style='color:#666;font-size:12px;'>LSTM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>")

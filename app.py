@@ -1,6 +1,6 @@
 """
-台股AI量化系統 v3.1 - 四核極值對撞防破版
-修復：取消多行 HTML 縮排，徹底防止 Markdown 程式碼區塊顯示問題
+台股AI量化系統 v3.2 - 四核極值對撞防破版
+修復：徹底消除 Python 字串縮排導致的 Markdown Code Block 誤判問題
 """
 import streamlit as st
 import pandas as pd
@@ -11,11 +11,14 @@ import concurrent.futures
 import json
 import os
 
+def _render_clean_html(raw_html):
+    """內部輔助函數：徹底清除所有換行與開頭空白"""
+    clean_html = "".join([line.strip() for line in raw_html.split('\n')])
+    st.markdown(clean_html, unsafe_allow_html=True)
+
 def get_fugle_key():
-    try: 
-        return st.secrets["FUGLE_API_KEY"]
-    except: 
-        return ""
+    try: return st.secrets["FUGLE_API_KEY"]
+    except: return ""
 
 DEFAULT_CLUSTERS = {
     "半導體": ["2330.TW", "3711.TW", "2454.TW", "2303.TW", "5347.TWO", "3034.TW"],
@@ -41,7 +44,7 @@ from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_
 from ai_engine import DualCoreBrain
 from ui_components import render_top20_card, render_single_diagnostic_card, render_backtest_metric_card, render_model_health_board
 
-st.set_page_config(page_title="台股量化旗艦終端 v3.1", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股量化旗艦終端 v3.2", page_icon="📈", layout="wide")
 
 FUGLE_API_KEY = get_fugle_key()
 if 'stock_clusters' not in st.session_state: 
@@ -68,10 +71,8 @@ def get_stock_name_from_csv(ticker: str) -> str:
             df_all.columns = [col.lower() for col in df_all.columns]
             df_all['clean_ticker'] = df_all['ticker'].astype(str).str.split('.').str[0].str.strip()
             match = df_all[df_all['clean_ticker'] == clean_code]
-            if not match.empty: 
-                return str(match.iloc[0]['name'])
-    except: 
-        pass
+            if not match.empty: return str(match.iloc[0]['name'])
+    except: pass
     return ticker
 
 def compute_fear_greed(twii_pct: float, snapshot_data: list) -> tuple[int, str, str]:
@@ -110,11 +111,8 @@ def render_fear_greed_gauge(index_val: int, label: str, color: str):
         </div>
     </div>
     """
-    st.markdown(html.replace('\n', ''), unsafe_allow_html=True)
+    _render_clean_html(html)
 
-# ==========================================
-# 🎛️ 左側控制面板
-# ==========================================
 with st.sidebar:
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
@@ -142,17 +140,11 @@ with st.sidebar:
     
     if st.button("🔥 啟動全市場 AI 掃描", use_container_width=True):
         success, msg = trigger_github_workflow("daily_scan.yml")
-        if success:
-            st.success(msg)
-        else:
-            st.error(msg)
+        st.success(msg) if success else st.error(msg)
             
     if st.button("🧠 啟動四模型訓練", use_container_width=True):
         success, msg = trigger_github_workflow("train_ai.yml")
-        if success:
-            st.info(msg)
-        else:
-            st.error(msg)
+        st.info(msg) if success else st.error(msg)
             
     st.markdown("---")
     if brain.is_lstm_ready: st.success("🔮 LSTM 多頭已連動")
@@ -164,10 +156,7 @@ with st.sidebar:
     if hasattr(brain, 'is_lgbm_short_ready') and brain.is_lgbm_short_ready: st.success("🔴 LGBM 空頭已連動")
     if hasattr(brain, 'is_lstm_short_ready') and brain.is_lstm_short_ready: st.success("🔴 LSTM 空頭已連動")
 
-# ==========================================
-# ⚡ 戰情室主視覺
-# ==========================================
-st.title("⚡ 台股戰情分析終端 v3.1")
+st.title("⚡ 台股戰情分析終端 v3.2")
 st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心極值對撞 AI 驅動")
 col1, col2 = st.columns([3, 1])
 with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed", placeholder="例如: 2330")
@@ -334,7 +323,7 @@ else:
                 html_table = pd.DataFrame(rows).to_html(escape=False, index=False, border=0).replace('\n', '')
                 fs_th = max(14, user_font_size - 4)
                 css = f"<style>.watch-board table{{width:100%!important;border-collapse:collapse;}}.watch-board th{{text-align:center!important;font-size:{fs_th}px!important;padding:10px!important;border-bottom:2px solid #555!important;}}.watch-board td{{text-align:center!important;font-size:{user_font_size}px!important;padding:16px!important;border-bottom:1px solid #444!important;vertical-align:middle!important;}}</style>"
-                st.markdown(f'{css}<div class="watch-board">{html_table}</div>', unsafe_allow_html=True)
+                _render_clean_html(f'{css}<div class="watch-board">{html_table}</div>')
         render_rt()
     
     with tab2:
@@ -383,10 +372,9 @@ else:
                     <span style="color: #888;">⚪ 防守觀望梯隊 (勝率 < 48%): <b>{tier_gamma} 檔</b></span>
                 </div>
                 """
-                st.markdown(html_dist.replace('\n', ''), unsafe_allow_html=True)
+                _render_clean_html(html_dist)
                 
-                if bullish_ratio == 0: 
-                    st.info("💡 **解讀提示**：當前看多比率為 0.0% 代表目前盤勢處於極端修正或震盪。")
+                if bullish_ratio == 0: st.info("💡 **解讀提示**：當前看多比率為 0.0% 代表目前盤勢處於極端修正或震盪。")
         else: 
             st.info("ℹ️ 快取中無有效數據。")
     
@@ -495,7 +483,7 @@ else:
                             </div>
                         </div>
                         """
-                        st.markdown(html_s.replace('\n', ''), unsafe_allow_html=True)
+                        _render_clean_html(html_s)
                 else:
                     st.success("✅ 目前市場無明顯空頭訊號")
                     st.info("💡 所有股票空頭極值均 < 55%，市場相對安全")
@@ -553,11 +541,9 @@ else:
                             for future in concurrent.futures.as_completed(futures):
                                 try:
                                     res = future.result()
-                                    if res: 
-                                        clash_rows.append(res)
+                                    if res: clash_rows.append(res)
                                     time.sleep(0.3)
-                                except Exception: 
-                                    pass
+                                except Exception: pass
                         if clash_rows:
                             clash_df = pd.DataFrame(clash_rows).sort_values(by="_win_prob_raw", ascending=False)
                             st.success("✅ 實盤對撞數據已成功產出！")
@@ -574,12 +560,9 @@ else:
             status = res_adv.get("status")
             if status == "ready":
                 c1, c2, c3 = st.columns(3)
-                with c1: 
-                    render_backtest_metric_card("AI 真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", "", "#4ade80")
-                with c2: 
-                    render_backtest_metric_card("帳戶總淨利", f"${res_adv['net_profit_twd']:,.0f}", "", "#4ade80")
-                with c3: 
-                    render_backtest_metric_card("總報酬", f"{res_adv['account_pct']:.2f}%", "", "#4ade80")
+                with c1: render_backtest_metric_card("AI 真實勝率", f"{res_adv['ai_strat']['wr']*100:.1f}%", "", "#4ade80")
+                with c2: render_backtest_metric_card("帳戶總淨利", f"${res_adv['net_profit_twd']:,.0f}", "", "#4ade80")
+                with c3: render_backtest_metric_card("總報酬", f"{res_adv['account_pct']:.2f}%", "", "#4ade80")
                 st.line_chart(pd.DataFrame(res_adv['equity']).set_index("date_str")[["strat_cum_pct", "market_cum_pct"]])
             elif status == "no_key": 
                 st.warning("🔑 缺少 Supabase 資料庫金鑰。請在 Streamlit Secrets 中設定 `SUPABASE_URL` 與 `SUPABASE_KEY`。")
