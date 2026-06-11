@@ -1,6 +1,6 @@
 """
-台股AI量化系統 v2.4 - 終極乾淨版
-修復：移除 Streamlit Magic 導致的 DeltaGenerator 亂碼訊息
+台股AI量化系統 v3.0 - 四核極值對撞終極版
+修復：參數不匹配 TypeError、DeltaGenerator 亂碼、全面導入四核心極值邏輯
 """
 import streamlit as st
 import pandas as pd
@@ -41,7 +41,7 @@ from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_
 from ai_engine import DualCoreBrain
 from ui_components import render_top20_card, render_single_diagnostic_card, render_backtest_metric_card, render_model_health_board
 
-st.set_page_config(page_title="台股量化旗艦終端 v2.4", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股量化旗艦終端 v3.0", page_icon="📈", layout="wide")
 
 FUGLE_API_KEY = get_fugle_key()
 if 'stock_clusters' not in st.session_state: 
@@ -141,7 +141,6 @@ with st.sidebar:
     st.markdown("---")
     st.header("🛠️ 遠端自動化控制")
     
-    # 🔥 徹底修復：將單行判斷改為標準 if-else，阻絕 DeltaGenerator 亂碼顯示
     if st.button("🔥 啟動全市場 AI 掃描", use_container_width=True):
         success, msg = trigger_github_workflow("daily_scan.yml")
         if success:
@@ -175,8 +174,8 @@ with st.sidebar:
 # ==========================================
 # ⚡ 戰情室主視覺
 # ==========================================
-st.title("⚡ 台股戰情分析終端 v2.4")
-st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心AI驅動")
+st.title("⚡ 台股戰情分析終端 v3.0")
+st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心極值對撞 AI 驅動")
 col1, col2 = st.columns([3, 1])
 with col1: 
     manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed", placeholder="例如: 2330")
@@ -228,18 +227,16 @@ if target_ticker:
             snapshot_dict = get_snapshot_dict(load_market_snapshot())
             feat_dict = brain.extract_features(base_ticker, entry_price, snapshot_dict, current_vol=rt_v, fallback_atr=atr_14, fallback_pattern=smc_text)
             
-            if hasattr(brain, 'predict_bidirectional'):
-                res_bidir = brain.predict_bidirectional([feat_dict])
-                long_prob = float(res_bidir['long_prob'][0])
-                short_prob = float(res_bidir['short_prob'][0])
-                ai_signal = res_bidir['signal'][0]
+            # 🔥 呼叫四核心極值對撞引擎
+            if hasattr(brain, 'predict_four_core'):
+                core_data = brain.predict_four_core([feat_dict])[0]
             else:
-                long_prob = brain.predict_win_rates([feat_dict])[0]
-                short_prob = 1.0 - long_prob
-                ai_signal = "LONG" if long_prob > 0.52 else "WAIT"
+                core_data = {'best_long': 0.5, 'best_short': 0.5, 'lgbm_long': 0.5, 'lstm_long': 0.5, 'lgbm_short': 0.5, 'lstm_short': 0.5, 'signal': 'WAIT'}
 
-            st.subheader(f"🧬 {base_ticker} {c_name} 四核心雙向診斷報告")
-            render_single_diagnostic_card(long_prob, short_prob, ai_signal, entry_price, res_level, sup_level)
+            st.subheader(f"🧬 {base_ticker} {c_name} 診斷報告")
+            
+            # 🔥 將完整 core_data 丟入 UI 組件
+            render_single_diagnostic_card(core_data, entry_price, res_level, sup_level)
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("當前現價", f"{entry_price:.2f}", f"{p_change:+.2f}%")
@@ -373,8 +370,14 @@ else:
                 ep = float(item.get('現價', item.get('close_price', 0.0)))
                 if ep > 0: 
                     bulk_features.append(brain.extract_features(ticker, ep, snap_dict, current_vol=float(item.get('成交量', 0.0))))
+            
             if bulk_features:
-                probs = np.array(brain.predict_win_rates(bulk_features))
+                if hasattr(brain, 'predict_four_core'):
+                    core_results = brain.predict_four_core(bulk_features)
+                    probs = np.array([res['best_long'] for res in core_results])
+                else:
+                    probs = np.array(brain.predict_win_rates(bulk_features))
+                    
                 avg_win_rate = float(np.mean(probs)) * 100
                 bullish_ratio = float(np.mean(probs >= 0.50)) * 100
                 highest_prob = float(np.max(probs)) * 100
@@ -421,7 +424,12 @@ else:
                     valid_items.append(item)
                     bulk_features.append(brain.extract_features(ticker, ep, snap_dict, current_vol=float(item.get('成交量', 0.0))))
             if valid_items:
-                probs = brain.predict_win_rates(bulk_features)
+                if hasattr(brain, 'predict_four_core'):
+                    core_results = brain.predict_four_core(bulk_features)
+                    probs = [res['best_long'] for res in core_results]
+                else:
+                    probs = brain.predict_win_rates(bulk_features)
+                    
                 processed = []
                 for idx, item in enumerate(valid_items):
                     prob = probs[idx]
@@ -460,16 +468,18 @@ else:
                     valid_items.append(item)
                     bulk_features.append(brain.extract_features(ticker, ep, snap_dict, current_vol=float(item.get('成交量', 0.0))))
             if valid_items:
-                if hasattr(brain, 'predict_bidirectional'):
-                    result = brain.predict_bidirectional(bulk_features)
-                    short_probs = result['short_prob']
-                    long_probs = result['long_prob']
+                if hasattr(brain, 'predict_four_core'):
+                    core_results = brain.predict_four_core(bulk_features)
+                    short_probs = [res['best_short'] for res in core_results]
+                    long_probs = [res['best_long'] for res in core_results]
                 else:
                     long_probs = brain.predict_win_rates(bulk_features)
-                    short_probs = 1.0 - long_probs
+                    short_probs = [1.0 - lp for lp in long_probs]
+                    
                 processed = []
                 for idx, item in enumerate(valid_items):
                     sp = float(short_probs[idx])
+                    lp = float(long_probs[idx])
                     if sp >= 0.55:
                         ep = float(item.get('現價', 0.0))
                         res = float(item.get('Res_20', ep * 1.05))
@@ -481,30 +491,32 @@ else:
                         s_name = item.get('名稱', s_ticker)
                         if not s_name or s_name == s_ticker: 
                             s_name = get_stock_name_from_csv(s_ticker)
-                        processed.append({'ticker': s_ticker, 'name': s_name, 'short_prob': sp, 'long_prob': float(long_probs[idx]), 'entry_price': ep, 'take_profit': take_profit, 'stop_loss': stop_loss})
+                        processed.append({'ticker': s_ticker, 'name': s_name, 'short_prob': sp, 'long_prob': lp, 'entry_price': ep, 'take_profit': take_profit, 'stop_loss': stop_loss})
                 if processed:
                     st.success(f"✅ 找到 {len(processed)} 檔空頭訊號，顯示前20檔")
                     for stock in sorted(processed, key=lambda x: x['short_prob'], reverse=True)[:20]:
                         sp = stock['short_prob']
                         color = "#ff0000" if sp >= 0.65 else "#ff4b4b" if sp >= 0.60 else "#ff9966"
-                        drop_pct = (1 - stock['take_profit'] / stock['entry_price']) * 100
-                        risk_pct = (stock['stop_loss'] / stock['entry_price'] - 1) * 100
+                        
+                        entry_p = max(stock['entry_price'], 0.01)
+                        drop_pct = (1 - stock['take_profit'] / entry_p) * 100
+                        risk_pct = (stock['stop_loss'] / entry_p - 1) * 100
                         st.markdown(f"""
                         <div style="border:2px solid {color};border-radius:10px;padding:16px; background:#1e1e1e;margin-bottom:12px;">
                             <div style="display:flex;justify-content:space-between;align-items:center;">
                                 <div><h4 style="color:{color};margin:0;">🔻 {stock['ticker']} {stock['name']}</h4>
-                                <span style="color:#888;font-size:12px;">空頭 {sp*100:.1f}% | 多頭 {stock['long_prob']*100:.1f}%</span></div>
-                                <div style="text-align:right;"><div style="color:#888;font-size:11px;">放空價</div>
+                                <span style="color:#888;font-size:12px;">空頭極值 {sp*100:.1f}% | 多頭極值 {stock['long_prob']*100:.1f}%</span></div>
+                                <div style="text-align:right;"><div style="color:#888;font-size:11px;">現價</div>
                                 <div style="color:#fff;font-size:20px;font-weight:bold;">{stock['entry_price']:.2f}</div></div>
                             </div>
                             <div style="display:flex;justify-content:space-between;margin-top:12px; padding-top:12px;border-top:1px solid #333;font-size:13px;">
-                                <span>停利: <b style="color:#00cc96;">{stock['take_profit']:.2f}</b> <small>(-{drop_pct:.1f}%)</small></span>
-                                <span>停損: <b style="color:#ff4b4b;">{stock['stop_loss']:.2f}</b> <small>(+{risk_pct:.1f}%)</small></span>
+                                <span>下檔支撐 (停利區): <b style="color:#00cc96;">{stock['take_profit']:.2f}</b> <small>(-{drop_pct:.1f}%)</small></span>
+                                <span>上檔壓力 (停損區): <b style="color:#ff4b4b;">{stock['stop_loss']:.2f}</b> <small>(+{risk_pct:.1f}%)</small></span>
                             </div>
                         </div>""", unsafe_allow_html=True)
                 else:
                     st.success("✅ 目前市場無明顯空頭訊號")
-                    st.info("💡 所有股票空頭機率均 < 55%，市場相對安全")
+                    st.info("💡 所有股票空頭極值均 < 55%，市場相對安全")
         else: 
             st.error("❌ 無法讀取市場快取")
             
@@ -526,9 +538,15 @@ else:
                 if not valid_items: 
                     st.warning("⚪ 歷史快取中無有效個股資料。")
                 else:
-                    probs = brain.predict_win_rates(bulk_features)
+                    if hasattr(brain, 'predict_four_core'):
+                        core_results = brain.predict_four_core(bulk_features)
+                        probs = [res['best_long'] for res in core_results]
+                    else:
+                        probs = brain.predict_win_rates(bulk_features)
+                        
                     candidates = sorted([{**item, 'win_prob': float(probs[i])} for i, item in enumerate(valid_items)], key=lambda x: x['win_prob'], reverse=True)
                     top_candidates = [c for c in candidates if c['win_prob'] >= 0.50][:15]
+                    
                     if not top_candidates:
                         highest = float(max(probs)) if len(probs) > 0 else 0.0
                         st.warning(f"⚪ 昨晚快取數據中無勝率達標 (>50%) 的標的（最高僅 {highest*100:.1f}%），今日無開獎清單。")
