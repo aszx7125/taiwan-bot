@@ -1,6 +1,6 @@
 """
-台股AI量化系統 v2.1 - 完整修復版
-修復：HTML實體、快取讀取、四模型按鈕
+台股AI量化系統 v2.2 - 滿血四核修復版
+修復：傳產與任意股名稱解析、空頭 Tab 縮排錯位、多模型UI支援
 """
 import streamlit as st
 import pandas as pd
@@ -15,6 +15,7 @@ def get_fugle_key():
     try: return st.secrets["FUGLE_API_KEY"]
     except: return ""
 
+# 擴充預設名稱字典，確保基礎標的絕對有名字
 DEFAULT_CLUSTERS = {
     "半導體": ["2330.TW", "3711.TW", "2454.TW", "2303.TW", "5347.TWO", "3034.TW"],
     "矽光子": ["3363.TWO", "3450.TW", "6451.TW", "3081.TWO", "4979.TWO", "3163.TWO"],
@@ -26,7 +27,12 @@ DEFAULT_CLUSTERS = {
 
 DEFAULT_NAMES = {
     "2330": "台積電", "2454": "聯發科", "2303": "聯電", "2382": "廣達", "3231": "緯創",
-    "2881": "富邦金", "2882": "國泰金", "0050": "元大台灣50", "0056": "元大高股息",
+    "2881": "富邦金", "2882": "國泰金", "2886": "兆豐金", "2891": "中信金", "2884": "玉山金",
+    "1101": "台泥", "2002": "中鋼", "2603": "長榮", "2609": "陽明", "2618": "長榮航",
+    "0050": "元大台灣50", "0056": "元大高股息", "00878": "國泰永續高股息", "00919": "群益精選高息", "00929": "復華台灣科技優息",
+    "3711": "日月光投控", "5347": "世界", "3034": "聯詠", "3363": "禾聯碩", "3450": "聯鈞", 
+    "6451": "訊芯-KY", "3081": "聯亞", "4979": "華星光", "3163": "波若威", "6669": "緯穎", 
+    "2376": "技嘉", "3017": "奇鋐", "5274": "信驊", "5474": "聰泰"
 }
 
 from data_fetcher import load_all_market_tickers, get_market_summary, get_kline_with_fugle, get_stock_news
@@ -34,7 +40,7 @@ from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_
 from ai_engine import DualCoreBrain
 from ui_components import render_top20_card, render_single_diagnostic_card, render_backtest_metric_card, render_model_health_board
 
-st.set_page_config(page_title="台股量化旗艦終端 v2.1", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股量化旗艦終端 v2.2", page_icon="📈", layout="wide")
 
 FUGLE_API_KEY = get_fugle_key()
 if 'stock_clusters' not in st.session_state:
@@ -53,12 +59,14 @@ def get_cached_market_summary():
 
 @st.cache_data
 def get_stock_name_from_csv(ticker: str) -> str:
+    """🔥 修復：改為精準比對 (==) 取代模糊搜尋 (contains)，避免名稱錯亂"""
     try:
         clean_code = str(ticker).split('.')[0].strip()
         df_all = load_all_market_tickers()
         if not df_all.empty:
             df_all.columns = [col.lower() for col in df_all.columns]
-            match = df_all[df_all['ticker'].astype(str).str.contains(clean_code)]
+            df_all['clean_ticker'] = df_all['ticker'].astype(str).str.split('.').str[0].str.strip()
+            match = df_all[df_all['clean_ticker'] == clean_code]
             if not match.empty:
                 return str(match.iloc[0]['name'])
     except: pass
@@ -132,7 +140,7 @@ with st.sidebar:
     if hasattr(brain, 'is_lstm_short_ready') and brain.is_lstm_short_ready:
         st.success("🔴 LSTM 空頭已連動")
 
-st.title("⚡ 台股戰情分析終端 v2.1")
+st.title("⚡ 台股戰情分析終端 v2.2")
 st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心AI驅動")
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -213,7 +221,6 @@ else:
     snapshot = load_market_snapshot()
     snapshot_data = snapshot.get('data', []) if snapshot else []
     
-    # 🔥 修復：確保快取資訊始終顯示
     update_time = "未知"
     if snapshot and isinstance(snapshot, dict):
         update_time = snapshot.get('update_time', '未知')
@@ -230,7 +237,6 @@ else:
                 cols[i].metric(name, f"{data['price']:.2f}", f"{data['change']:+.2f} ({data['pct']:+.2f}%)")
         with c_greed: render_fear_greed_gauge(greed_val, greed_label, greed_color)
     
-    # 🔥 需求4: 顯示快取更新時間 (移到外部，確保始終顯示)
     if update_time != "未知":
         st.caption(f"📡 快取更新時間：{update_time} ｜ 涵蓋標的：{len(snapshot_data)} 檔")
     else:
@@ -240,7 +246,7 @@ else:
     metrics = load_model_metrics()
     render_model_health_board(metrics)
     st.markdown("---")
-    tab1, tab2, tab3, tab3s, tab5, tab6 = st.tabs(["📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "🔻 空頭 TOP20", "⚖️ 實盤開獎對撞", "🔬 策略回測"])
+    tab1, tab2, tab3, tab3s, tab5, tab6 = st.tabs(["📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "🔻 空頭 TOP 20", "⚖️ 實盤開獎對撞", "🔬 策略回測"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -322,7 +328,7 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
                 if bullish_ratio == 0:
-                    st.info("💡 **解讀提示**：當前看多比率為 0.0% 並非系統錯誤。這代表目前盤勢處於極端修正或大盤高位震盪，經正規化後的籌碼與時序動能特徵未達大腦設定之 50% 絕對把握門檻。此時大腦集體將股票歸類於 `蓄勢震盪` 與 `防守觀望` 梯隊，建議依循量化紀律，控制實盤持倉水位。")
+                    st.info("💡 **解讀提示**：當前看多比率為 0.0% 並非系統錯誤。代表目前盤勢處於極端修正或震盪。")
         else:
             st.info("ℹ️ 快取中無有效數據。")
     
@@ -359,105 +365,97 @@ else:
                     for s in sorted(processed, key=lambda x: x['win_prob'], reverse=True)[:20]: render_top20_card(s)
                 else:
                     highest = float(max(probs)) if len(probs) > 0 else 0.0
-                    st.warning(f"⚠️ **目前全市場無符合高勝率標準 (>50%) 之標的。**\n\nAI 雙核大腦判定當前市場風險極高（全市場最高勝率僅 {highest*100:.1f}%）。\n\n💡 **系統建議：** 強烈建議保持空手，或點擊側邊欄【啟動全市場 AI 掃描】更新快取。")
+                    st.warning(f"⚠️ **目前全市場無符合高勝率標準 (>50%) 之標的。**\n\nAI 判定市場風險高（最高勝率僅 {highest*100:.1f}%）。")
         else: st.info("快取中無數據。")
     
+    # 🔥 修復：縮排正確！讓空頭清單不會跑到分頁外面
     with tab3s:
         st.markdown("#### 🔻 全市場 AI 空頭戰術面板 (TOP 20 放空名單)")
         snap = load_market_snapshot()
-    if snap and 'data' in snap:
-        raw_list = snap['data']
-        snap_dict = get_snapshot_dict(snap)
-        valid_items, bulk_features = [], []
-        
-        for item in raw_list:
-            ticker = str(item.get('代號', '')).split('.')[0].strip()
-            ep = float(item.get('現價', item.get('close_price', 0.0)))
-            if ep > 0:
-                valid_items.append(item)
-                bulk_features.append(brain.extract_features(
-                    ticker, ep, snap_dict, 
-                    current_vol=float(item.get('成交量', 0.0))
-                ))
-        
-        if valid_items:
-            # 使用雙向預測取得空頭機率
-            if hasattr(brain, 'predict_bidirectional'):
-                result = brain.predict_bidirectional(bulk_features)
-                short_probs = result['short_prob']
-                long_probs = result['long_prob']
-            else:
-                # Fallback
-                long_probs = brain.predict_win_rates(bulk_features)
-                short_probs = 1.0 - long_probs
+        if snap and 'data' in snap:
+            raw_list = snap['data']
+            snap_dict = get_snapshot_dict(snap)
+            valid_items, bulk_features = [], []
             
-            processed = []
-            for idx, item in enumerate(valid_items):
-                sp = float(short_probs[idx])
-                # 空頭門檻 55%
-                if sp >= 0.55:
-                    ep = float(item.get('現價', 0.0))
-                    res = float(item.get('Res_20', ep * 1.05))
-                    sup = float(item.get('Sup_20', ep * 0.95))
-                    atr = float(item.get('ATR_14', ep * 0.03))
-                    
-                    # 空頭：停利在支撐，停損在壓力
-                    take_profit = round(sup - atr, 2)
-                    stop_loss = round(res * 1.015, 2)
-                    
-                    s_ticker = item.get('代號', '')
-                    s_name = item.get('名稱', s_ticker)
-                    if not s_name or s_name == s_ticker:
-                        s_name = get_stock_name_from_csv(s_ticker)
-                    
-                    processed.append({
-                        'ticker': s_ticker,
-                        'name': s_name,
-                        'short_prob': sp,
-                        'long_prob': float(long_probs[idx]),
-                        'entry_price': ep,
-                        'take_profit': take_profit,
-                        'stop_loss': stop_loss,
-                    })
+            for item in raw_list:
+                ticker = str(item.get('代號', '')).split('.')[0].strip()
+                ep = float(item.get('現價', item.get('close_price', 0.0)))
+                if ep > 0:
+                    valid_items.append(item)
+                    bulk_features.append(brain.extract_features(
+                        ticker, ep, snap_dict, current_vol=float(item.get('成交量', 0.0))
+                    ))
             
-            if processed:
-                st.success(f"✅ 找到 {len(processed)} 檔空頭訊號，顯示前20檔")
+            if valid_items:
+                if hasattr(brain, 'predict_bidirectional'):
+                    result = brain.predict_bidirectional(bulk_features)
+                    short_probs = result['short_prob']
+                    long_probs = result['long_prob']
+                else:
+                    long_probs = brain.predict_win_rates(bulk_features)
+                    short_probs = 1.0 - long_probs
                 
-                for stock in sorted(processed, key=lambda x: x['short_prob'], reverse=True)[:20]:
-                    sp = stock['short_prob']
-                    color = "#ff0000" if sp >= 0.65 else "#ff4b4b" if sp >= 0.60 else "#ff9966"
-                    drop_pct = (1 - stock['take_profit'] / stock['entry_price']) * 100
-                    risk_pct = (stock['stop_loss'] / stock['entry_price'] - 1) * 100
-                    
-                    st.markdown(f"""
-                    <div style="border:2px solid {color};border-radius:10px;padding:16px;
-                                background:#1e1e1e;margin-bottom:12px;">
-                        <div style="display:flex;justify-content:space-between;align-items:center;">
-                            <div>
-                                <h4 style="color:{color};margin:0;">🔻 {stock['ticker']} {stock['name']}</h4>
-                                <span style="color:#888;font-size:12px;">
-                                    空頭 {sp*100:.1f}% | 多頭 {stock['long_prob']*100:.1f}%
-                                </span>
+                processed = []
+                for idx, item in enumerate(valid_items):
+                    sp = float(short_probs[idx])
+                    if sp >= 0.55:
+                        ep = float(item.get('現價', 0.0))
+                        res = float(item.get('Res_20', ep * 1.05))
+                        sup = float(item.get('Sup_20', ep * 0.95))
+                        atr = float(item.get('ATR_14', ep * 0.03))
+                        
+                        take_profit = round(sup - atr, 2)
+                        stop_loss = round(res * 1.015, 2)
+                        
+                        s_ticker = item.get('代號', '')
+                        s_name = item.get('名稱', s_ticker)
+                        if not s_name or s_name == s_ticker:
+                            s_name = get_stock_name_from_csv(s_ticker)
+                        
+                        processed.append({
+                            'ticker': s_ticker, 'name': s_name,
+                            'short_prob': sp, 'long_prob': float(long_probs[idx]),
+                            'entry_price': ep, 'take_profit': take_profit, 'stop_loss': stop_loss,
+                        })
+                
+                if processed:
+                    st.success(f"✅ 找到 {len(processed)} 檔空頭訊號，顯示前20檔")
+                    for stock in sorted(processed, key=lambda x: x['short_prob'], reverse=True)[:20]:
+                        sp = stock['short_prob']
+                        color = "#ff0000" if sp >= 0.65 else "#ff4b4b" if sp >= 0.60 else "#ff9966"
+                        drop_pct = (1 - stock['take_profit'] / stock['entry_price']) * 100
+                        risk_pct = (stock['stop_loss'] / stock['entry_price'] - 1) * 100
+                        
+                        st.markdown(f"""
+                        <div style="border:2px solid {color};border-radius:10px;padding:16px;
+                                    background:#1e1e1e;margin-bottom:12px;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;">
+                                <div>
+                                    <h4 style="color:{color};margin:0;">🔻 {stock['ticker']} {stock['name']}</h4>
+                                    <span style="color:#888;font-size:12px;">
+                                        空頭 {sp*100:.1f}% | 多頭 {stock['long_prob']*100:.1f}%
+                                    </span>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="color:#888;font-size:11px;">放空價</div>
+                                    <div style="color:#fff;font-size:20px;font-weight:bold;">{stock['entry_price']:.2f}</div>
+                                </div>
                             </div>
-                            <div style="text-align:right;">
-                                <div style="color:#888;font-size:11px;">放空價</div>
-                                <div style="color:#fff;font-size:20px;font-weight:bold;">{stock['entry_price']:.2f}</div>
+                            <div style="display:flex;justify-content:space-between;margin-top:12px;
+                                        padding-top:12px;border-top:1px solid #333;font-size:13px;">
+                                <span>停利: <b style="color:#00cc96;">{stock['take_profit']:.2f}</b> 
+                                      <small>(-{drop_pct:.1f}%)</small></span>
+                                <span>停損: <b style="color:#ff4b4b;">{stock['stop_loss']:.2f}</b> 
+                                      <small>(+{risk_pct:.1f}%)</small></span>
                             </div>
                         </div>
-                        <div style="display:flex;justify-content:space-between;margin-top:12px;
-                                    padding-top:12px;border-top:1px solid #333;font-size:13px;">
-                            <span>停利: <b style="color:#00cc96;">{stock['take_profit']:.2f}</b> 
-                                  <small>(-{drop_pct:.1f}%)</small></span>
-                            <span>停損: <b style="color:#ff4b4b;">{stock['stop_loss']:.2f}</b> 
-                                  <small>(+{risk_pct:.1f}%)</small></span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.success("✅ 目前市場無明顯空頭訊號")
-                st.info("💡 所有股票空頭機率均 < 55%，市場相對安全")
-    else:
-        st.error("❌ 無法讀取市場快取")
+                        """, unsafe_allow_html=True)
+                else:
+                    st.success("✅ 目前市場無明顯空頭訊號")
+                    st.info("💡 所有股票空頭機率均 < 55%，市場相對安全")
+        else:
+            st.error("❌ 無法讀取市場快取")
+            
     with tab5:
         st.markdown("#### ⚖️ 昨晚 AI 預測 x 今日實盤開獎比對面板")
         if st.button("🔄 執行即時對撞比對", key="run_clash_realtime_btn"):

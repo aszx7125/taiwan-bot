@@ -83,14 +83,15 @@ def trigger_github_workflow(workflow_filename):
 
 
 @st.cache_data(ttl=60)  # 🔥 修改：從7200改為60秒，確保及時更新
+# ── 模型績效報告 ──────────────────────────────────────────────────────────
 def load_model_metrics():
-    """讀取訓練時產生的盲測勝率報告 - 支援四核心"""
+    """讀取訓練時產生的盲測勝率報告 (支援四核架構防護)"""
     default_metrics = {
-        "lgbm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"},
-        "lstm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"},
-        "short": {  # 🔥 新增：空頭模型預設值
-            "lgbm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"},
-            "lstm": {"blind_win_rate": 0.0, "last_train": "等待排程更新"}
+        "lgbm": {"blind_win_rate": 0.0, "last_train": "尚未訓練"},
+        "lstm": {"blind_win_rate": 0.0, "last_train": "尚未訓練"},
+        "short": {
+            "lgbm": {"blind_win_rate": 0.0, "last_train": "尚未訓練"},
+            "lstm": {"blind_win_rate": 0.0, "last_train": "尚未訓練"}
         }
     }
 
@@ -98,15 +99,15 @@ def load_model_metrics():
         try:
             with open("model_metrics.json", "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if "lgbm" in data:
-                    default_metrics["lgbm"] = data["lgbm"]
-                if "lstm" in data:
-                    default_metrics["lstm"] = data["lstm"]
-                if "short" in data:  # 🔥 新增：讀取空頭數據
-                    default_metrics["short"] = data["short"]
-        except Exception as e:
-            print(f"讀取 model_metrics.json 失敗: {e}")
-    
+                # 安全更新，即使舊 JSON 缺少某些 key 也不會報錯
+                if "lgbm" in data: default_metrics["lgbm"].update(data["lgbm"])
+                if "lstm" in data: default_metrics["lstm"].update(data["lstm"])
+                if "short" in data:
+                    if "lgbm" in data["short"]: default_metrics["short"]["lgbm"].update(data["short"]["lgbm"])
+                    if "lstm" in data["short"]: default_metrics["short"]["lstm"].update(data["short"]["lstm"])
+        except Exception:
+            pass
+
     return default_metrics
 
 
