@@ -1,8 +1,4 @@
-"""
-台股AI雙向四核引擎 - 極速批次推論版 (解決卡頓)
-修復：將單筆 predict 迴圈改為 3D Tensor 矩陣平行推論，運算時間縮短 99%。
-"""
-import os
+﻿import os
 import numpy as np
 import pandas as pd
 import joblib
@@ -104,7 +100,6 @@ class DualCoreBrain:
         return feat
     
     def _compute_lstm_batch(self, features_list, model=None, scaler=None):
-        """🔥 核心修復：使用 3D 張量矩陣一次性餵給平行推論，取消迴圈"""
         if not features_list or model is None or scaler is None:
             return np.full(len(features_list), 0.50)
         
@@ -115,7 +110,6 @@ class DualCoreBrain:
             n_samples = len(features_list)
             n_features = len(LSTM_ORDER)
             n_steps = 10
-            
             tensor_3d = np.zeros((n_samples, n_steps, n_features), dtype=np.float32)
             
             for idx, feat in enumerate(features_list):
@@ -124,7 +118,6 @@ class DualCoreBrain:
                     ret_list = [0.0]*(n_steps-len(ret_list)) + ret_list
                 ret_list = ret_list[-n_steps:] 
                 
-                # 預先抓取靜態特徵，避免在內層迴圈重複讀取字典
                 static_vals = [
                     np.nan_to_num(feat.get(col, 0.0), nan=0.0, posinf=1.0, neginf=-1.0)
                     for col in LSTM_ORDER[1:]
@@ -140,7 +133,6 @@ class DualCoreBrain:
             tensor_2d_scaled = np.nan_to_num(tensor_2d_scaled, nan=0.0, posinf=5.0, neginf=-5.0)
             tensor_3d_scaled = tensor_2d_scaled.reshape(n_samples, n_steps, n_features)
             
-            # 🚀 極速推論：把所有股票打包成一個 Batch 瞬間算完
             preds = model.predict(tensor_3d_scaled, batch_size=1024, verbose=0).flatten()
             return np.clip(preds, 0.0, 1.0)
             
@@ -178,16 +170,9 @@ class DualCoreBrain:
         else:
             lgbm_short = np.full(len(df), 0.5)
 
-        # 3. LSTM 多頭與空頭 (直接呼叫矩陣運算)
-        if self.is_lstm_ready:
-            lstm_long = self._compute_lstm_batch(features_list, self.lstm_model, self.lstm_scaler)
-        else:
-            lstm_long = np.full(len(df), 0.5)
-
-        if self.is_lstm_short_ready:
-            lstm_short = self._compute_lstm_batch(features_list, self.lstm_short_model, self.lstm_short_scaler)
-        else:
-            lstm_short = np.full(len(df), 0.5)
+        # 3. LSTM 多頭與空頭
+        lstm_long = self._compute_lstm_batch(features_list, self.lstm_model, self.lstm_scaler) if self.is_lstm_ready else np.full(len(df), 0.5)
+        lstm_short = self._compute_lstm_batch(features_list, self.lstm_short_model, self.lstm_short_scaler) if self.is_lstm_short_ready else np.full(len(df), 0.5)
 
         results = []
         for i in range(len(df)):
@@ -205,14 +190,10 @@ class DualCoreBrain:
             else: signal = "WAIT"
 
             results.append({
-                'lgbm_long': ll, 'lstm_long': tl,
-                'lgbm_short': ls, 'lstm_short': ts,
-                'best_long': best_long, 'best_short': best_short,
+                'lgbm_long': round(ll, 3), 'lstm_long': round(tl, 3),
+                'lgbm_short': round(ls, 3), 'lstm_short': round(ts, 3),
+                'best_long': round(best_long, 3), 'best_short': round(best_short, 3),
                 'signal': signal
             })
             
         return results
-
-    def predict_win_rates(self, features_list):
-        if not hasattr(self, 'predict_four_core'): return [0.5] * len(features_list)
-        return [res['best_long'] for res in self.predict_four_core(features_list)]
