@@ -90,9 +90,9 @@ class _MarketScreenState extends State<MarketScreen> {
   }
 
   String get apiUrl {
-    if (kIsWeb) return 'http://127.0.0.1:8000/api/v1/market/top20';
-    if (defaultTargetPlatform == TargetPlatform.android) return 'http://10.0.2.2:8000/api/v1/market/top20';
-    return 'http://127.0.0.1:8000/api/v1/market/top20';
+    // 使用 Render 部署的公開 API 網址
+    const base = 'https://taiwan-bot.onrender.com';
+    return '$base/api/v1/market/top20';
   }
 
   Future<void> _fetchTop20() async {
@@ -214,9 +214,9 @@ class _ScanScreenState extends State<ScanScreen> {
 
   String get apiUrl {
     final ticker = _tickerController.text.trim();
-    if (kIsWeb) return 'http://127.0.0.1:8000/api/v1/scan/$ticker';
-    if (defaultTargetPlatform == TargetPlatform.android) return 'http://10.0.2.2:8000/api/v1/scan/$ticker';
-    return 'http://127.0.0.1:8000/api/v1/scan/$ticker';
+    // 使用 Render 部署的公開 API 網址
+    const base = 'https://taiwan-bot.onrender.com';
+    return '$base/api/v1/scan/$ticker';
   }
 
   Future<void> fetchAiData() async {
