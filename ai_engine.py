@@ -19,7 +19,18 @@ class DualCoreBrain:
         self.is_lstm_short_ready = False
         
         # 載入 LGBM 模型
-        self._load_models(lgbm_path, feats_path)
+        self.lgbm_error_msg = ""
+        try:
+            # 把原本漏掉的第三個參數 lstm_path 補回去給它
+            lstm_path = 'lstm_momentum_brain.h5'
+            self._load_models(lgbm_path, feats_path, lstm_path)
+            self.is_lgbm_ready = True
+        except Exception as e:
+            import traceback
+            self.lgbm_error_msg = traceback.format_exc()
+            self.is_lgbm_ready = False
+            print(f"🚨 LGBM 載入崩潰: {self.lgbm_error_msg}")
+            
         self._load_short_models()
         
         # 🔥 取得當前檔案所在的「絕對路徑目錄」
