@@ -3,9 +3,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import tensorflow as tf
-
-import os
-import joblib
+import traceback  # 🔥 用來追蹤詳細錯誤
 from tensorflow.keras.models import load_model
 
 class DualCoreBrain:
@@ -29,37 +27,40 @@ class DualCoreBrain:
 
         # 1. 載入多頭 LSTM 模型
         self.is_lstm_ready = False
+        self.lstm_error_msg = ""  # 🔥 存錯誤訊息
         try:
-            # 強制使用絕對路徑組合
             lstm_model_path = os.path.join(base_dir, 'lstm_momentum_brain.h5')
             lstm_scaler_path = os.path.join(base_dir, 'lstm_scaler.joblib')
             
             if os.path.exists(lstm_model_path) and os.path.exists(lstm_scaler_path):
-                self.lstm_model = load_model(lstm_model_path)
+                # 🔥 加入 compile=False 避開自訂損失函數的載入錯誤
+                self.lstm_model = load_model(lstm_model_path, compile=False)
                 self.lstm_scaler = joblib.load(lstm_scaler_path)
                 self.is_lstm_ready = True
-                print(f"✅ 成功載入 LSTM 多頭: {lstm_model_path}")
             else:
-                print(f"⚠️ 找不到 LSTM 多頭檔案: 預期路徑為 {lstm_model_path}")
+                self.lstm_error_msg = f"檔案不存在！路徑: {lstm_model_path}"
         except Exception as e:
-            print(f"🚨 LSTM 多頭載入發生異常: {e}")
+            # 🔥 把完整的紅字報錯捕捉下來
+            self.lstm_error_msg = traceback.format_exc()
             self.is_lstm_ready = False
 
         # 2. 載入空頭 LSTM 模型
         self.is_lstm_short_ready = False
+        self.lstm_short_error_msg = ""  # 🔥 存錯誤訊息
         try:
             lstm_short_path = os.path.join(base_dir, 'lstm_short_brain.h5')
             lstm_short_scaler_path = os.path.join(base_dir, 'lstm_scaler_short.joblib')
             
             if os.path.exists(lstm_short_path) and os.path.exists(lstm_short_scaler_path):
-                self.lstm_short_model = load_model(lstm_short_path)
+                # 🔥 加入 compile=False 避開自訂損失函數的載入錯誤
+                self.lstm_short_model = load_model(lstm_short_path, compile=False)
                 self.lstm_short_scaler = joblib.load(lstm_short_scaler_path)
                 self.is_lstm_short_ready = True
-                print(f"✅ 成功載入 LSTM 空頭: {lstm_short_path}")
             else:
-                print(f"⚠️ 找不到 LSTM 空頭檔案: 預期路徑為 {lstm_short_path}")
+                self.lstm_short_error_msg = f"檔案不存在！路徑: {lstm_short_path}"
         except Exception as e:
-            print(f"🚨 LSTM 空頭載入發生異常: {e}")
+            # 🔥 把完整的紅字報錯捕捉下來
+            self.lstm_short_error_msg = traceback.format_exc()
             self.is_lstm_short_ready = False
     
     def _load_models(self, lgbm_path, feats_path, lstm_path):

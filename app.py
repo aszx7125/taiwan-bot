@@ -301,6 +301,14 @@ with st.sidebar:
     if brain.is_lgbm_ready: st.success("🌳 LGBM 多頭正常")
     else: st.error("🚨 LGBM 多頭缺失")
         
+    if brain.is_lstm_ready: 
+        st.success("🔮 LSTM 多頭已連動")
+    else: 
+        st.warning("⚪ LSTM 多頭未載入")
+        # 🔥 如果有捕捉到錯誤，直接用紅字顯示在側邊欄！
+        if hasattr(brain, 'lstm_error_msg') and brain.lstm_error_msg:
+            st.error(f"🚨 載入崩潰原因：\n{brain.lstm_error_msg}")
+        
     if hasattr(brain, 'is_lgbm_short_ready') and brain.is_lgbm_short_ready: st.success("🔴 LGBM 空頭已連動")
     if hasattr(brain, 'is_lstm_short_ready') and brain.is_lstm_short_ready: st.success("🔴 LSTM 空頭已連動")
 
