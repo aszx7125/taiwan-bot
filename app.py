@@ -1,6 +1,7 @@
 """
-台股AI量化系統 v4.1 - 全局快取極速版
+台股AI量化系統 v4.1 - 全局快取極速版 + 高科 iAI 交易副駕
 修復：解決首頁分頁重複推論導致 15秒以上卡頓的問題，將載入時間壓縮至 0.1秒
+新增：高科 iAI (Gemma-4-31-b) 全局聊天室串接
 """
 import streamlit as st
 import pandas as pd
@@ -10,6 +11,7 @@ import time
 import concurrent.futures
 import json
 import os
+import requests  # 🔥 新增 requests 來呼叫高科 API
 
 # ==========================================
 # 🎨 UI 渲染元件
@@ -173,7 +175,6 @@ def load_brain():
 
 brain = load_brain()
 
-# 🔥 全市場預測全局快取 (只算一次，四大分頁秒速共享)
 @st.cache_data(ttl=60, show_spinner=False)
 def get_market_predictions_cached():
     snap = load_market_snapshot()
@@ -471,7 +472,6 @@ else:
     
     with tab2:
         st.markdown("#### 🔮 全市場雙核勝率分佈狀態透視")
-        # 🔥 從全局快取瞬間讀取
         valid_items = get_market_predictions_cached()
         if valid_items:
             probs = np.array([item['core_data']['best_long'] for item in valid_items])
@@ -652,3 +652,66 @@ else:
                 st.info("⏳ 條件過於嚴格，當前回測區間內沒有符合的交易訊號。")
             else: 
                 st.error(f"❌ 回測系統發生錯誤: {res_adv.get('msg', '未知錯誤')}")
+
+
+# ==========================================
+# 🤖 高科 iAI 全局交易副駕 (置於網頁最底部)
+# ==========================================
+st.markdown("---")
+st.subheader("🤖 高科 iAI 專屬交易副駕 (Gemma 模型)")
+
+# 1. API 憑證與設定 (確保 /chat/completions 路徑完整)
+NKUST_API_URL = "https://www.iai.nkust.edu.tw/aihub/v1/chat/completions"
+NKUST_API_KEY = "sk-DPOkK719wRKLm7VIzNxFjw"
+MODEL_NAME = "gemma-4-31-b"
+
+# 2. 初始化對話紀錄
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = [
+        {"role": "assistant", "content": "你好！我是你的專屬量化交易副駕，已成功連線至高科大 iAI (Gemma-4-31-b 模型)。有什麼策略上的問題想討論嗎？"}
+    ]
+
+# 3. 渲染歷史對話
+for msg in st.session_state.chat_messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# 4. 處理使用者輸入
+if prompt := st.chat_input("輸入你想詢問的量化策略或市場問題..."):
+    # a. 顯示並儲存使用者的問題
+    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # b. 呼叫高科 iAI API 進行推論
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {NKUST_API_KEY}"
+        }
+        
+        # 組合 OpenAI 相容格式的 Payload
+        payload = {
+            "model": MODEL_NAME,
+            "messages": st.session_state.chat_messages,
+            "temperature": 0.7,
+            "stream": False # 初期開發建議先關閉串流，確保連線穩定
+        }
+        
+        try:
+            with st.spinner('Gemma 大腦思考中...'):
+                response = requests.post(NKUST_API_URL, headers=headers, json=payload, timeout=45)
+                
+            if response.status_code == 200:
+                ai_response = response.json()["choices"][0]["message"]["content"]
+                message_placeholder.markdown(ai_response)
+                st.session_state.chat_messages.append({"role": "assistant", "content": ai_response})
+            else:
+                error_msg = f"API 呼叫失敗 ❌\n狀態碼: {response.status_code}\n錯誤訊息: {response.text}"
+                message_placeholder.error(error_msg)
+                
+        except Exception as e:
+            error_msg = f"連線發生嚴重錯誤 ❌\n請檢查 API 網址是否正確或網路是否暢通。\n錯誤細節: {str(e)}"
+            message_placeholder.error(error_msg)
