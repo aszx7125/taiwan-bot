@@ -136,6 +136,12 @@ def render_fear_greed_gauge(index_val: int, label: str, color: str):
 # ==========================================
 st.set_page_config(page_title="台股量化旗艦終端 v4.1", page_icon="📈", layout="wide")
 
+# 初始化：策略開發室專屬對話紀錄
+if "coder_messages" not in st.session_state:
+    st.session_state.coder_messages = [
+        {"role": "assistant", "content": "你好！我是你的專屬量化開發工程師。無論是 Python 爬蟲、Pandas 數據處理、LightGBM 模型調優，還是 TradingView 的 PineScript 指標，直接把程式碼或需求貼給我吧！"}
+    ]
+
 def get_fugle_key():
     try: return st.secrets["FUGLE_API_KEY"]
     except: return ""
@@ -298,6 +304,54 @@ with st.sidebar:
     if hasattr(brain, 'is_lgbm_short_ready') and brain.is_lgbm_short_ready: st.success("🔴 LGBM 空頭已連動")
     if hasattr(brain, 'is_lstm_short_ready') and brain.is_lstm_short_ready: st.success("🔴 LSTM 空頭已連動")
 
+    st.markdown("---")
+    st.header("📝 投研部 AI 助理")
+    if st.button("✨ 一鍵生成明日操盤晨會報告", use_container_width=True, type="primary"):
+        with st.spinner("Nemotron-120B 正在統整全市場數據與新聞..."):
+            try:
+                # 1. 抓取大盤與勝率清單
+                summary = get_cached_market_summary()
+                twii_pct = summary.get("加權指數", {}).get('pct', 0.0) if summary else 0.0
+                valid_items = get_market_predictions_cached()
+                top_longs = sorted(valid_items, key=lambda x: x['core_data']['best_long'], reverse=True)[:5] if valid_items else []
+                
+                # 2. 擴充資料：自動去網路抓這 5 檔股票的最新新聞
+                report_data = f"今日大盤漲跌幅: {twii_pct:+.2f}%\n【AI 強烈推薦清單與近期情報】\n"
+                for item in top_longs:
+                    ticker = item.get('代號', '').split('.')[0]
+                    name = item.get('名稱', ticker)
+                    prob = item['core_data']['best_long'] * 100
+                    ep = item.get('現價', 0.0)
+                    news = get_stock_news(name) # 呼叫你原本寫好的爬蟲抓新聞
+                    news_titles = [n['title'] for n in news[:2]] if isinstance(news, list) else ["無最新重大新聞"]
+                    
+                    report_data += f"- {ticker} {name} (現價:{ep}, 勝率:{prob:.1f}%)\n  近期情報: {', '.join(news_titles)}\n"
+
+                # 3. 呼叫 120B 大腦寫報告
+                payload = {
+                    "model": "nemotron-3-super-120b",
+                    "messages": [
+                        {"role": "system", "content": "你是一位頂級華爾街投研分析師。請根據使用者提供的台股量化數據與新聞情報，撰寫一份簡潔、專業、具有行動指導意義的「明日操盤晨報」。請分段列出：1.大盤總結 2.強勢板塊觀察 3.具體操作建議。"},
+                        {"role": "user", "content": f"這是今天的實盤數據，請幫我寫一份報告：\n{report_data}"}
+                    ],
+                    "temperature": 0.5
+                }
+                res = requests.post("https://www.iai.nkust.edu.tw/aihub/v1/chat/completions", 
+                                    headers={"Authorization": "Bearer sk-DPOkK719wRKLm7VIzNxFjw"}, json=payload, timeout=60)
+                
+                if res.status_code == 200:
+                    report_content = res.json()["choices"][0]["message"]["content"]
+                    st.session_state.daily_report = report_content
+                else:
+                    st.error("報告生成失敗，請稍後再試。")
+            except Exception as e:
+                st.error(f"發生錯誤: {e}")
+
+# 在側邊欄下方顯示報告結果 (用彈出式視窗或 Expander)
+if "daily_report" in st.session_state:
+    with st.expander("📄 查看最新 AI 操盤晨報", expanded=True):
+        st.markdown(st.session_state.daily_report)
+
 # ==========================================
 # ⚡ 戰情室主視覺
 # ==========================================
@@ -419,7 +473,7 @@ else:
     metrics = load_model_metrics()
     render_model_health_board(metrics)
     st.markdown("---")
-    tab1, tab2, tab3, tab3s, tab5, tab6 = st.tabs(["📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "🔻 空頭 TOP 20", "⚖️ 實盤開獎對撞", "🔬 策略回測"])
+    tab1, tab2, tab3, tab3s, tab5, tab6, tab7 = st.tabs(["📊 自選即時流", "🔮 每日收盤趨勢", "🎯 全市場 TOP 20", "🔻 空頭 TOP 20", "⚖️ 實盤開獎對撞", "🔬 策略回測", "💻 策略開發室"])
     
     with tab1:
         c_title, c_slider = st.columns([2, 1])
@@ -651,9 +705,45 @@ else:
                 st.info("ℹ️ 資料庫中目前無足夠的歷史資料可供回測。")
             elif status == "pending": 
                 st.info("⏳ 條件過於嚴格，當前回測區間內沒有符合的交易訊號。")
-            else: 
+            else:
                 st.error(f"❌ 回測系統發生錯誤: {res_adv.get('msg', '未知錯誤')}")
 
+    with tab7:
+        st.markdown("#### 💻 量化策略開發室 (Nemotron-120B 程式專用大腦)")
+        st.caption("💡 這裡的 AI 已經切換為「資深工程師模式」，你可以把 PineScript 指標、Python 報錯訊息貼上來讓它幫你除錯或改寫。")
+        
+        # 渲染程式碼聊天室
+        for msg in st.session_state.coder_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                
+        if code_prompt := st.chat_input("輸入你的程式碼或開發需求..."):
+            st.session_state.coder_messages.append({"role": "user", "content": code_prompt})
+            with st.chat_message("user"):
+                st.markdown(code_prompt)
+                
+            with st.chat_message("assistant"):
+                code_placeholder = st.empty()
+                code_payload = {
+                    "model": "nemotron-3-super-120b",
+                    "messages": [
+                        {"role": "system", "content": "你是一位擁有 10 年經驗的量化交易工程師與全端開發者。你精通 Python, Streamlit, Pandas, 機器學習(LightGBM, LSTM) 以及 TradingView PineScript。你的回答必須充滿專業技術性，提供高效、乾淨且有註解的程式碼，並能精準抓出 Bug。"},
+                        *st.session_state.coder_messages
+                    ],
+                    "temperature": 0.2
+                }
+                try:
+                    with st.spinner("工程師思考架構中..."):
+                        code_res = requests.post("https://www.iai.nkust.edu.tw/aihub/v1/chat/completions", 
+                                            headers={"Authorization": "Bearer sk-DPOkK719wRKLm7VIzNxFjw"}, json=code_payload, timeout=60)
+                    if code_res.status_code == 200:
+                        code_response = code_res.json()["choices"][0]["message"]["content"]
+                        code_placeholder.markdown(code_response)
+                        st.session_state.coder_messages.append({"role": "assistant", "content": code_response})
+                    else:
+                        code_placeholder.error("工程師罷工了，請檢查 API。")
+                except Exception as e:
+                    code_placeholder.error(f"連線異常: {e}")
 
 # ==========================================
 # 🤖 高科 iAI 全局交易副駕 (RAG 本地數據注入版)
