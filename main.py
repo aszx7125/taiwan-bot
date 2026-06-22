@@ -2,6 +2,7 @@
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import os
+import requests  # 🔥 新增這行，用來發送網路請求
 from ai_engine import DualCoreBrain
 
 app = FastAPI(title="台股四核量化 API (生產環境版)", version="1.1")
@@ -17,11 +18,38 @@ app.add_middleware(
 brain = DualCoreBrain()
 
 def load_market_snapshot():
-    if os.path.exists("market_snapshot.json"):
-        try:
-            with open("market_snapshot.json", "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception: pass
+    """
+    🔥 終極解法：直接從 GitHub Raw 抓取最新爬蟲產出的快取檔案。
+    這樣 Render 永遠都能拿到最新報價，完全不依賴本地檔案！
+    """
+    # ⚠️ 請把下面網址中的 "你的GitHub帳號" 換成你真實的帳號名稱！
+    # 如果你的專案名稱不是 taiwan-bot，也請一併替換。
+    github_raw_url = "https://raw.githubusercontent.com/你的GitHub帳號/taiwan-bot/main/market_snapshot.json"
+
+    try:
+        # 1. 優先從 GitHub 雲端抓取最新的爬蟲資料
+        response = requests.get(github_raw_url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data and len(data["data"]) > 0:
+                print("✅ 成功從 GitHub 獲取最新爬蟲資料！")
+                return data
+    except Exception as e:
+        print(f"⚠️ 從 GitHub 獲取資料失敗: {e}")
+
+    # 2. 如果沒網路或 GitHub 擋連線，才退回讀取本地檔案（供你在自己電腦開發時使用）
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(base_dir, "market_snapshot.json")
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if "data" in data and len(data["data"]) > 0:
+                    return data
+    except Exception:
+        pass
+
+    # 3. 如果連本地都空了，回傳空陣列，讓前端顯示「無資料」而不是顯示假數據
     return {"data": []}
 
 @app.get("/")
