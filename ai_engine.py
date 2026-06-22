@@ -1,9 +1,12 @@
 ﻿import os
+import traceback
+# 🔥 終極護身符：強迫 TensorFlow 使用舊版 Keras 2 核心，解決 batch_shape 報錯！
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import numpy as np
 import pandas as pd
 import joblib
 import tensorflow as tf
-import traceback  # 🔥 用來追蹤詳細錯誤
 from tensorflow.keras.models import load_model
 
 class DualCoreBrain:
