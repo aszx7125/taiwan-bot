@@ -1,7 +1,7 @@
 """
-台股AI量化系統 v4.1 - 全局快取極速版 + 高科 iAI 交易副駕
+台股AI量化系統 v4.1 - 全局快取極速版 + 高科 iAI (Nemotron-3-Super) 交易副駕
 修復：解決首頁分頁重複推論導致 15秒以上卡頓的問題，將載入時間壓縮至 0.1秒
-新增：高科 iAI (Gemma-4-31-b) 全局聊天室串接
+新增：高科 iAI (Nemotron-3-super-120b) RAG 本地數據注入聊天室
 """
 import streamlit as st
 import pandas as pd
@@ -11,7 +11,7 @@ import time
 import concurrent.futures
 import json
 import os
-import requests  # 🔥 新增 requests 來呼叫高科 API
+import requests  # 🔥 呼叫高科 API 必備套件
 
 # ==========================================
 # 🎨 UI 渲染元件
@@ -134,6 +134,8 @@ def render_fear_greed_gauge(index_val: int, label: str, color: str):
 # ==========================================
 # 主程式與邏輯快取
 # ==========================================
+st.set_page_config(page_title="台股量化旗艦終端 v4.1", page_icon="📈", layout="wide")
+
 def get_fugle_key():
     try: return st.secrets["FUGLE_API_KEY"]
     except: return ""
@@ -161,8 +163,6 @@ from data_fetcher import load_all_market_tickers, get_market_summary, get_kline_
 from data_pipeline import load_market_snapshot, get_snapshot_dict, get_realtime_quote, fetch_advanced_backtest, trigger_github_workflow, load_model_metrics
 from ai_engine import DualCoreBrain
 
-st.set_page_config(page_title="台股量化旗艦終端 v4.1", page_icon="📈", layout="wide")
-
 FUGLE_API_KEY = get_fugle_key()
 if 'stock_clusters' not in st.session_state: 
     st.session_state.stock_clusters = DEFAULT_CLUSTERS.copy()
@@ -175,6 +175,7 @@ def load_brain():
 
 brain = load_brain()
 
+# 🔥 全市場預測全局快取 (只算一次，四大分頁秒速共享)
 @st.cache_data(ttl=60, show_spinner=False)
 def get_market_predictions_cached():
     snap = load_market_snapshot()
@@ -655,54 +656,85 @@ else:
 
 
 # ==========================================
-# 🤖 高科 iAI 全局交易副駕 (置於網頁最底部)
+# 🤖 高科 iAI 全局交易副駕 (RAG 本地數據注入版)
 # ==========================================
 st.markdown("---")
-st.subheader("🤖 高科 iAI 專屬交易副駕 (Nemotron 模型)")
+st.subheader("🤖 高科 iAI 專屬交易副駕 (Nemotron-3-Super 模型)")
 
-# 1. API 憑證與設定 (確保 /chat/completions 路徑完整)
 NKUST_API_URL = "https://www.iai.nkust.edu.tw/aihub/v1/chat/completions"
 NKUST_API_KEY = "sk-DPOkK719wRKLm7VIzNxFjw"
-MODEL_NAME = "nemotron-3-super-120b"
+MODEL_NAME = "nemotron-3-super-120b" # 🔥 切換至 120B 超大參數模型
 
-# 2. 初始化對話紀錄
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = [
-        {"role": "assistant", "content": "你好！我是你的專屬量化交易副駕，已成功連線至高科大 iAI (Nemotron-3-Super-120b 模型)。有什麼策略上的問題想討論嗎？"}
+        {"role": "assistant", "content": "你好！我是你的專屬量化交易副駕。目前已切換至最強大的 Nemotron-3-Super-120b 運算核心，並綁定本地快取資料庫。想詢問什麼盤勢分析呢？"}
     ]
 
-# 3. 渲染歷史對話
 for msg in st.session_state.chat_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 4. 處理使用者輸入
-if prompt := st.chat_input("輸入你想詢問的量化策略或市場問題..."):
-    # a. 顯示並儲存使用者的問題
+if prompt := st.chat_input("輸入問題 (例如: 根據目前的資料庫，今天勝率最高的前三名是誰？原因？)"):
+    
     st.session_state.chat_messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # b. 呼叫高科 iAI API 進行推論
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
+        
+        # 即時抓取本地快取數據
+        local_context = ""
+        try:
+            summary = get_cached_market_summary()
+            twii = summary.get("加權指數", {}) if summary else {}
+            
+            valid_items = get_market_predictions_cached()
+            top_longs = sorted(valid_items, key=lambda x: x['core_data']['best_long'], reverse=True)[:5] if valid_items else []
+            top_str = ""
+            for item in top_longs:
+                top_str += f"- {item.get('代號')} {item.get('名稱')}: 多頭勝率 {item['core_data']['best_long']*100:.1f}%, 現價 {item.get('現價')}\n"
+            
+            local_context = f"""
+            [今日實盤內部資料庫數據 - 絕對機密]
+            大盤狀態: 現價 {twii.get('price', '未知')}, 漲跌幅 {twii.get('pct', 0.0):+.2f}%
+            目前 AI 四核心計算出勝率最高的前五名標的如下:
+            {top_str}
+            """
+        except Exception as e:
+            local_context = "目前無法讀取本地快取資料庫。"
+
+        # 最高權限系統提示詞
+        system_instruction = {
+            "role": "system",
+            "content": (
+                "你是一個專業的台股量化交易 AI 助手。你的大腦已經與使用者的本地資料庫綁定。\n"
+                "【嚴格指令】：\n"
+                "1. 你『只能』根據下方提供的 [今日實盤內部資料庫數據] 來回答問題。\n"
+                "2. 絕對『不可以』使用你的預先訓練知識去捏造行情或給出無關的股票。\n"
+                "3. 如果使用者問的問題在這些數據裡找不到答案，請直接回答「目前的本地快取資料庫中沒有相關數據」。\n"
+                "4. 你的語氣要像一個冷靜、數據導向的華爾街量化工程師。\n"
+                f"\n{local_context}"
+            )
+        }
         
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {NKUST_API_KEY}"
         }
         
-        # 組合 OpenAI 相容格式的 Payload
+        api_messages = [system_instruction] + st.session_state.chat_messages
+        
         payload = {
             "model": MODEL_NAME,
-            "messages": st.session_state.chat_messages,
-            "temperature": 0.7,
-            "stream": False # 初期開發建議先關閉串流，確保連線穩定
+            "messages": api_messages,
+            "temperature": 0.2, 
+            "stream": False 
         }
         
         try:
-            with st.spinner('Nemotron 大腦思考中...'):
-                response = requests.post(NKUST_API_URL, headers=headers, json=payload, timeout=45)
+            with st.spinner('Nemotron-3-Super 核心運算中...'):
+                response = requests.post(NKUST_API_URL, headers=headers, json=payload, timeout=60)
                 
             if response.status_code == 200:
                 ai_response = response.json()["choices"][0]["message"]["content"]
