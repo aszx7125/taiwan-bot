@@ -24,7 +24,7 @@ def load_market_snapshot():
     """
     # ⚠️ 請把下面網址中的 "你的GitHub帳號" 換成你真實的帳號名稱！
     # 如果你的專案名稱不是 taiwan-bot，也請一併替換。
-    github_raw_url = "https://raw.githubusercontent.com/你的GitHub帳號/taiwan-bot/main/market_snapshot.json"
+    github_raw_url = "https://raw.githubusercontent.com/aszx7125/taiwan-bot/main/market_snapshot.json"
 
     try:
         # 1. 優先從 GitHub 雲端抓取最新的爬蟲資料
