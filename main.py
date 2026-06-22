@@ -4,51 +4,114 @@ import json
 import os
 from ai_engine import DualCoreBrain
 
-app = FastAPI(title="台股四核量化 API (Mock版)", version="1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="台股四核量化 API (生產環境版)", version="1.1")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 brain = DualCoreBrain()
 
 def load_market_snapshot():
     if os.path.exists("market_snapshot.json"):
         try:
-            with open("market_snapshot.json", "r", encoding="utf-8") as f: return json.load(f)
+            with open("market_snapshot.json", "r", encoding="utf-8") as f:
+                return json.load(f)
         except Exception: pass
-    return {"data": [{"代號": "2330.TW", "名稱": "台積電", "現價": 1000.0, "成交量": 50000, "ATR_14": 20.0, "Res_20": 1050.0, "Sup_20": 950.0}]}
+    return {"data": []}
 
 @app.get("/")
 def read_root():
-    return {"status": "success", "message": "台股四核量化 API (本地Mock版) 正常運作中"}
+    return {"status": "success", "message": "API 服務正常運作中"}
 
+# 🔥 升級 1：單股深度診斷，輸出真實 SMC 與動能指標
 @app.get("/api/v1/scan/{ticker}")
 def scan_stock(ticker: str):
     snap = load_market_snapshot()
     snap_dict = {str(item.get('代號', '')).split('.')[0].strip(): item for item in snap['data']}
+    
     if ticker not in snap_dict:
-        snap_dict[ticker] = {"名稱": "測試標的", "現價": 100.0, "ATR_14": 5.0, "Res_20": 110.0, "Sup_20": 90.0}
+        raise HTTPException(status_code=404, detail=f"找不到代號 {ticker} 的市場快取資料")
+        
     item = snap_dict[ticker]
     entry_price = float(item.get('現價', item.get('close_price', 0.0)))
     vol = float(item.get('成交量', 0.0))
     atr_14 = float(item.get('ATR_14', entry_price * 0.05))
     res_level = round(float(item.get('Res_20', entry_price * 1.05)), 2)
-    sup_level = round(float(item.get('Sup_20', entry_price * 0.95)), 2)
-    feat_dict = brain.extract_features(ticker, entry_price, snap_dict, current_vol=vol, fallback_atr=atr_14)
-    core_data = brain.predict_four_core([feat_dict])[0]
-    return {"ticker": ticker, "name": item.get('名稱', ticker), "current_price": entry_price, "res_level": res_level, "sup_level": sup_level, "ai_analysis": {"signal": core_data['signal'], "best_long_prob": round(core_data['best_long'] * 100, 1), "best_short_prob": round(core_data['best_short'] * 100, 1), "details": {"lgbm_long": round(core_data['lgbm_long'] * 100, 1), "lstm_long": round(core_data['lstm_long'] * 100, 1), "lgbm_short": round(core_data['lgbm_short'] * 100, 1), "lstm_short": round(core_data['lstm_short'] * 100, 1)}}}
+    sub_level = round(float(item.get('Sup_20', entry_price * 0.95)), 2)
+    
+    # 透過 AI 引擎萃取真實特徵
+    feat = brain.extract_features(ticker, entry_price, snap_dict, current_vol=vol, fallback_atr=atr_14)
+    core_data = brain.predict_four_core([feat])[0]
+    
+    # 根據特徵反推給前端看盤的具體文字描述
+    volatility_status = "區間壓縮 (醞釀表態)" if feat['volatility'] < 0.03 else "波動放大 (趨勢延伸)"
+    rs_status = "強於大盤 (動能充沛)" if feat['rs_index'] > 55 else "弱於大盤 (動能轉弱)" if feat['rs_index'] < 45 else "與大盤同步"
+    
+    return {
+        "ticker": ticker,
+        "name": item.get('名稱', '未知'),
+        "current_price": entry_price,
+        "res_level": res_level,
+        "sup_level": sub_level,
+        "ai_analysis": {
+            "signal": core_data['signal'],
+            "best_long_prob": round(core_data['best_long'] * 100, 1),
+            "best_short_prob": round(core_data['best_short'] * 100, 1),
+            "details": {
+                "lgbm_long": round(core_data['lgbm_long'] * 100, 1),
+                "lstm_long": round(core_data['lstm_long'] * 100, 1),
+                "lgbm_short": round(core_data['lgbm_short'] * 100, 1),
+                "lstm_short": round(core_data['lstm_short'] * 100, 1),
+            }
+        },
+        # 這裡是傳送給前端的真實策略分析資料
+        "strategy_analysis": {
+            "rs_status": rs_status,
+            "volatility_status": volatility_status,
+            "is_pullback": bool(feat['is_pullback']),
+            "is_liquidity_sweep": bool(feat['is_liquidity_sweep']),
+            "is_poc_rejection": bool(feat['is_poc_rejection']),
+            "raw_pattern": str(item.get('pattern', '無特定形態'))
+        }
+    }
 
-@app.get("/api/v1/market/top20")
-def get_top_20():
+# 🔥 升級 2：自選群組動態行情接口
+@app.get("/api/v1/market/watchlist")
+def get_watchlist_quotes(tickers: str):
     """
-    一次性掃描全市場快取，回傳勝率最高的前 20 檔標的
+    接收逗號分隔的代號字串 (例如: "2330,0056,00878,2317")，批次回傳即時報價
     """
     snap = load_market_snapshot()
     if not snap or 'data' not in snap:
-        raise HTTPException(status_code=500, detail="伺服器無市場快取資料")
+        return {"watchlist": []}
         
-    valid_items = []
-    features_list = []
     snap_dict = {str(item.get('代號', '')).split('.')[0].strip(): item for item in snap['data']}
+    ticker_list = [t.strip() for t in tickers.split(",") if t.strip()]
     
-    # 準備全市場的特徵批次
+    result = []
+    for ticker in ticker_list:
+        if ticker in snap_dict:
+            item = snap_dict[ticker]
+            result.append({
+                "ticker": ticker,
+                "name": item.get('名稱', '未知'),
+                "price": float(item.get('現價', item.get('close_price', 0.0))),
+                "pattern": str(item.get('pattern', '無特定形態'))
+            })
+    return {"watchlist": result}
+
+@app.get("/api/v1/market/top20")
+def get_top_20():
+    snap = load_market_snapshot()
+    if not snap or 'data' not in snap:
+        raise HTTPException(status_code=500, detail="無快取資料")
+    valid_items, features_list = [], []
+    snap_dict = {str(item.get('代號', '')).split('.')[0].strip(): item for item in snap['data']}
     for ticker, item in snap_dict.items():
         ep = float(item.get('現價', item.get('close_price', 0.0)))
         vol = float(item.get('成交量', 0.0))
@@ -56,27 +119,16 @@ def get_top_20():
             valid_items.append(item)
             atr_14 = float(item.get('ATR_14', ep * 0.05))
             features_list.append(brain.extract_features(ticker, ep, snap_dict, current_vol=vol, fallback_atr=atr_14))
-            
-    if not features_list:
-        return {"top20": []}
-        
-    # 丟給張量引擎進行極速批次推論
+    if not features_list: return {"top20": []}
     core_results = brain.predict_four_core(features_list)
-    
-    # 組合結果
     processed = []
     for i, item in enumerate(valid_items):
-        prob = core_results[i]['best_long']
         processed.append({
             "ticker": str(item.get('代號', '')).split('.')[0].strip(),
             "name": item.get('名稱', '未知'),
             "current_price": float(item.get('現價', item.get('close_price', 0.0))),
-            "win_prob": round(prob * 100, 1),
+            "win_prob": round(core_results[i]['best_long'] * 100, 1),
             "signal": core_results[i]['signal']
         })
-            
-    # 依照勝率由高到低排序，並切出前 20 名
     processed.sort(key=lambda x: x['win_prob'], reverse=True)
-    top_20 = processed[:20]
-    
-    return {"top20": top_20}
+    return {"top20": processed[:20]}

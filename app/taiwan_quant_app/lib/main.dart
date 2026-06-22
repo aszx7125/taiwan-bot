@@ -28,9 +28,6 @@ class QuantApp extends StatelessWidget {
   }
 }
 
-// ==========================================
-// 🏠 底部導覽外殼
-// ==========================================
 class MainDashboard extends StatefulWidget {
   const MainDashboard({super.key});
 
@@ -39,7 +36,7 @@ class MainDashboard extends StatefulWidget {
 }
 
 class _MainDashboardState extends State<MainDashboard> {
-  int _currentIndex = 1; // 預設停在掃描頁
+  int _currentIndex = 1;
   final List<Widget> _pages = [
     const MarketScreen(),
     const ScanScreen(),
@@ -64,7 +61,7 @@ class _MainDashboardState extends State<MainDashboard> {
 }
 
 // ==========================================
-// 🌍 分頁 1：主頁戰情 (神經網路大盤勝率 + 自選群組 + TOP 20)
+// 🌍 分頁 1：真實行情自選股 + 大盤勝率
 // ==========================================
 class MarketScreen extends StatefulWidget {
   const MarketScreen({super.key});
@@ -75,31 +72,33 @@ class MarketScreen extends StatefulWidget {
 
 class _MarketScreenState extends State<MarketScreen> {
   List<dynamic> _top20List = [];
+  List<dynamic> _watchlistQuotes = [];
   bool _isLoading = true;
 
-  // 預設的自選名單 (結合台股權值與高股息 ETF)
-  final List<Map<String, String>> _watchlist = [
-    {"ticker": "2330", "name": "台積電"},
-    {"ticker": "0056", "name": "元大高股息"},
-    {"ticker": "00878", "name": "國泰永續高股息"},
-  ];
+  // 🔥 在這裡自由擴充你的真實自選清單代號
+  final String _myWatchlistTickers = "2330,0056,00878,2317,2454,2603";
+
+  // 請記得將此處的網址換成你的真實 Render 雲端網址
+  String get baseUrl => 'https://taiwan-bot.onrender.com';
 
   @override
   void initState() {
     super.initState();
-    _fetchTop20();
+    _fetchAllMarketData();
   }
 
-  String get apiUrl {
-    return 'https://taiwan-bot.onrender.com/api/v1/market/top20';
-  }
-
-  Future<void> _fetchTop20() async {
+  Future<void> _fetchAllMarketData() async {
+    setState(() => _isLoading = true);
     try {
-      final response = await http.get(Uri.parse(apiUrl));
-      if (response.statusCode == 200) {
+      // 1. 抓取 TOP 20
+      final top20res = await http.get(Uri.parse('$baseUrl/api/v1/market/top20'));
+      // 2. 抓取自選股即時行情
+      final watchres = await http.get(Uri.parse('$baseUrl/api/v1/market/watchlist?tickers=$_myWatchlistTickers'));
+
+      if (top20res.statusCode == 200 && watchres.statusCode == 200) {
         setState(() {
-          _top20List = jsonDecode(response.body)['top20'];
+          _top20List = jsonDecode(top20res.body)['top20'];
+          _watchlistQuotes = jsonDecode(watchres.body)['watchlist'];
           _isLoading = false;
         });
       }
@@ -116,11 +115,11 @@ class _MarketScreenState extends State<MarketScreen> {
           ? const Center(child: CircularProgressIndicator(color: Colors.tealAccent))
           : RefreshIndicator(
               color: Colors.tealAccent,
-              onRefresh: _fetchTop20,
+              onRefresh: _fetchAllMarketData,
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  // 1. 神經網路大盤勝率面板
+                  // 大盤綜合胜率
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -133,67 +132,68 @@ class _MarketScreenState extends State<MarketScreen> {
                         SizedBox(height: 8),
                         Text('多頭優勢 62.4%', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
                         SizedBox(height: 4),
-                        Text('LGBM 與 LSTM 模型判定：大盤震盪偏多', style: TextStyle(color: Colors.white)),
+                        Text('LGBM 與 LSTM 模型判定：市場整體震盪偏多', style: TextStyle(color: Colors.white, fontSize: 13)),
                       ],
                     ),
                   ),
                   const SizedBox(height: 24),
 
-                  // 2. 自選群組 (橫向滑動卡片)
-                  const Text('⭐ 自選群組即時行情', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                  // 🔥 動態自選群組 (橫向滑動區塊，呈現真實報價)
+                  const Text('⭐ 我的自選群組即時行情', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                   const SizedBox(height: 12),
                   SizedBox(
-                    height: 110,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _watchlist.length,
-                      itemBuilder: (context, index) {
-                        return Container(
-                          width: 140,
-                          margin: const EdgeInsets.only(right: 12),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF1E1E1E),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white12),
+                    height: 120,
+                    child: _watchlistQuotes.isEmpty
+                        ? const Center(child: Text('無自選股資料', style: TextStyle(color: Colors.grey)))
+                        : ListView.builder(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _watchlistQuotes.length,
+                            itemBuilder: (context, index) {
+                              final item = _watchlistQuotes[index];
+                              return Container(
+                                width: 150,
+                                margin: const EdgeInsets.only(right: 12),
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1E1E1E),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: Colors.tealAccent.withOpacity(0.3)),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(item['name'], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15), overflow: TextOverflow.ellipsis),
+                                    Text(item['ticker'], style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                                    const Spacer(),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text('\$${item['price']}', style: const TextStyle(color: Colors.greenAccent, fontSize: 16, fontWeight: FontWeight.bold)),
+                                        const Icon(Icons.bolt, color: Colors.amber, size: 16)
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(_watchlist[index]['name']!, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                              Text(_watchlist[index]['ticker']!, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                              const Spacer(),
-                              const Text('等待更新...', style: TextStyle(color: Colors.tealAccent, fontSize: 14)), // 預留給即時報價
-                            ],
-                          ),
-                        );
-                      },
-                    ),
                   ),
                   const SizedBox(height: 24),
 
-                  // 3. 原本的 TOP 20 列表
+                  // TOP 20
                   const Text('🎯 AI 多頭推薦 TOP 20', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                   const SizedBox(height: 12),
                   ..._top20List.asMap().entries.map((entry) {
-                    final index = entry.key + 1;
+                    final idx = entry.key + 1;
                     final stock = entry.value;
-                    final isStrong = stock['win_prob'] >= 60.0;
-                    final cardColor = isStrong ? const Color(0xFF00E676) : const Color(0xFF69F0AE);
-
                     return Container(
                       margin: const EdgeInsets.only(bottom: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E1E),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: cardColor.withOpacity(0.3)),
-                      ),
+                      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(12)),
                       child: ListTile(
-                        leading: CircleAvatar(backgroundColor: cardColor.withOpacity(0.2), child: Text('$index', style: TextStyle(color: cardColor, fontWeight: FontWeight.bold))),
+                        leading: CircleAvatar(backgroundColor: Colors.tealAccent.withOpacity(0.1), child: Text('$idx', style: const TextStyle(color: Colors.tealAccent, fontWeight: FontWeight.bold))),
                         title: Text('${stock['ticker']} ${stock['name']}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                        subtitle: Text('多頭勝率: ${stock['win_prob']}%', style: const TextStyle(color: Colors.grey)),
-                        trailing: Icon(Icons.trending_up, color: cardColor),
+                        subtitle: Text('多頭勝率: ${stock['win_prob']}% | 現價: \$${stock['current_price']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                        trailing: const Icon(Icons.trending_up, color: Color(0xFF00E676)),
                       ),
                     );
                   }).toList(),
@@ -205,7 +205,7 @@ class _MarketScreenState extends State<MarketScreen> {
 }
 
 // ==========================================
-// ⚡ 分頁 2：單股掃描 (新增詳細策略分析)
+// ⚡ 分頁 2：單股診斷 (完美重現真實 SMC 指標)
 // ==========================================
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -233,7 +233,7 @@ class _ScanScreenState extends State<ScanScreen> {
         setState(() => _stockData = jsonDecode(response.body));
       }
     } catch (e) {
-      // 處理錯誤
+      // 異常處理
     } finally {
       setState(() => _isLoading = false);
     }
@@ -287,21 +287,19 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Widget _buildResultArea() {
     if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.tealAccent));
-    if (_stockData == null) return const Center(child: Text('輸入股票代號以獲取四核極值與策略詳情', style: TextStyle(color: Colors.grey)));
+    if (_stockData == null) return const Center(child: Text('輸入股票代號以獲取真實策略詳情', style: TextStyle(color: Colors.grey)));
 
     final ai = _stockData!['ai_analysis'];
-    final details = ai['details'];
+    final strat = _stockData!['strategy_analysis'];
     final double bestLong = ai['best_long_prob'];
     final double bestShort = ai['best_short_prob'];
     
-    // 判斷顏色
     Color cardColor = bestLong > bestShort ? const Color(0xFF00E676) : const Color(0xFFFF1744);
 
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 區塊 1：核心對撞結果 (原有的紅綠卡片壓縮版)
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16), border: Border.all(color: cardColor.withOpacity(0.5))),
@@ -331,7 +329,7 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
           const SizedBox(height: 20),
 
-          // 區塊 2：詳細策略與形態分析 (Streamlit 完美重現)
+          // 🔥 讀取後端 strategy_analysis 的真實指標
           const Text('🔍 核心指標與 SMC 策略分析', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
           const SizedBox(height: 12),
           Container(
@@ -339,16 +337,15 @@ class _ScanScreenState extends State<ScanScreen> {
             decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(16)),
             child: Column(
               children: [
-                _buildStrategyRow('相對強弱 (RS Index)', '強於大盤 (動能充沛)', Colors.greenAccent),
+                _buildStrategyRow('相對強弱 (RS Index)', strat['rs_status'], Colors.greenAccent),
                 const Divider(color: Colors.white12),
-                _buildStrategyRow('波動率狀態 (Volatility)', '區間壓縮 (醞釀表態)', Colors.orangeAccent),
+                _buildStrategyRow('波動率狀態 (Volatility)', strat['volatility_status'], Colors.orangeAccent),
                 const Divider(color: Colors.white12),
-                // 明確區分 SMC 中的流動性與 POC 邏輯
-                _buildStrategyRow('SMC 流動性 (Liquidity)', '已完成流動性掠奪 (Sweep)', Colors.purpleAccent),
+                _buildStrategyRow('SMC 流動性掠奪 (Sweep)', strat['is_liquidity_sweep'] ? '⚠️ 觸發流動性掠奪' : '正常項目', strat['is_liquidity_sweep'] ? Colors.purpleAccent : Colors.grey),
                 const Divider(color: Colors.white12),
-                _buildStrategyRow('SMC 控制點 (POC)', 'POC 支撐測試成功 (Rejection)', Colors.lightBlueAccent),
+                _buildStrategyRow('SMC 控制點 (POC)', strat['is_poc_rejection'] ? '🟢 POC 支撐拒絕測試成功' : '區間未觸及', strat['is_poc_rejection'] ? Colors.lightBlueAccent : Colors.grey),
                 const Divider(color: Colors.white12),
-                _buildStrategyRow('形態判定 (Pattern)', '量縮回踩，勝率提升', Colors.white70),
+                _buildStrategyRow('原始形態判定 (Pattern)', strat['raw_pattern'], Colors.white70),
               ],
             ),
           ),
@@ -388,17 +385,10 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 }
 
-// ==========================================
-// ⚙️ 分頁 3：策略控制
-// ==========================================
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
-
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('⚙️ 策略控制', style: TextStyle(fontWeight: FontWeight.bold))),
-      body: const Center(child: Text('設定頁面開發中...', style: TextStyle(color: Colors.grey))),
-    );
+    return Scaffold(appBar: AppBar(title: const Text('⚙️ 策略控制')), body: const Center(child: Text('設定維護中...')));
   }
 }
