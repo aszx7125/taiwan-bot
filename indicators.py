@@ -135,7 +135,7 @@ def add_advanced_indicators(df, market_ret_20=None):
     df.loc[df['Liquidity_Sweep_Bull'] == True, 'Score'] += 15
 
     # 🔥 核心修復：懲罰追高（使用安全除法）
-    prev_close_safe = prev_close.fillna(df['Close']).replace(0, np.nan).fillna(method='bfill')
+    prev_close_safe = prev_close.fillna(df['Close']).replace(0, np.nan).bfill()
     price_change_pct = safe_divide(df['Close'] - prev_close_safe, prev_close_safe, 0.0)
     
     is_chase = (
