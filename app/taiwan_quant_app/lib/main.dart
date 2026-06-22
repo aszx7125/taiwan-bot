@@ -61,7 +61,7 @@ class _MainDashboardState extends State<MainDashboard> {
 }
 
 // ==========================================
-// 🌍 分頁 1：真實行情自選股 + 大盤勝率
+// 🌍 分頁 1：主頁戰情 (升級群組切換與價格排版)
 // ==========================================
 class MarketScreen extends StatefulWidget {
   const MarketScreen({super.key});
@@ -74,12 +74,21 @@ class _MarketScreenState extends State<MarketScreen> {
   List<dynamic> _top20List = [];
   List<dynamic> _watchlistQuotes = [];
   bool _isLoading = true;
+  bool _isWatchlistLoading = false;
 
-  // 🔥 在這裡自由擴充你的真實自選清單代號
-  final String _myWatchlistTickers = "2330,0056,00878,2317,2454,2603";
+  // 🔥 升級：分類自選群組名單
+  final Map<String, String> _watchlists = {
+    "我的關注": "2330,0056,00878,2317,2454,2603",
+    "權值三雄": "2330,2317,2454",
+    "高股息ETF": "0056,00878,00713,00919,00929",
+    "航運鋼鐵": "2603,2609,2615,2002",
+  };
+  
+  // 預設選中的群組
+  String _currentGroup = "我的關注";
 
-  // 請記得將此處的網址換成你的真實 Render 雲端網址
-  String get baseUrl => 'https://taiwan-bot.onrender.com';
+  // 替換為你的 Render 網址
+  String get baseUrl => 'https://你的專案名稱.onrender.com';
 
   @override
   void initState() {
@@ -87,23 +96,38 @@ class _MarketScreenState extends State<MarketScreen> {
     _fetchAllMarketData();
   }
 
+  // 抓取所有資料 (初始化用)
   Future<void> _fetchAllMarketData() async {
     setState(() => _isLoading = true);
     try {
-      // 1. 抓取 TOP 20
       final top20res = await http.get(Uri.parse('$baseUrl/api/v1/market/top20'));
-      // 2. 抓取自選股即時行情
-      final watchres = await http.get(Uri.parse('$baseUrl/api/v1/market/watchlist?tickers=$_myWatchlistTickers'));
-
-      if (top20res.statusCode == 200 && watchres.statusCode == 200) {
+      await _fetchWatchlistQuotes(_watchlists[_currentGroup]!);
+      
+      if (top20res.statusCode == 200) {
         setState(() {
           _top20List = jsonDecode(top20res.body)['top20'];
-          _watchlistQuotes = jsonDecode(watchres.body)['watchlist'];
           _isLoading = false;
         });
       }
     } catch (e) {
       setState(() => _isLoading = false);
+    }
+  }
+
+  // 獨立抓取特定自選群組資料 (切換標籤時使用)
+  Future<void> _fetchWatchlistQuotes(String tickers) async {
+    setState(() => _isWatchlistLoading = true);
+    try {
+      final watchres = await http.get(Uri.parse('$baseUrl/api/v1/market/watchlist?tickers=$tickers'));
+      if (watchres.statusCode == 200) {
+        setState(() {
+          _watchlistQuotes = jsonDecode(watchres.body)['watchlist'];
+        });
+      }
+    } catch (e) {
+      // 異常處理
+    } finally {
+      setState(() => _isWatchlistLoading = false);
     }
   }
 
@@ -138,45 +162,94 @@ class _MarketScreenState extends State<MarketScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // 🔥 動態自選群組 (橫向滑動區塊，呈現真實報價)
-                  const Text('⭐ 我的自選群組即時行情', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                  // 🔥 升級：自選群組切換標籤列
+                  Row(
+                    children: [
+                      const Icon(Icons.star, color: Colors.amber, size: 20),
+                      const SizedBox(width: 8),
+                      const Text('自選即時行情', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    ],
+                  ),
                   const SizedBox(height: 12),
-                  SizedBox(
-                    height: 120,
-                    child: _watchlistQuotes.isEmpty
-                        ? const Center(child: Text('無自選股資料', style: TextStyle(color: Colors.grey)))
-                        : ListView.builder(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: _watchlistQuotes.length,
-                            itemBuilder: (context, index) {
-                              final item = _watchlistQuotes[index];
-                              return Container(
-                                width: 150,
-                                margin: const EdgeInsets.only(right: 12),
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF1E1E1E),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.tealAccent.withOpacity(0.3)),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(item['name'], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15), overflow: TextOverflow.ellipsis),
-                                    Text(item['ticker'], style: const TextStyle(color: Colors.grey, fontSize: 11)),
-                                    const Spacer(),
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Text('\$${item['price']}', style: const TextStyle(color: Colors.greenAccent, fontSize: 16, fontWeight: FontWeight.bold)),
-                                        const Icon(Icons.bolt, color: Colors.amber, size: 16)
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              );
+                  // 群組標籤 (Chips)
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: _watchlists.keys.map((groupName) {
+                        final isSelected = _currentGroup == groupName;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8.0),
+                          child: ChoiceChip(
+                            label: Text(groupName, style: TextStyle(color: isSelected ? Colors.black : Colors.white)),
+                            selected: isSelected,
+                            selectedColor: Colors.tealAccent,
+                            backgroundColor: const Color(0xFF2A2A2A),
+                            onSelected: (selected) {
+                              if (selected && _currentGroup != groupName) {
+                                setState(() => _currentGroup = groupName);
+                                _fetchWatchlistQuotes(_watchlists[groupName]!); // 切換時自動去撈新群組的報價
+                              }
                             },
                           ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // 自選股報價卡片區塊
+                  SizedBox(
+                    height: 110,
+                    child: _isWatchlistLoading
+                        ? const Center(child: CircularProgressIndicator(color: Colors.tealAccent))
+                        : _watchlistQuotes.isEmpty
+                            ? const Center(child: Text('無自選股資料', style: TextStyle(color: Colors.grey)))
+                            : ListView.builder(
+                                scrollDirection: Axis.horizontal,
+                                itemCount: _watchlistQuotes.length,
+                                itemBuilder: (context, index) {
+                                  final item = _watchlistQuotes[index];
+                                  
+                                  // 🔥 升級：處理價格無限小數問題
+                                  final num rawPrice = item['price'] ?? 0;
+                                  // 限制最多顯示 2 位小數，並移除多餘的 .00
+                                  final String displayPrice = rawPrice.toDouble().toStringAsFixed(2).replaceAll(RegExp(r"([.]*0+)(?!.*\d)$"), "");
+
+                                  return Container(
+                                    width: 140, // 稍微調小寬度
+                                    margin: const EdgeInsets.only(right: 12),
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF1E1E1E),
+                                    borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(color: Colors.tealAccent.withOpacity(0.3)),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(item['name'], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15), overflow: TextOverflow.ellipsis),
+                                        Text(item['ticker'], style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                                        const Spacer(),
+                                        Row(
+                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            // 🔥 升級：加入 FittedBox 防止文字過長破版
+                                            Expanded(
+                                              child: FittedBox(
+                                                alignment: Alignment.centerLeft,
+                                                fit: BoxFit.scaleDown,
+                                                child: Text('\$$displayPrice', style: const TextStyle(color: Colors.greenAccent, fontSize: 18, fontWeight: FontWeight.bold)),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 4),
+                                            const Icon(Icons.bolt, color: Colors.amber, size: 16)
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
                   ),
                   const SizedBox(height: 24),
 
@@ -205,7 +278,7 @@ class _MarketScreenState extends State<MarketScreen> {
 }
 
 // ==========================================
-// ⚡ 分頁 2：單股診斷 (完美重現真實 SMC 指標)
+// ⚡ 分頁 2：單股診斷 
 // ==========================================
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -221,7 +294,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   String get apiUrl {
     final ticker = _tickerController.text.trim();
-    return 'https://taiwan-bot.onrender.com/api/v1/scan/$ticker';
+    return 'https://你的專案名稱.onrender.com/api/v1/scan/$ticker';
   }
 
   Future<void> fetchAiData() async {
@@ -329,7 +402,6 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
           const SizedBox(height: 20),
 
-          // 🔥 讀取後端 strategy_analysis 的真實指標
           const Text('🔍 核心指標與 SMC 策略分析', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
           const SizedBox(height: 12),
           Container(
@@ -343,6 +415,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 const Divider(color: Colors.white12),
                 _buildStrategyRow('SMC 流動性掠奪 (Sweep)', strat['is_liquidity_sweep'] ? '⚠️ 觸發流動性掠奪' : '正常項目', strat['is_liquidity_sweep'] ? Colors.purpleAccent : Colors.grey),
                 const Divider(color: Colors.white12),
+                // 嚴格依循使用者對 POC 與流動性分開定義的要求
                 _buildStrategyRow('SMC 控制點 (POC)', strat['is_poc_rejection'] ? '🟢 POC 支撐拒絕測試成功' : '區間未觸及', strat['is_poc_rejection'] ? Colors.lightBlueAccent : Colors.grey),
                 const Divider(color: Colors.white12),
                 _buildStrategyRow('原始形態判定 (Pattern)', strat['raw_pattern'], Colors.white70),
