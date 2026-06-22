@@ -658,17 +658,17 @@ else:
 # 🤖 高科 iAI 全局交易副駕 (置於網頁最底部)
 # ==========================================
 st.markdown("---")
-st.subheader("🤖 高科 iAI 專屬交易副駕 (Gemma 模型)")
+st.subheader("🤖 高科 iAI 專屬交易副駕 (Nemotron 模型)")
 
 # 1. API 憑證與設定 (確保 /chat/completions 路徑完整)
 NKUST_API_URL = "https://www.iai.nkust.edu.tw/aihub/v1/chat/completions"
 NKUST_API_KEY = "sk-DPOkK719wRKLm7VIzNxFjw"
-MODEL_NAME = "gemma-4-31-b"
+MODEL_NAME = "nemotron-3-super-120b"
 
 # 2. 初始化對話紀錄
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = [
-        {"role": "assistant", "content": "你好！我是你的專屬量化交易副駕，已成功連線至高科大 iAI (Gemma-4-31-b 模型)。有什麼策略上的問題想討論嗎？"}
+        {"role": "assistant", "content": "你好！我是你的專屬量化交易副駕，已成功連線至高科大 iAI (Nemotron-3-Super-120b 模型)。有什麼策略上的問題想討論嗎？"}
     ]
 
 # 3. 渲染歷史對話
@@ -701,7 +701,7 @@ if prompt := st.chat_input("輸入你想詢問的量化策略或市場問題..."
         }
         
         try:
-            with st.spinner('Gemma 大腦思考中...'):
+            with st.spinner('Nemotron 大腦思考中...'):
                 response = requests.post(NKUST_API_URL, headers=headers, json=payload, timeout=45)
                 
             if response.status_code == 200:
