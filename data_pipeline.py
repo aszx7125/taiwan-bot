@@ -122,7 +122,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
             if not res.data: break
             all_data.extend(res.data)
             offset += limit
-        if not all_data: return {"status": "empty"
+        if not all_data: return {"status": "empty"}
 
         df = pd.DataFrame(all_data)
         df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
