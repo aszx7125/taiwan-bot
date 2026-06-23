@@ -111,6 +111,10 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
                 use_lstm = True
         except: pass
 
+        # 確保金鑰不為空
+        if not url or not key:
+            return {"status": "no_key", "msg": "缺少 Supabase 金鑰設定。請確認 SUPABASE_URL 和 SUPABASE_KEY 已正確設定。"}
+        
         supabase = create_client(url, key)
         all_data, offset, limit = [], 0, 1000
         while True:
@@ -118,7 +122,7 @@ def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, init
             if not res.data: break
             all_data.extend(res.data)
             offset += limit
-        if not all_data: return {"status": "empty"}
+        if not all_data: return {"status": "empty"
 
         df = pd.DataFrame(all_data)
         df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
