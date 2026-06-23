@@ -717,131 +717,90 @@ else:
                 st.error(f"❌ 回測系統發生錯誤: {res_adv.get('msg', '未知錯誤')}")
 
     with tab7:
-        st.markdown("#### 💻 量化策略開發室 (Nemotron-120B 程式專用大腦)")
-        st.caption("💡 這裡的 AI 已經切換為「資深工程師模式」，你可以把 PineScript 指標、Python 報錯訊息貼上來讓它幫你除錯或改寫。")
+        st.markdown("#### 💻 量化策略開發與 AI 分析室 (Nemotron-120B)")
+        st.caption("💡 你的專屬 120B 超級大腦。可以直接貼上 PineScript / Python 讓它除錯，或是直接問它今日盤勢分析。它已自動讀取你的本地快取資料庫。")
         
-        # 渲染程式碼聊天室
+        NKUST_API_URL = "https://www.iai.nkust.edu.tw/aihub/v1/chat/completions"
+        NKUST_API_KEY = "sk-DPOkK719wRKLm7VIzNxFjw"
+        MODEL_NAME = "nemotron-3-super-120b"
+        
+        # 渲染歷史對話
         for msg in st.session_state.coder_messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
                 
-        if code_prompt := st.chat_input("輸入你的程式碼或開發需求..."):
+        # 處理使用者輸入
+        if code_prompt := st.chat_input("輸入你的程式碼、開發需求，或是盤勢問題..."):
+            # 1. 顯示並儲存使用者的問題
             st.session_state.coder_messages.append({"role": "user", "content": code_prompt})
             with st.chat_message("user"):
                 st.markdown(code_prompt)
                 
             with st.chat_message("assistant"):
                 code_placeholder = st.empty()
+                
+                # 2. 背景默默抓取最新盤勢數據 (RAG 增強)
+                local_context = ""
+                try:
+                    summary = get_cached_market_summary()
+                    twii = summary.get("加權指數", {}) if summary else {}
+                    valid_items = get_market_predictions_cached()
+                    top_longs = sorted(valid_items, key=lambda x: x['core_data']['best_long'], reverse=True)[:5] if valid_items else []
+                    top_str = ""
+                    for item in top_longs:
+                        top_str += f"- {item.get('代號')} {item.get('名稱')}: 多頭勝率 {item['core_data']['best_long']*100:.1f}%, 現價 {item.get('現價')}\n"
+                    
+                    local_context = f"""
+                    [今日實盤內部資料庫數據]
+                    大盤狀態:
+                    - 現價: {twii.get('price', '未知')}
+                    - 漲跌幅: {twii.get('pct', 0.0):+.2f}%
+                    
+                    勝率最高的前五名標的:
+                    {top_str}
+                    """
+                except Exception:
+                    local_context = "[今日實盤內部資料庫數據]\n目前無法讀取本地快取資料庫。"
+
+                # 3. 組合超級 System Prompt (兼具工程師與分析師能力)
+                system_instruction = {
+                    "role": "system",
+                    "content": (
+                        "你是一位擁有 10 年經驗的頂級台股量化交易工程師與全端開發者。\n"
+                        "【你的能力與職責】：\n"
+                        "1. 程式開發：精通 Python, Pandas, LightGBM, LSTM 以及 TradingView PineScript。回答必須提供高效、乾淨且有註解的程式碼，並精準抓蟲。\n"
+                        "2. 盤勢分析：你的大腦已與使用者的本地資料庫綁定。當使用者詢問盤勢時，你『只能』根據下方的 [今日實盤內部資料庫數據] 回答。若數據中找不到，請直接說「本地快取無此數據」。絕不能用舊知識瞎掰行情。\n"
+                        f"\n{local_context}"
+                    )
+                }
+                
+                # 4. 準備打 API
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {NKUST_API_KEY}"
+                }
+                
                 code_payload = {
-                    "model": "nemotron-3-super-120b",
-                    "messages": [
-                        {"role": "system", "content": "你是一位擁有 10 年經驗的量化交易工程師與全端開發者。你精通 Python, Streamlit, Pandas, 機器學習(LightGBM, LSTM) 以及 TradingView PineScript。你的回答必須充滿專業技術性，提供高效、乾淨且有註解的程式碼，並能精準抓出 Bug。"},
-                        *st.session_state.coder_messages
-                    ],
+                    "model": MODEL_NAME,
+                    "messages": [system_instruction] + st.session_state.coder_messages,
                     "temperature": 0.2
                 }
+                
                 try:
-                    with st.spinner("工程師思考架構中..."):
-                        code_res = requests.post("https://www.iai.nkust.edu.tw/aihub/v1/chat/completions", 
-                                            headers={"Authorization": "Bearer sk-DPOkK719wRKLm7VIzNxFjw"}, json=code_payload, timeout=60)
+                    with st.spinner("Nemotron-120B 思考與運算中..."):
+                        code_res = requests.post(NKUST_API_URL, headers=headers, json=code_payload, timeout=60)
+                        
                     if code_res.status_code == 200:
                         code_response = code_res.json()["choices"][0]["message"]["content"]
                         code_placeholder.markdown(code_response)
                         st.session_state.coder_messages.append({"role": "assistant", "content": code_response})
                     else:
-                        code_placeholder.error("工程師罷工了，請檢查 API。")
+                        code_placeholder.error(f"API 呼叫失敗 ❌\n狀態碼: {code_res.status_code}")
                 except Exception as e:
-                    code_placeholder.error(f"連線異常: {e}")
+                    code_placeholder.error(f"連線異常 ❌: {e}")
 
-# ==========================================
-# 🤖 高科 iAI 全局交易副駕 (RAG 本地數據注入版)
-# ==========================================
-st.markdown("---")
-st.subheader("🤖 高科 iAI 專屬交易副駕 (Nemotron-3-Super 模型)")
 
-NKUST_API_URL = "https://www.iai.nkust.edu.tw/aihub/v1/chat/completions"
-NKUST_API_KEY = "sk-DPOkK719wRKLm7VIzNxFjw"
-MODEL_NAME = "nemotron-3-super-120b" # 🔥 切換至 120B 超大參數模型
-
-if "chat_messages" not in st.session_state:
-    st.session_state.chat_messages = [
-        {"role": "assistant", "content": "你好！我是你的專屬量化交易副駕。目前已切換至最強大的 Nemotron-3-Super-120b 運算核心，並綁定本地快取資料庫。想詢問什麼盤勢分析呢？"}
-    ]
-
-for msg in st.session_state.chat_messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-if prompt := st.chat_input("輸入問題 (例如: 根據目前的資料庫，今天勝率最高的前三名是誰？原因？)"):
-    
-    st.session_state.chat_messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        
-        # 即時抓取本地快取數據
-        local_context = ""
-        try:
-            summary = get_cached_market_summary()
-            twii = summary.get("加權指數", {}) if summary else {}
             
-            valid_items = get_market_predictions_cached()
-            top_longs = sorted(valid_items, key=lambda x: x['core_data']['best_long'], reverse=True)[:5] if valid_items else []
-            top_str = ""
-            for item in top_longs:
-                top_str += f"- {item.get('代號')} {item.get('名稱')}: 多頭勝率 {item['core_data']['best_long']*100:.1f}%, 現價 {item.get('現價')}\n"
-            
-            local_context = f"""
-            [今日實盤內部資料庫數據 - 絕對機密]
-            大盤狀態: 現價 {twii.get('price', '未知')}, 漲跌幅 {twii.get('pct', 0.0):+.2f}%
-            目前 AI 四核心計算出勝率最高的前五名標的如下:
-            {top_str}
-            """
-        except Exception as e:
-            local_context = "目前無法讀取本地快取資料庫。"
+          
 
-        # 最高權限系統提示詞
-        system_instruction = {
-            "role": "system",
-            "content": (
-                "你是一個專業的台股量化交易 AI 助手。你的大腦已經與使用者的本地資料庫綁定。\n"
-                "【嚴格指令】：\n"
-                "1. 你『只能』根據下方提供的 [今日實盤內部資料庫數據] 來回答問題。\n"
-                "2. 絕對『不可以』使用你的預先訓練知識去捏造行情或給出無關的股票。\n"
-                "3. 如果使用者問的問題在這些數據裡找不到答案，請直接回答「目前的本地快取資料庫中沒有相關數據」。\n"
-                "4. 你的語氣要像一個冷靜、數據導向的華爾街量化工程師。\n"
-                f"\n{local_context}"
-            )
-        }
-        
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {NKUST_API_KEY}"
-        }
-        
-        api_messages = [system_instruction] + st.session_state.chat_messages
-        
-        payload = {
-            "model": MODEL_NAME,
-            "messages": api_messages,
-            "temperature": 0.2, 
-            "stream": False 
-        }
-        
-        try:
-            with st.spinner('Nemotron-3-Super 核心運算中...'):
-                response = requests.post(NKUST_API_URL, headers=headers, json=payload, timeout=60)
-                
-            if response.status_code == 200:
-                ai_response = response.json()["choices"][0]["message"]["content"]
-                message_placeholder.markdown(ai_response)
-                st.session_state.chat_messages.append({"role": "assistant", "content": ai_response})
-            else:
-                error_msg = f"API 呼叫失敗 ❌\n狀態碼: {response.status_code}\n錯誤訊息: {response.text}"
-                message_placeholder.error(error_msg)
-                
-        except Exception as e:
-            error_msg = f"連線發生嚴重錯誤 ❌\n請檢查 API 網址是否正確或網路是否暢通。\n錯誤細節: {str(e)}"
-            message_placeholder.error(error_msg)
+       
