@@ -76,14 +76,26 @@ def blend_model_probs(lgbm_prob: float, lstm_prob: float, lgbm_weight: float = 0
     return lgbm_weight * lgbm_prob + lstm_weight * lstm_prob
 
 @st.cache_data(ttl=7200, show_spinner=False)
-def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5):
+def fetch_advanced_backtest(ai_prob_threshold=0.50, use_market_filter=True, initial_cap=1000000, max_pos=5, supabase_url=None, supabase_key=None):
     try:
         from supabase import create_client
         import joblib
-        url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
-        if not url or not key: return {"status": "no_key"}
-        if not os.path.exists("quant_model.joblib"): return {"status": "error", "msg": "找不到 LightGBM 大腦模型。"}
+        
+        # 優先使用傳入的金鑰，其次從環境變數或 Streamlit Secrets 讀取
+        url = supabase_url or os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+        key = supabase_key or os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
+        
+        # 增加錯誤提示，方便除錯
+        if not url or not key:
+            error_msg = "缺少 Supabase 金鑰設定。"
+            if not url:
+                error_msg += "\n- SUPABASE_URL 未設定。"
+            if not key:
+                error_msg += "\n- SUPABASE_KEY 未設定。"
+            return {"status": "no_key", "msg": error_msg}
+        
+        if not os.path.exists("quant_model.joblib"):
+            return {"status": "error", "msg": "找不到 LightGBM 大腦模型（quant_model.joblib）。"}
 
         model = joblib.load("quant_model.joblib")
         features = joblib.load("model_features.joblib")
