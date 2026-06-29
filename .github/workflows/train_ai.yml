@@ -31,7 +31,10 @@ jobs:
         # 🔥 強制蓋掉 requirements 裡的設定，使用在 GitHub 環境中最穩定的 2.13 版本
         pip install tensorflow-cpu==2.13.0
         pip install scikit-learn joblib supabase
-
+    - name: 🔍 終極測謊儀：檢查 GitHub Secrets 是否真的存在
+      run: |
+        if [ -z "${{ secrets.SUPABASE_URL }}" ]; then echo "❌ 機器人報告：我根本沒拿到 URL！"; else echo "✅ URL 存在！"; fi
+        if [ -z "${{ secrets.SUPABASE_KEY }}" ]; then echo "❌ 機器人報告：我根本沒拿到 KEY！"; else echo "✅ KEY 存在！"; fi
     # ── 多頭模型訓練 ─────────────────────────────────
     - name: 🌳 訓練多頭 LightGBM
       env:
