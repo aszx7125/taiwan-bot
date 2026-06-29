@@ -34,29 +34,29 @@ jobs:
 
     # ── 多頭模型訓練 ─────────────────────────────────
     - name: 🌳 訓練多頭 LightGBM
-      run: python train_tools/ai_trainer.py
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: python train_tools/ai_trainer.py
 
     - name: 🔮 訓練多頭 LSTM
-      run: python train_lstm.py
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: python train_lstm.py
 
     # ── 空頭模型訓練 ─────────────────────────────────
     - name: 🌳 訓練空頭 LightGBM
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       run: python ai_trainer_short.py
-      env:
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-    - name: 🔮 訓練空頭 LSTM
-      run: python train_lstm_short.py
+    - name: 🔮 訓練空頭 LSTM 
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: python train_lstm_short.py
 
     # ── 驗證 ─────────────────────────────────────────
     - name: 📊 驗證四核心
