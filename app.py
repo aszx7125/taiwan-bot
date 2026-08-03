@@ -308,14 +308,7 @@ with st.sidebar:
     if "current_page" not in st.session_state:
         st.session_state.current_page = "📊 台股大盤掃描"
     
-    def nav_callback():
-        st.session_state.analyze_trigger = None
-        st.session_state.current_page = st.session_state.nav_radio
-        
-    st.radio("功能切換", ["📊 台股大盤掃描", "🎯 單股技術診斷"], 
-                            index=["📊 台股大盤掃描", "🎯 單股技術診斷"].index(st.session_state.current_page if st.session_state.current_page in ["📊 台股大盤掃描", "🎯 單股技術診斷"] else "📊 台股大盤掃描"),
-                            key="nav_radio", on_change=nav_callback)
-    st.markdown("---")
+
     
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
@@ -351,12 +344,24 @@ query_ticker = st.query_params.get("analyze")
 if query_ticker:
     st.query_params.clear()
 
-target_ticker = query_ticker or st.session_state.pop('analyze_trigger', None) or (manual_ticker.strip().upper() if analyze_manual_btn else None)
+sidebar_trigger = st.session_state.pop('analyze_trigger', None)
+target_ticker = None
 
-if target_ticker:
+if sidebar_trigger or query_ticker:
+    target_ticker = sidebar_trigger or query_ticker
+    st.session_state.manual_search = ""
     st.session_state.current_page = "🎯 單股技術診斷"
     st.session_state.target_ticker_cache = target_ticker
     st.rerun()
+elif manual_ticker or analyze_manual_btn:
+    target_ticker = manual_ticker.strip().upper()
+    if target_ticker and st.session_state.current_page != "🎯 單股技術診斷":
+        st.session_state.current_page = "🎯 單股技術診斷"
+        st.session_state.target_ticker_cache = target_ticker
+        st.rerun()
+    elif target_ticker and st.session_state.get('target_ticker_cache') != target_ticker:
+        st.session_state.target_ticker_cache = target_ticker
+        st.rerun()
 
 if st.session_state.current_page == "🎯 單股技術診斷":
     target_ticker = st.session_state.get('target_ticker_cache', None)
@@ -638,7 +643,9 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 
                 st.markdown("---")
                 if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
+                    st.session_state.current_page = "📊 台股大盤掃描"
                     st.session_state.analyze_trigger = None
+                    st.session_state.manual_search = ""
                     st.rerun()
 elif st.session_state.current_page == "📊 台股大盤掃描":
     st.markdown("### 🌍 大盤與情緒摘要")
