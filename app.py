@@ -481,7 +481,7 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 # UI 控制區
                 col_tf, col_ind, col_ma1, col_ma2, col_ma3 = st.columns([2, 3, 1, 1, 1])
                 with col_tf: 
-                    tf_sel = st.selectbox("時區", ["日線", "小時圖", "週線", "月線"], index=0, label_visibility="collapsed")
+                    tf_sel = st.selectbox("時區", ["1小時", "4小時", "日線", "週線", "月線"], index=2, label_visibility="collapsed")
                 with col_ind:
                     ind_sel = st.multiselect("顯示指標", ["均線", "成交量"], default=["均線", "成交量"], label_visibility="collapsed")
                 with col_ma1: 
@@ -496,13 +496,16 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 import pandas as pd
                 
                 # 依據時區選擇或重採樣資料
-                if tf_sel == "小時圖" and not df_hourly.empty:
+                if tf_sel in ["1小時", "4小時"] and not df_hourly.empty:
                     df_tv = df_hourly.copy()
+                    df_tv = df_tv[~df_tv.index.duplicated(keep='last')]
+                    df_tv = df_tv.sort_index()
+                    if tf_sel == "4小時":
+                        df_tv = df_tv.resample('4h').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
                 else:
                     df_tv = df_daily.copy()
-                    
-                df_tv = df_tv[~df_tv.index.duplicated(keep='last')]
-                df_tv = df_tv.sort_index()
+                    df_tv = df_tv[~df_tv.index.duplicated(keep='last')]
+                    df_tv = df_tv.sort_index()
                 
                 if tf_sel == "週線":
                     df_tv = df_tv.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'})
@@ -519,7 +522,7 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 df_tv = df_tv.replace([np.inf, -np.inf], np.nan).fillna(0)
                 
                 # 處理時間格式 (Lightweight Charts 要求: 日線以上為 'YYYY-MM-DD'，小時線以下為 Unix Timestamp 數字)
-                if tf_sel == "小時圖":
+                if tf_sel in ["1小時", "4小時"]:
                     # Convert DatetimeIndex to Unix timestamp in seconds
                     df_tv['time'] = df_tv.index.astype('int64') // 10**9
                 else:
@@ -548,7 +551,7 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                             rightPriceScale: {{ borderColor: '#2b2b43' }},
                             timeScale: {{ 
                                 borderColor: '#2b2b43', 
-                                timeVisible: {"true" if tf_sel == "小時圖" else "false"} 
+                                timeVisible: {"true" if tf_sel in ["1小時", "4小時"] else "false"} 
                             }}
                         }};
                         
@@ -574,6 +577,8 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                             }});
                             volumeSeries.setData({json.dumps(volume_data)});
                         }}
+                        
+                        chart.timeScale().fitContent();
                         
                         new ResizeObserver(entries => {{
                             if (entries.length === 0 || entries[0].target !== domElement) return;
