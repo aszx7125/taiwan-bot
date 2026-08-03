@@ -642,11 +642,12 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 st.markdown(card_html, unsafe_allow_html=True)
                 
                 st.markdown("---")
-                if st.button("⬅️ 返回戰情室主頁", use_container_width=True):
+                def go_back():
                     st.session_state.current_page = "📊 台股大盤掃描"
                     st.session_state.analyze_trigger = None
                     st.session_state.manual_search = ""
-                    st.rerun()
+                
+                st.button("⬅️ 返回戰情室主頁", use_container_width=True, on_click=go_back)
 elif st.session_state.current_page == "📊 台股大盤掃描":
     st.markdown("### 🌍 大盤與情緒摘要")
     summary = get_cached_market_summary()
