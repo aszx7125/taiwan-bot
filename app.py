@@ -607,6 +607,42 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 else:
                     target_text = f"若發動下跌，預期下探目標為 <b style='color: #00ccff; font-size: 18px;'>{tp:.2f}</b>；<br>若反轉強彈，上檔防守壓力為 <b style='color: #ffc107; font-size: 18px;'>{sl:.2f}</b>。"
                 
+                # --- 生成動態擬真 AI 交易建議 (Dynamic Trading Signal) ---
+                action_signal = "⏳ 觀望 / 等待買點"
+                action_color = "#f5c542"
+                
+                if is_long:
+                    if prob >= 0.65 and "強勢向上" in ma_trend and "具備攻擊動能" in vol_text:
+                        action_signal = "🚀 強勢買入 (Strong Buy)"
+                        action_color = "#00cc96"
+                        action_reasoning = f"綜合 AI 雙引擎判定，{base_ticker} 目前多方勝率高達 {bl_pct:.1f}%。技術面上 5MA 已強勢翻揚，且今日成交量顯著放大。籌碼面顯示集中度達 {broker_conc:+.2f}，具備強烈上攻動能。建議可於現價 {entry_price:.2f} 附近果斷介入順勢操作，將防守點設於 {sl:.2f}，強勢挑戰上方 {tp:.2f} 壓力區。"
+                    elif "回踩" in smc_text or "震盪" in micro_status_text:
+                        if prob >= 0.55:
+                            action_signal = "🛒 波段低點佈局 (Swing Buy)"
+                            action_color = "#00cc96"
+                            action_reasoning = f"AI 偵測 {base_ticker} 目前處於波段的量縮回踩或震盪洗盤區 (多方勝率 {bl_pct:.1f}%)。儘管短線走勢黏著，但籌碼集中度 ({broker_conc:+.2f}) 依然健康，下方支撐 {sl:.2f} 相當堅實。此時介入下檔風險極低，屬於絕佳的波段左側買點，預計蓄力後將向 {tp:.2f} 發動攻勢。"
+                    elif prob >= 0.60:
+                        action_signal = "🟢 偏多操作 (Buy)"
+                        action_color = "#00cc96"
+                        action_reasoning = f"目前 {base_ticker} 多頭勝率 {bl_pct:.1f}% 佔據優勢，雖然短期 {vol_text}，但整體結構偏多。建議可於 {sl:.2f} 以上分批佈局，耐心等待均線糾結後向上發散，目標上看 {tp:.2f}。"
+                    else:
+                        action_signal = "⏳ 觀望 / 等待買點 (Wait)"
+                        action_color = "#f5c542"
+                        action_reasoning = f"{base_ticker} 目前多空交戰激烈 (多方勝率僅 {bl_pct:.1f}%)，且 {ma_trend}。目前的震盪結構尚未表態，建議先空手觀望，等待突破 {tp:.2f} 或回落至 {sl:.2f} 測試支撐有守後，再行佈局。"
+                else:
+                    if prob >= 0.65:
+                        action_signal = "⚠️ 強烈賣出 / 做空 (Strong Sell)"
+                        action_color = "#ff4b4b"
+                        action_reasoning = f"AI 模型發出嚴重示警，{base_ticker} 空頭勝率高達 {bs_pct:.1f}%！技術面已呈現 {ma_trend}，且籌碼持續渙散 ({broker_conc:+.2f})。若持有現股建議立即於 {entry_price:.2f} 附近停損或減碼避險；積極者可伺機於 {tp:.2f} 跌破時尋找做空機會。"
+                    elif prob >= 0.60:
+                        action_signal = "🔴 逢高減碼 (Sell)"
+                        action_color = "#ff4b4b"
+                        action_reasoning = f"目前 {base_ticker} 趨勢顯著轉弱 (空方勝率 {bs_pct:.1f}%)，且 {vol_text} 導致反彈無力。上檔防守壓力重重 ({sl:.2f})，建議趁反彈時先減碼降低持股水位，等待下探 {tp:.2f} 後再重新評估。"
+                    else:
+                        action_signal = "⏳ 觀望 / 等待買點 (Wait)"
+                        action_color = "#f5c542"
+                        action_reasoning = f"{base_ticker} 目前趨勢偏空震盪 (空方勝率 {bs_pct:.1f}%)，雖然尚未出現崩跌危機，但上漲動能極度匱乏。建議保持空手，切勿隨意接刀，等待股價在 {tp:.2f} 附近落底築底後，再考慮下一個波段買點。"
+                
                 card_html = f"""
 <div style="border: 2px solid {main_color}; border-radius: 12px; padding: 24px; background: linear-gradient(145deg, #1e1e1e 0%, #151515 100%); margin-bottom: 25px; box-shadow: 0 8px 16px rgba(0,0,0,0.4);">
 <h3 style="color: {main_color}; margin-top: 0; border-bottom: 1px solid #333; padding-bottom: 15px; margin-bottom: 20px; font-weight: 600;">
@@ -634,11 +670,14 @@ if st.session_state.current_page == "🎯 單股技術診斷":
 </div>
 </div>
 
-<div style="background: {bg_color}; padding: 18px; border-radius: 8px;">
-<h4 style="margin: 0 0 10px 0; color: {main_color};">⚔️ 綜合戰術建議</h4>
+<div style="background: {bg_color}; padding: 18px; border-radius: 8px; border-left: 5px solid {action_color};">
+<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+    <h4 style="margin: 0; color: #fff; font-size: 18px;">🤖 AI 交易決策指示</h4>
+    <span style="background-color: {action_color}; color: #000; font-weight: 800; padding: 4px 12px; border-radius: 4px; font-size: 15px;">{action_signal}</span>
+</div>
 <p style="margin: 0; color: #ddd; line-height: 1.6; font-size: 15px;">
-整體核心研判目前為 <b style="color: #fff;">{direction}</b> 佔優。<br>
-建議以此預期目標價及支撐價作為進出場的嚴格依據，並注意 <b style="color: #fff;">{micro_status_text}</b> 的微觀變化。
+    {action_reasoning}<br><br>
+    <span style="color: #999; font-size: 13px;">※ 核心指引：以目標價 <b style="color:#ffc107;">{tp:.2f}</b> 及支撐/停損價 <b style="color:#00ccff;">{sl:.2f}</b> 作為進出嚴格紀律。</span>
 </p>
 </div>
 </div>
