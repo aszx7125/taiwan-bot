@@ -322,9 +322,13 @@ with st.sidebar:
         display_options.append(f"{base} {name}".strip())
         
     sidebar_ticker = st.selectbox("2. 選擇分析標的", display_options).split(' ')[0]
-    if st.button("📊 診斷此自選股", use_container_width=True, type="primary"):
+    
+    def analyze_sidebar():
         st.session_state.analyze_trigger = sidebar_ticker
-        st.rerun()
+        if 'manual_search' in st.session_state:
+            st.session_state.manual_search = ""
+            
+    st.button("📊 診斷此自選股", use_container_width=True, type="primary", on_click=analyze_sidebar)
         
     st.markdown("---")
     st.caption("🤖 核心引擎狀態")
@@ -333,6 +337,12 @@ with st.sidebar:
     # ==========================================
 # ⚡ 戰情室主視覺
 # ==========================================
+query_ticker = st.query_params.get("analyze")
+if query_ticker:
+    st.query_params.clear()
+    if 'manual_search' in st.session_state:
+        st.session_state.manual_search = ""
+
 st.title("⚡ 台股戰情分析終端 v4.1")
 st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心極速快取版")
 col1, col2 = st.columns([3, 1])
@@ -340,16 +350,11 @@ with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibil
 with col2: analyze_manual_btn = st.button("單股掃描", use_container_width=True)
 st.markdown("---")
 
-query_ticker = st.query_params.get("analyze")
-if query_ticker:
-    st.query_params.clear()
-
 sidebar_trigger = st.session_state.pop('analyze_trigger', None)
 target_ticker = None
 
 if sidebar_trigger or query_ticker:
     target_ticker = sidebar_trigger or query_ticker
-    st.session_state.manual_search = ""
     st.session_state.current_page = "🎯 單股技術診斷"
     st.session_state.target_ticker_cache = target_ticker
     st.rerun()
