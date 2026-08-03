@@ -1,5 +1,6 @@
 streamlit
 pandas
+<<<<<<< HEAD
 numpy
 scikit-learn
 lightgbm
@@ -9,3 +10,14 @@ requests
 supabase
 yfinance
 plotlystreamlit-autorefresh
+=======
+numpy<2.0.0
+scikit-learn==1.3.2
+lightgbm==4.1.0
+tensorflow-cpu==2.13.0
+joblib==1.3.2
+requests
+supabase
+yfinance
+keras
+>>>>>>> 3ac7a3d1060452e00adae9d96a7289204b1fae22

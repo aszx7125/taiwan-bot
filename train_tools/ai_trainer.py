@@ -17,12 +17,25 @@ print("🟢 啟動多頭靜態大腦訓練 (預測上漲>2%)")
 print("=" * 60)
 
 # ── 1. 初始化 ─────────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# 透過 .strip() 和 .strip("\"'") 強制清除可能不小心複製到的空白鍵與引號
+raw_url = os.environ.get("SUPABASE_URL", "")
+raw_key = os.environ.get("SUPABASE_KEY", "")
+
+SUPABASE_URL = raw_url.strip().strip("\"'")
+SUPABASE_KEY = raw_key.strip().strip("\"'")
+
+print(f"🔍 [Debug] URL 長度: {len(SUPABASE_URL)} | 開頭: {SUPABASE_URL[:5]}")
+print(f"🔍 [Debug] KEY 長度: {len(SUPABASE_KEY)} | 開頭: {SUPABASE_KEY[:5]} | 結尾: {SUPABASE_KEY[-5:]}")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("❌ 錯誤：找不到 Supabase 環境變數")
     exit(1)
+
+# 如果開頭不是 http 或 eyJ，代表根本貼錯字串了
+if not SUPABASE_URL.startswith("http"):
+    print("⚠️ 警告: URL 格式似乎不對 (應該要以 http 開頭)")
+if not SUPABASE_KEY.startswith("eyJ"):
+    print("⚠️ 警告: KEY 格式似乎不對 (Supabase API Key 應該要以 eyJ 開頭)")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
