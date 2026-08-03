@@ -1,4 +1,4 @@
-﻿import os
+import os
 import traceback
 # 🔥 終極護身符：強迫 TensorFlow 使用舊版 Keras 2 核心，解決 batch_shape 報錯！
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
@@ -29,7 +29,6 @@ class DualCoreBrain:
             self._load_models(lgbm_path, feats_path, lstm_path)
             self.is_lgbm_ready = True
         except Exception as e:
-            import traceback
             self.lgbm_error_msg = traceback.format_exc()
             self.is_lgbm_ready = False
             print(f"🚨 LGBM 載入崩潰: {self.lgbm_error_msg}")
