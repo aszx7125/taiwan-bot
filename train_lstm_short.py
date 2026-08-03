@@ -21,8 +21,9 @@ print("🔴 啟動空頭LSTM訓練 (時序下跌預測)")
 print("=" * 60)
 
 # ── 1. 初始化 ─────────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+import streamlit as st
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("❌ 找不到 Supabase 金鑰")
@@ -87,25 +88,36 @@ all_dates = np.array(all_dates)
 if len(all_X) == 0:
     exit(1)
 
-# ── 5. 縮放與切分 ─────────────────────────────────────────────────────────
-n_samples, n_steps, n_features = all_X.shape
-X_2d = all_X.reshape(-1, n_features)
-scaler = StandardScaler()
-X_2d_scaled = scaler.fit_transform(X_2d)
-X_scaled = X_2d_scaled.reshape(n_samples, n_steps, n_features)
-joblib.dump(scaler, "lstm_scaler_short.joblib")
-
+# ── 5. 時序切割與嚴格特徵縮放 (防止資料外洩) ──────────────────────
+# 先對時間進行排序
 sorted_idx = np.argsort(all_dates)
-X_sorted = X_scaled[sorted_idx]
+X_sorted = all_X[sorted_idx]
 y_sorted = all_y[sorted_idx]
 
-tscv = TimeSeriesSplit(n_splits=5)
-best_val_fold = None
-for train_idx, val_idx in tscv.split(X_sorted):
-    best_val_fold = (train_idx, val_idx)
+# 採用 80/20 時間序列切割 (保留前面 80% 作為訓練，完全不浪費資料)
+split_idx = int(len(X_sorted) * 0.8)
+X_train_raw = X_sorted[:split_idx]
+y_train = y_sorted[:split_idx]
+X_val_raw = X_sorted[split_idx:]
+y_val = y_sorted[split_idx:]
 
-X_train, X_val = X_sorted[best_val_fold[0]], X_sorted[best_val_fold[1]]
-y_train, y_val = y_sorted[best_val_fold[0]], y_sorted[best_val_fold[1]]
+n_train_samples, n_steps, n_features = X_train_raw.shape
+n_val_samples = X_val_raw.shape[0]
+
+scaler = StandardScaler()
+# [精確打擊] 只在訓練集進行 fit_transform，確保完全看不到未來的極值與變異數
+X_train_2d_scaled = scaler.fit_transform(X_train_raw.reshape(-1, n_features))
+X_train = X_train_2d_scaled.reshape(n_train_samples, n_steps, n_features)
+
+# [精確打擊] 驗證集只能使用 transform
+if n_val_samples > 0:
+    X_val_2d_scaled = scaler.transform(X_val_raw.reshape(-1, n_features))
+    X_val = X_val_2d_scaled.reshape(n_val_samples, n_steps, n_features)
+else:
+    X_val = np.empty((0, n_steps, n_features))
+
+joblib.dump(scaler, "lstm_scaler_short.joblib")
+
 
 # ── 6. 權重與訓練 ─────────────────────────────────────────────────────────
 model = Sequential([

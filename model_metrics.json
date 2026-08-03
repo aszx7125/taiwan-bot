@@ -1,7 +1,7 @@
 {
   "lstm": {
-    "blind_win_rate": 0.6256,
-    "last_train": "2026-06-21 03:31"
+    "blind_win_rate": 0.8657,
+    "last_train": "2026-08-02 21:49"
   },
   "lgbm": {
     "blind_win_rate": 0.6916,
@@ -14,9 +14,9 @@
       "last_train": "2026-06-21 03:32"
     },
     "lstm": {
-      "blind_win_rate": 0.488,
-      "short_capture_rate": 0.7774,
-      "last_train": "2026-06-21 03:34"
+      "blind_win_rate": 0.6385,
+      "short_capture_rate": 0.8104,
+      "last_train": "2026-08-02 21:53"
     }
   }
 }

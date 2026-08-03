@@ -5,3 +5,8 @@ venv/
 # å¿½ç•¥ Flutter ç·¨è­¯ç”¢ç”Ÿçš„å·¨å¤§æª”æ¡ˆ
 taiwan_quant_app/build/
 taiwan_quant_app/.dart_tool/
+
+# ©¿²¤¾÷±K»P³]©wÀÉ
+.streamlit/
+.env
+.DS_Store
