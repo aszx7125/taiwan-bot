@@ -598,6 +598,7 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 </script>
                 '''
                 import streamlit.components.v1 as components
+                # components.html 不支援 key 參數，若 html_code 內容改變即會自動重新渲染
                 components.html(html_code, height=520)
                 
                 # --- 4. 系統戰術分析 (基於自有模型) ---
