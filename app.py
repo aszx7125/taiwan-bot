@@ -428,12 +428,20 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                     sl = min(entry_price - 1.5 * atr_14, sup_level)
                     tp = max(res_level, entry_price + 2 * atr_14)
                     color = "#00cc96"
-                    direction = "多頭佈局"
+                    direction = "多頭波段"
+                    trend_icon = "📈"
+                    pullback_label = "預計回檔/支撐價"
+                    entry_label = "建議買入區間"
+                    entry_value = f"接近 {sl:.2f}"
                 else:
                     sl = max(res_level, entry_price + 1.5 * atr_14)
                     tp = min(sup_level, entry_price - 2 * atr_14)
                     color = "#ff4b4b"
-                    direction = "空頭佈局"
+                    direction = "空頭波段"
+                    trend_icon = "📉"
+                    pullback_label = "預計反彈/壓力價"
+                    entry_label = "建議空手/放空區"
+                    entry_value = f"接近 {sl:.2f}"
                 
                 # --- 2. 渲染沉浸式網格 UI (致敬貓眼策略) ---
                 ui_html = f'''
@@ -442,27 +450,27 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                         <div style="display: flex; align-items: center; gap: 12px;">
                             <img src="https://img.icons8.com/color/48/000000/bullish.png" width="32" style="border-radius:50%;" />
                             <span style="color: #fff; font-size: 20px; font-weight: bold;">{base_ticker} {c_name}</span>
-                            <span style="background: rgba(255,255,255,0.1); color: #ccc; padding: 4px 8px; border-radius: 6px; font-size: 12px;">AI {direction}</span>
+                            <span style="background: rgba(255,255,255,0.1); color: #ccc; padding: 4px 8px; border-radius: 6px; font-size: 12px;">現價: {entry_price:.2f}</span>
                         </div>
                     </div>
                 
                     <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
                         <div style="background-color: #151924; padding: 16px; border-radius: 12px; border: 1px solid #2a2e39;">
-                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">現價 (Entry)</div>
-                            <div style="color: #00cc96; font-size: 28px; font-weight: bold;">{entry_price:.2f}</div>
+                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">📊 目前 AI 趨勢 (勝率)</div>
+                            <div style="color: {color}; font-size: 24px; font-weight: bold;">{trend_icon} {direction} ({prob*100:.1f}%)</div>
                         </div>
                         <div style="background-color: #151924; padding: 16px; border-radius: 12px; border: 1px solid #2a2e39;">
-                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">AI 勝率極值</div>
-                            <div style="color: {color}; font-size: 28px; font-weight: bold;">+{prob*100:.1f}%</div>
+                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">{trend_icon} {pullback_label}</div>
+                            <div style="color: #ffc107; font-size: 24px; font-weight: bold;">{sl:.2f}</div>
                         </div>
                     
                         <div style="background-color: #151924; padding: 16px; border-radius: 12px; border: 1px solid #2a2e39;">
-                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">SL 防守停損區</div>
-                            <div style="color: #ff4b4b; font-size: 22px; font-weight: bold;">{sl:.2f}</div>
+                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">🛒 {entry_label}</div>
+                            <div style="color: {color}; font-size: 24px; font-weight: bold;">{entry_value}</div>
                         </div>
                         <div style="background-color: #151924; padding: 16px; border-radius: 12px; border: 1px solid #2a2e39; border-left: 4px solid {color};">
-                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">TP 目標停利區</div>
-                            <div style="color: {color}; font-size: 22px; font-weight: bold;">{tp:.2f}</div>
+                            <div style="color: #8bb0d9; font-size: 13px; margin-bottom: 6px;">🎯 波段停利目標</div>
+                            <div style="color: {color}; font-size: 24px; font-weight: bold;">{tp:.2f}</div>
                         </div>
                     </div>
                 
