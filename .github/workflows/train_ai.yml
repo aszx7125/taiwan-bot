@@ -3,7 +3,8 @@ name: 台股量化 - 🧠 四核大腦訓練 (多空雙向)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 18 * * 6'
+    # 台灣時間每月 1 號凌晨 2 點 (18:00 UTC) 進行全量重組防腐
+    - cron: '0 18 1 * *'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

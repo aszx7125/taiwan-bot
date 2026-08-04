@@ -1,0 +1,60 @@
+name: 台股量化 - 🧠 每日自我學習 (增量微調)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 台灣時間每日下午 4:00 (16:00 UTC+8 = 08:00 UTC)，週一至週五執行
+    - cron: '0 8 * * 1-5'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  daily-learning:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 取得程式碼
+      uses: actions/checkout@v4
+
+    - name: 🐍 設定 Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: 📦 安裝套件
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        # 確保相容性
+        pip install tensorflow-cpu==2.13.0
+        pip install scikit-learn joblib supabase streamlit lightgbm
+
+    - name: 🤖 執行增量自我學習
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: python incremental_trainer.py
+
+    - name: 📤 提交新知識權重
+      run: |
+        git config --local user.email "bot@quant.factory"
+        git config --local user.name "AI-Self-Learner"
+        
+        # 只加入可能有變動的模型檔案與 metrics
+        git add quant_model.joblib quant_model_short.joblib \
+                lstm_momentum_brain.h5 lstm_short_brain.h5 \
+                lstm_scaler.joblib lstm_scaler_short.joblib \
+                model_metrics.json
+        
+        # 檢查是否有檔案變更
+        if git diff --quiet && git diff --cached --quiet; then
+          echo "✅ 今日無有效新知識可學習，權重維持不變"
+        else
+          git commit -m "🤖 AI 自我學習更新：盤後增量微調 [Skip CI]"
+          git pull --rebase origin main
+          git push origin main
+        fi
