@@ -758,6 +758,117 @@ elif st.session_state.current_page == "📊 台股大盤掃描":
         except Exception as e:
             st.error(f"0050 紅綠燈載入失敗: {e}")
 
+    # --- 新增：大盤全景排行榜 (漲跌幅前三、族群板塊、外資主力前10) ---
+    if snapshot_data:
+        try:
+            df_snap = pd.DataFrame(snapshot_data)
+            # 確保資料完整性
+            if 'recent_returns' in df_snap.columns and '代號' in df_snap.columns:
+                # 解析出當日漲跌幅 (%)
+                df_snap['漲跌幅'] = df_snap['recent_returns'].apply(lambda x: (x[-1] * 100) if isinstance(x, list) and len(x) > 0 else 0.0)
+                
+                st.markdown("### 🏆 大盤全景風雲榜")
+                
+                # 區塊 1: 漲跌幅前三名 與 跌幅前三名
+                col_top, col_bot = st.columns(2)
+                
+                top3_gainers = df_snap.sort_values(by='漲跌幅', ascending=False).head(3)
+                bottom3_losers = df_snap.sort_values(by='漲跌幅', ascending=True).head(3)
+                
+                with col_top:
+                    st.markdown("<h4 style='color:#00cc96;'>📈 漲幅前三強</h4>", unsafe_allow_html=True)
+                    for _, row in top3_gainers.iterrows():
+                        t_name = row.get('名稱', row['代號'])
+                        st.metric(label=f"{row['代號']} {t_name}", value=f"{row.get('現價', 0.0):.2f}", delta=f"+{row['漲跌幅']:.2f}%")
+                        
+                with col_bot:
+                    st.markdown("<h4 style='color:#ff4b4b;'>📉 跌幅前三弱</h4>", unsafe_allow_html=True)
+                    for _, row in bottom3_losers.iterrows():
+                        t_name = row.get('名稱', row['代號'])
+                        st.metric(label=f"{row['代號']} {t_name}", value=f"{row.get('現價', 0.0):.2f}", delta=f"{row['漲跌幅']:.2f}%")
+                        
+                st.markdown("---")
+                
+                # 區塊 2: 各族群分類依照漲幅來排序
+                st.markdown("### 🧩 族群板塊強弱勢輪動")
+                
+                # 建立 mapping
+                ticker_to_cluster = {}
+                for cluster_name, tickers in st.session_state.stock_clusters.items():
+                    for t in tickers:
+                        ticker_to_cluster[t.split('.')[0]] = cluster_name
+                        
+                df_snap['族群'] = df_snap['代號'].astype(str).map(ticker_to_cluster)
+                
+                # 計算各族群平均漲跌幅
+                cluster_perf = df_snap.dropna(subset=['族群']).groupby('族群')['漲跌幅'].mean().sort_values(ascending=False).reset_index()
+                
+                if not cluster_perf.empty:
+                    # 使用橫向直方圖或 Markdown 呈現
+                    cols_cluster = st.columns(len(cluster_perf))
+                    for i, (_, row) in enumerate(cluster_perf.iterrows()):
+                        c_name = row['族群']
+                        c_perf = row['漲跌幅']
+                        color = "#00cc96" if c_perf >= 0 else "#ff4b4b"
+                        sign = "+" if c_perf >= 0 else ""
+                        with cols_cluster[i]:
+                            st.markdown(f"""
+                            <div style="background-color:#1e1e1e; padding:12px; border-radius:8px; text-align:center; border-top: 3px solid {color};">
+                                <div style="color:#aaa; font-size:14px;">{c_name}</div>
+                                <div style="color:{color}; font-size:20px; font-weight:bold; margin-top:5px;">{sign}{c_perf:.2f}%</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                
+                st.markdown("---")
+                
+                # 區塊 3: 外資/主力買超前 10 名
+                st.markdown("### 🏦 主力外資買超前 10 名 (籌碼集中度)")
+                if 'broker_conc' in df_snap.columns:
+                    top10_broker = df_snap.sort_values(by='broker_conc', ascending=False).head(10)
+                    
+                    # 建立美觀的 HTML 表格
+                    th_style = "text-align:center; padding:12px; border-bottom:2px solid #555; color:#8bb0d9;"
+                    td_style = "text-align:center; padding:12px; border-bottom:1px solid #333;"
+                    
+                    rows_html = ""
+                    for rank, (_, row) in enumerate(top10_broker.iterrows(), 1):
+                        chg = row['漲跌幅']
+                        chg_color = "#00cc96" if chg >= 0 else "#ff4b4b"
+                        chg_sign = "+" if chg >= 0 else ""
+                        
+                        rows_html += f"""
+                        <tr>
+                            <td style="{td_style} font-weight:bold; color:#fff;">#{rank}</td>
+                            <td style="{td_style} color:#fff;">{row['代號']} {row.get('名稱', '')}</td>
+                            <td style="{td_style} color:#ffc107; font-weight:bold;">{row['broker_conc']:+.2f}</td>
+                            <td style="{td_style} color:#fff;">{row.get('現價', 0.0):.2f}</td>
+                            <td style="{td_style} color:{chg_color}; font-weight:bold;">{chg_sign}{chg:.2f}%</td>
+                        </tr>
+                        """
+                        
+                    table_html = f"""
+                    <div style="background-color:#141823; border-radius:12px; padding:16px; border:1px solid #2a2e39; overflow-x:auto;">
+                        <table style="width:100%; border-collapse:collapse;">
+                            <thead>
+                                <tr>
+                                    <th style="{th_style}">名次</th>
+                                    <th style="{th_style}">標的名稱</th>
+                                    <th style="{th_style}">集中度</th>
+                                    <th style="{th_style}">現價</th>
+                                    <th style="{th_style}">漲跌幅</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows_html}
+                            </tbody>
+                        </table>
+                    </div>
+                    """
+                    _render_clean_html(table_html)
+                    
+        except Exception as e:
+            st.error(f"大盤排行榜載入失敗: {e}")
+
     st.markdown("---")
 
     with st.container():
