@@ -624,17 +624,17 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 # --- 生成動態擬真 AI 交易建議 (Dynamic Trading Signal) ---
                 action_signal = "⏳ 觀望 / 等待買點"
                 action_color = "#f5c542"
+                action_reasoning = f"{base_ticker} 目前趨勢混沌不明，建議先空手觀望，等待進階訊號確認後再行操作。"
                 
                 if is_long:
                     if prob >= 0.65 and "強勢向上" in ma_trend and "具備攻擊動能" in vol_text:
                         action_signal = "🚀 強勢買入 (Strong Buy)"
                         action_color = "#00cc96"
                         action_reasoning = f"綜合 AI 雙引擎判定，{base_ticker} 目前多方勝率高達 {bl_pct:.1f}%。技術面上 5MA 已強勢翻揚，且今日成交量顯著放大。籌碼面顯示集中度達 {broker_conc:+.2f}，具備強烈上攻動能。建議可於現價 {entry_price:.2f} 附近果斷介入順勢操作，將防守點設於 {sl:.2f}，強勢挑戰上方 {tp:.2f} 壓力區。"
-                    elif "回踩" in smc_text or "震盪" in micro_status_text:
-                        if prob >= 0.55:
-                            action_signal = "🛒 波段低點佈局 (Swing Buy)"
-                            action_color = "#00cc96"
-                            action_reasoning = f"AI 偵測 {base_ticker} 目前處於波段的量縮回踩或震盪洗盤區 (多方勝率 {bl_pct:.1f}%)。儘管短線走勢黏著，但籌碼集中度 ({broker_conc:+.2f}) 依然健康，下方支撐 {sl:.2f} 相當堅實。此時介入下檔風險極低，屬於絕佳的波段左側買點，預計蓄力後將向 {tp:.2f} 發動攻勢。"
+                    elif ("回踩" in smc_text or "震盪" in micro_status_text) and prob >= 0.55:
+                        action_signal = "🛒 波段低點佈局 (Swing Buy)"
+                        action_color = "#00cc96"
+                        action_reasoning = f"AI 偵測 {base_ticker} 目前處於波段的量縮回踩或震盪洗盤區 (多方勝率 {bl_pct:.1f}%)。儘管短線走勢黏著，但籌碼集中度 ({broker_conc:+.2f}) 依然健康，下方支撐 {sl:.2f} 相當堅實。此時介入下檔風險極低，屬於絕佳的波段左側買點，預計蓄力後將向 {tp:.2f} 發動攻勢。"
                     elif prob >= 0.60:
                         action_signal = "🟢 偏多操作 (Buy)"
                         action_color = "#00cc96"
