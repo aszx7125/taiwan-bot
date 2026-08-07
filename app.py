@@ -790,16 +790,14 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                         if idx + 5 >= len(df_daily):
                             ret_str += " (未滿5日)"
                             
-                        rows.append(f"""
-                        <tr style='border-bottom: 1px solid #2a2a35;'>
-                            <td style='padding: 12px 8px; color: #ddd;'>{row_date}</td>
-                            <td style='padding: 12px 8px; color: #fff;'>{ep:.2f}</td>
-                            <td style='padding: 12px 8px; font-weight: bold; color: {sig_col};'>{sig}</td>
-                            <td style='padding: 12px 8px; color: #00cc96;'>{h_bl*100:.1f}%</td>
-                            <td style='padding: 12px 8px; color: #ff4b4b;'>{h_bs*100:.1f}%</td>
-                            <td style='padding: 12px 8px; font-weight: bold; color: {ret_col};'>{ret_str}</td>
-                        </tr>
-                        """)
+                        rows.append(f"<tr style='border-bottom: 1px solid #2a2a35;'>"
+                                    f"<td style='padding: 12px 8px; color: #ddd;'>{row_date}</td>"
+                                    f"<td style='padding: 12px 8px; color: #fff;'>{ep:.2f}</td>"
+                                    f"<td style='padding: 12px 8px; font-weight: bold; color: {sig_col};'>{sig}</td>"
+                                    f"<td style='padding: 12px 8px; color: #00cc96;'>{h_bl*100:.1f}%</td>"
+                                    f"<td style='padding: 12px 8px; color: #ff4b4b;'>{h_bs*100:.1f}%</td>"
+                                    f"<td style='padding: 12px 8px; font-weight: bold; color: {ret_col};'>{ret_str}</td>"
+                                    f"</tr>")
                     
                     rows.reverse()
                     hist_html += "".join(rows) + "</table>"
