@@ -699,6 +699,92 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 
                 st.markdown(card_html, unsafe_allow_html=True)
                 
+                # --- 歷史預測與實際走勢回測追蹤表 ---
+                st.markdown("### 🕰️ 歷史預測回測追蹤表 (過去 20 日)")
+                
+                if len(df_daily) >= 20:
+                    hist_html = "<table style='width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; margin-bottom: 20px;'>"
+                    hist_html += "<tr style='border-bottom: 1px solid #444; color: #aaa; background-color: rgba(255,255,255,0.05);'>"
+                    hist_html += "<th style='padding: 12px 8px;'>日期</th>"
+                    hist_html += "<th style='padding: 12px 8px;'>收盤價</th>"
+                    hist_html += "<th style='padding: 12px 8px;'>AI 預測訊號</th>"
+                    hist_html += "<th style='padding: 12px 8px;'>多方勝率</th>"
+                    hist_html += "<th style='padding: 12px 8px;'>空方勝率</th>"
+                    hist_html += "<th style='padding: 12px 8px;'>未來5日實際報酬</th>"
+                    hist_html += "</tr>"
+                    
+                    # 取過去20天 (排除今天)
+                    start_idx = max(0, len(df_daily) - 21)
+                    end_idx = len(df_daily) - 1
+                    
+                    rows = []
+                    for idx in range(start_idx, end_idx):
+                        row_date = df_daily.index[idx].strftime('%Y-%m-%d')
+                        row = df_daily.iloc[idx]
+                        ep = float(row.get('Close', 0.0))
+                        vol = float(row.get('Volume', 0.0))
+                        atr = float(row.get('ATR_14', ep * 0.05))
+                        smc = "量縮回踩" if bool(row.get('Low_Vol_Pullback', False)) else "一般常態箱體震盪"
+                        
+                        f_dict = brain.extract_features(
+                            clean_ticker=base_ticker, 
+                            current_price=ep, 
+                            snapshot_dict=snapshot_dict, 
+                            current_vol=vol, 
+                            fallback_atr=atr, 
+                            fallback_pattern=smc
+                        )
+                        
+                        if hasattr(brain, 'predict_four_core'):
+                            hist_core = brain.predict_four_core([f_dict])[0]
+                        else:
+                            hist_core = {'best_long': 0.5, 'best_short': 0.5, 'signal': 'WAIT'}
+                            
+                        actual_return = 0.0
+                        if idx + 5 < len(df_daily):
+                            future_close = float(df_daily.iloc[idx+5].get('Close', ep))
+                            actual_return = (future_close / ep) - 1.0
+                        else:
+                            future_close = float(df_daily.iloc[-1].get('Close', ep))
+                            actual_return = (future_close / ep) - 1.0
+                            
+                        h_bl = hist_core.get('best_long', 0.5)
+                        h_bs = hist_core.get('best_short', 0.5)
+                        h_is_long = h_bl >= h_bs
+                        h_prob = h_bl if h_is_long else h_bs
+                        
+                        if h_is_long:
+                            if h_prob >= 0.65: sig, sig_col = "🚀 強勢買入", "#00cc96"
+                            elif h_prob >= 0.60: sig, sig_col = "🟢 偏多操作", "#00cc96"
+                            elif h_prob >= 0.55 and "回踩" in smc: sig, sig_col = "🛒 低點佈局", "#00cc96"
+                            else: sig, sig_col = "⏳ 觀望", "#f5c542"
+                        else:
+                            if h_prob >= 0.65: sig, sig_col = "⚠️ 強烈賣出", "#ff4b4b"
+                            elif h_prob >= 0.60: sig, sig_col = "🔴 逢高減碼", "#ff4b4b"
+                            else: sig, sig_col = "⏳ 觀望", "#f5c542"
+                            
+                        ret_col = "#00cc96" if actual_return > 0 else "#ff4b4b" if actual_return < 0 else "gray"
+                        ret_str = f"{actual_return*100:+.2f}%"
+                        if idx + 5 >= len(df_daily):
+                            ret_str += " (未滿5日)"
+                            
+                        rows.append(f"""
+                        <tr style='border-bottom: 1px solid #2a2a35;'>
+                            <td style='padding: 12px 8px; color: #ddd;'>{row_date}</td>
+                            <td style='padding: 12px 8px; color: #fff;'>{ep:.2f}</td>
+                            <td style='padding: 12px 8px; font-weight: bold; color: {sig_col};'>{sig}</td>
+                            <td style='padding: 12px 8px; color: #00cc96;'>{h_bl*100:.1f}%</td>
+                            <td style='padding: 12px 8px; color: #ff4b4b;'>{h_bs*100:.1f}%</td>
+                            <td style='padding: 12px 8px; font-weight: bold; color: {ret_col};'>{ret_str}</td>
+                        </tr>
+                        """)
+                    
+                    rows.reverse()
+                    hist_html += "".join(rows) + "</table>"
+                    st.markdown(hist_html, unsafe_allow_html=True)
+                else:
+                    st.info("歷史資料不足 20 日，無法產生回測追蹤表。")
+                
                 st.markdown("---")
                 def go_back():
                     st.session_state.current_page = "📊 台股大盤掃描"
