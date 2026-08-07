@@ -726,10 +726,32 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                         atr = float(row.get('ATR_14', ep * 0.05))
                         smc = "量縮回踩" if bool(row.get('Low_Vol_Pullback', False)) else "一般常態箱體震盪"
                         
+                        # 構建真實的歷史特徵快照，避免用到今天的常數
+                        past_returns = []
+                        for k in range(10):
+                            k_idx = idx - 9 + k
+                            if k_idx > 0 and k_idx < len(df_daily):
+                                ret = (df_daily['Close'].iloc[k_idx] / df_daily['Close'].iloc[k_idx-1]) - 1.0
+                            else:
+                                ret = 0.0
+                            past_returns.append(float(ret))
+                            
+                        hist_snapshot = {
+                            base_ticker: {
+                                'pattern': smc,
+                                'rs_index': float(row.get('RSI', 50.0)),
+                                'vol_ratio': float(row.get('Vol_Ratio', 1.0)),
+                                'ATR_14': float(row.get('ATR_14', atr)),
+                                '成交量': vol,
+                                'broker_conc': float(snapshot_dict.get(base_ticker, {}).get('broker_conc', 0.0)),
+                                'recent_returns': past_returns
+                            }
+                        }
+                        
                         f_dict = brain.extract_features(
                             clean_ticker=base_ticker, 
                             current_price=ep, 
-                            snapshot_dict=snapshot_dict, 
+                            snapshot_dict=hist_snapshot, 
                             current_vol=vol, 
                             fallback_atr=atr, 
                             fallback_pattern=smc
