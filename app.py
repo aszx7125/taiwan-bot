@@ -713,8 +713,11 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                     hist_html += "<th style='padding: 12px 8px;'>AI 預測訊號</th>"
                     hist_html += "<th style='padding: 12px 8px;'>多方勝率</th>"
                     hist_html += "<th style='padding: 12px 8px;'>空方勝率</th>"
-                    hist_html += "<th style='padding: 12px 8px;'>未來5日實際報酬</th>"
+                    hist_html += "<th style='padding: 12px 8px;'>未來5日達標狀態</th>"
                     hist_html += "</tr>"
+                    
+                    total_signals = 0
+                    success_hits = 0
                     
                     # 取過去20天 (排除今天)
                     start_idx = max(0, len(df_daily) - 21)
@@ -765,27 +768,12 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                         else:
                             hist_core = {'best_long': 0.5, 'best_short': 0.5, 'signal': 'WAIT'}
                             
-                        actual_return = 0.0
-                        if idx + 5 < len(df_daily):
-                            future_close = float(df_daily.iloc[idx+5].get('Close', ep))
-                            actual_return = (future_close / ep) - 1.0
-                        else:
-                            future_close = float(df_daily.iloc[-1].get('Close', ep))
-                            actual_return = (future_close / ep) - 1.0
-                            
                         h_bl = hist_core.get('best_long', 0.5)
                         h_bs = hist_core.get('best_short', 0.5)
                         h_is_long = h_bl >= h_bs
                         h_prob = h_bl if h_is_long else h_bs
                         
-                        # 計算 AI 預測目標價軌跡 (將勝率轉換為預期價格，用來跟實際走勢做比較)
-                        pred_target = ep + (atr * 2.0 * ((h_bl - h_bs) * 2))
-                        chart_data.append({
-                            "Date": row_date,
-                            "實際收盤價": ep,
-                            "AI預測目標價": pred_target
-                        })
-                        
+                        # 決定訊號與顏色
                         if h_is_long:
                             if h_prob >= 0.65: sig, sig_col = "🚀 強勢買入", "#00cc96"
                             elif h_prob >= 0.60: sig, sig_col = "🟢 偏多操作", "#00cc96"
@@ -796,10 +784,53 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                             elif h_prob >= 0.60: sig, sig_col = "🔴 逢高減碼", "#ff4b4b"
                             else: sig, sig_col = "⏳ 觀望", "#f5c542"
                             
-                        ret_col = "#00cc96" if actual_return > 0 else "#ff4b4b" if actual_return < 0 else "gray"
-                        ret_str = f"{actual_return*100:+.2f}%"
-                        if idx + 5 >= len(df_daily):
-                            ret_str += " (未滿5日)"
+                        is_signal = "觀望" not in sig
+                        hit_target = False
+                        tp = 0.0
+                        
+                        if is_signal:
+                            total_signals += 1
+                            if h_is_long:
+                                tp = ep + 1.5 * atr
+                                for j in range(1, 6):
+                                    if idx + j < len(df_daily):
+                                        high_p = float(df_daily.iloc[idx + j].get('High', ep))
+                                        if high_p >= tp:
+                                            hit_target = True
+                                            break
+                            else:
+                                tp = ep - 1.5 * atr
+                                for j in range(1, 6):
+                                    if idx + j < len(df_daily):
+                                        low_p = float(df_daily.iloc[idx + j].get('Low', ep))
+                                        if low_p <= tp:
+                                            hit_target = True
+                                            break
+                            if hit_target:
+                                success_hits += 1
+
+                        if is_signal:
+                            if hit_target:
+                                ret_str = f"✔️ 達標 ({tp:.2f})"
+                                ret_col = "#00cc96"
+                            else:
+                                if idx + 5 >= len(df_daily):
+                                    ret_str = f"⏳ 觀察中 ({tp:.2f})"
+                                    ret_col = "#f5c542"
+                                else:
+                                    ret_str = f"❌ 未達標 ({tp:.2f})"
+                                    ret_col = "#ff4b4b"
+                        else:
+                            ret_str = "-"
+                            ret_col = "gray"
+                            
+                        # 計算 AI 預測目標價軌跡 (將勝率轉換為預期價格，用來跟實際走勢做比較)
+                        pred_target = tp if is_signal else ep
+                        chart_data.append({
+                            "Date": row_date,
+                            "實際收盤價": ep,
+                            "AI預測目標價": pred_target
+                        })
                             
                         rows.append(f"<tr style='border-bottom: 1px solid #2a2a35;'>"
                                     f"<td style='padding: 12px 8px; color: #ddd;'>{row_date}</td>"
@@ -819,7 +850,10 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                         st.markdown("<br>", unsafe_allow_html=True)
                         
                     rows.reverse()
-                    hist_html += "".join(rows) + "</table>"
+                    win_rate = (success_hits / total_signals * 100) if total_signals > 0 else 0.0
+                    summary_html = f"<div style='margin-bottom: 15px; padding: 12px; background: rgba(0, 204, 150, 0.1); border-left: 4px solid #00cc96; border-radius: 8px;'>🎯 近 20 日有效訊號: <b>{total_signals}</b> 次 | 成功達標: <b style='color:#00cc96;'>{success_hits}</b> 次 | 達標勝率: <b style='color:#00cc96;'>{win_rate:.1f}%</b></div>"
+                    
+                    hist_html = summary_html + hist_html + "".join(rows) + "</table>"
                     st.markdown(hist_html, unsafe_allow_html=True)
                 else:
                     st.info("歷史資料不足 20 日，無法產生回測追蹤表。")
