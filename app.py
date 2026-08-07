@@ -703,6 +703,9 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                 st.markdown("### 🕰️ 歷史預測回測追蹤表 (過去 20 日)")
                 
                 if len(df_daily) >= 20:
+                    # 準備折線圖數據
+                    chart_data = []
+                    
                     hist_html = "<table style='width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; margin-bottom: 20px;'>"
                     hist_html += "<tr style='border-bottom: 1px solid #444; color: #aaa; background-color: rgba(255,255,255,0.05);'>"
                     hist_html += "<th style='padding: 12px 8px;'>日期</th>"
@@ -775,6 +778,14 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                         h_is_long = h_bl >= h_bs
                         h_prob = h_bl if h_is_long else h_bs
                         
+                        # 計算 AI 預測目標價軌跡 (將勝率轉換為預期價格，用來跟實際走勢做比較)
+                        pred_target = ep + (atr * 2.0 * ((h_bl - h_bs) * 2))
+                        chart_data.append({
+                            "Date": row_date,
+                            "實際收盤價": ep,
+                            "AI預測目標價": pred_target
+                        })
+                        
                         if h_is_long:
                             if h_prob >= 0.65: sig, sig_col = "🚀 強勢買入", "#00cc96"
                             elif h_prob >= 0.60: sig, sig_col = "🟢 偏多操作", "#00cc96"
@@ -799,6 +810,14 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                                     f"<td style='padding: 12px 8px; font-weight: bold; color: {ret_col};'>{ret_str}</td>"
                                     f"</tr>")
                     
+                    # 繪製曲線圖
+                    if chart_data:
+                        import pandas as pd
+                        df_chart = pd.DataFrame(chart_data).set_index("Date")
+                        st.markdown("#### 📈 AI 預測價格與實際走勢對比曲線")
+                        st.line_chart(df_chart, color=["#ffffff", "#f5c542"])
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        
                     rows.reverse()
                     hist_html += "".join(rows) + "</table>"
                     st.markdown(hist_html, unsafe_allow_html=True)
