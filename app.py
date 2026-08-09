@@ -788,6 +788,7 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                         hit_target = False
                         tp = 0.0
                         
+                        hit_date = ""
                         if is_signal:
                             total_signals += 1
                             if h_is_long:
@@ -797,6 +798,7 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                                         high_p = float(df_daily.iloc[idx + j].get('High', ep))
                                         if high_p >= tp:
                                             hit_target = True
+                                            hit_date = df_daily.index[idx + j].strftime('%m-%d')
                                             break
                             else:
                                 tp = ep - 1.5 * atr
@@ -805,13 +807,14 @@ if st.session_state.current_page == "🎯 單股技術診斷":
                                         low_p = float(df_daily.iloc[idx + j].get('Low', ep))
                                         if low_p <= tp:
                                             hit_target = True
+                                            hit_date = df_daily.index[idx + j].strftime('%m-%d')
                                             break
                             if hit_target:
                                 success_hits += 1
 
                         if is_signal:
                             if hit_target:
-                                ret_str = f"✔️ 達標 ({tp:.2f})"
+                                ret_str = f"✔️ 達標 ({tp:.2f} 於 {hit_date})"
                                 ret_col = "#00cc96"
                             else:
                                 if idx + 5 >= len(df_daily):
