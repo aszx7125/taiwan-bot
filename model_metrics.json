@@ -1,22 +1,22 @@
 {
   "lstm": {
     "blind_win_rate": 0.729,
-    "last_train": "2026-09-09 20:50"
+    "last_train": "2026-09-16 21:17"
   },
   "lgbm": {
-    "blind_win_rate": 0.7728,
-    "last_train": "2026-09-09 20:50"
+    "blind_win_rate": 0.8827,
+    "last_train": "2026-09-16 21:17"
   },
   "short": {
     "lgbm": {
-      "blind_win_rate": 0.8423,
+      "blind_win_rate": 0.6929,
       "short_capture_rate": 0.0,
-      "last_train": "2026-09-09 20:50"
+      "last_train": "2026-09-16 21:17"
     },
     "lstm": {
       "blind_win_rate": 0.5637,
       "short_capture_rate": 0.6347,
-      "last_train": "2026-09-09 20:50"
+      "last_train": "2026-09-16 21:17"
     }
   }
 }
