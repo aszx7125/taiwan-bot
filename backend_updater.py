@@ -119,6 +119,27 @@ def run_backend_update():
                     # 🔥 修復#5: recent_returns清理
                     returns = df_stock['Close'].pct_change().replace([np.inf, -np.inf], 0).fillna(0).tail(10)
                     returns_clean = np.nan_to_num(returns.values, nan=0.0, posinf=0.2, neginf=-0.2).tolist()
+
+                    # 保留 LSTM 訓練時使用的完整 10 日特徵序列，避免線上推論與訓練資料分佈不一致。
+                    recent_features = []
+                    recent_df = df_stock.tail(10)
+                    recent_rets = df_stock['Close'].pct_change().replace([np.inf, -np.inf], 0).fillna(0).tail(10)
+                    for (_, hist_row), hist_ret in zip(recent_df.iterrows(), recent_rets):
+                        hist_close = safe_float(hist_row.get('Close'), c)
+                        hist_atr = safe_float(hist_row.get('ATR_14'), hist_close * 0.05)
+                        recent_features.append({
+                            "daily_return": safe_float(hist_ret),
+                            "vol_ratio": safe_float(hist_row.get('Vol_Ratio'), 1.0),
+                            "broker_conc": safe_float(hist_row.get('Broker_Concentration')),
+                            "rs_index": safe_float(hist_row.get('RS_Index')),
+                            "volatility": safe_float(hist_atr / max(hist_close, 0.01), 0.05),
+                            "turnover": safe_float(hist_close * safe_float(hist_row.get('Volume'))),
+                            "is_pullback": float(bool(hist_row.get('Low_Vol_Pullback', False))),
+                            "is_squeeze": float(bool(hist_row.get('Squeeze_On', False))),
+                            "is_divergence": float(bool(hist_row.get('Bullish_Div', False))),
+                            "is_liquidity_sweep": float(bool(hist_row.get('Liquidity_Sweep_Bull', False))),
+                            "is_poc_rejection": 0.0,
+                        })
                     
                     # 檢查inf
                     if np.isinf(volatility) or np.isnan(volatility):
@@ -140,6 +161,7 @@ def run_backend_update():
                         "broker_conc": broker_conc,
                         "pattern": pattern_str,
                         "recent_returns": returns_clean,
+                        "recent_features": recent_features,
                         "score": int(np.clip(safe_float(df_stock['Score'].iloc[-1], 50), 0, 100))
                     })
                 except Exception as e:

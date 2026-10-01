@@ -11,39 +11,6 @@ import time
 import concurrent.futures
 import json
 import os
-import requests
-
-# ==========================================
-# 🛑 AI 額度限制：本地模擬攔截器
-# ==========================================
-class MockResponse:
-    def __init__(self, content):
-        self.status_code = 200
-        self._content = content
-    def json(self):
-        return {"choices": [{"message": {"content": self._content}}]}
-
-def mock_post(url, *args, **kwargs):
-    if "chat/completions" in url:
-        payload = kwargs.get('json', {})
-        messages = payload.get('messages', [])
-        sys_msg = next((m['content'] for m in messages if m['role'] == 'system'), "")
-        if "華爾街頂尖價值型基金經理人" in sys_msg:
-            msg = "【系統提示：AI 模型已停用】\n\n此標的目前缺乏 AI 分析資料。請依據上方數據卡片與K線圖進行判斷。"
-        elif "量化分析師" in sys_msg:
-            msg = "【AI 已停用】型態健康度評估暫無法使用，請參考月線與現價關係。"
-        elif "明日操盤晨會報告" in sys_msg or "明日操盤晨報" in sys_msg:
-            msg = "【系統提示：AI 模型已停用】\n\n無法生成晨會報告。請參考下方排行面板。"
-        else:
-            msg = "【AI 已停用】此為系統模擬回覆，因額度限制已暫停呼叫外部模型。"
-        return MockResponse(msg)
-    import requests as orig_requests
-    return orig_requests.post(url, *args, **kwargs)
-
-import requests
-requests.post = mock_post
-
-
 # ==========================================
 # 🎨 UI 渲染元件
 # ==========================================
@@ -131,7 +98,7 @@ def render_backtest_metric_card(title, value, subtext, color):
     _render_clean_html(html)
 
 def render_model_health_board(metrics):
-    st.markdown("### 🧪 四核心AI大腦：盲測勝率")
+    st.markdown("### 🧪 四核心 AI 大腦：時序驗證集準確率")
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**🟢 多頭模型**")
@@ -179,6 +146,15 @@ def render_fear_greed_gauge(index_val: int, label: str, color: str):
 # 主程式與邏輯快取
 # ==========================================
 st.set_page_config(page_title="台股量化旗艦終端 v4.1", page_icon="📈", layout="wide")
+st.markdown("""
+<style>
+[data-testid="stMetric"] {background:rgba(20,24,35,.72);border:1px solid #252b3b;border-radius:12px;padding:12px}
+[data-testid="stSidebar"] {border-right:1px solid #252b3b}
+.stButton>button {border-radius:10px;transition:transform .15s ease,border-color .15s ease}
+.stButton>button:hover {transform:translateY(-1px);border-color:#00cc96}
+@media (max-width: 768px) {.block-container {padding-left:1rem;padding-right:1rem}.watch-board td{padding:8px!important}}
+</style>
+""", unsafe_allow_html=True)
 
 # 初始化：策略開發室專屬對話紀錄
 if "coder_messages" not in st.session_state:
@@ -307,9 +283,18 @@ with st.sidebar:
     st.title("🧭 導覽列")
     if "current_page" not in st.session_state:
         st.session_state.current_page = "📊 台股大盤掃描"
-    
+    page_options = ["📊 台股大盤掃描", "🎯 單股技術診斷"]
+    selected_page = st.radio(
+        "快速導覽", page_options,
+        index=page_options.index(st.session_state.current_page),
+        horizontal=True,
+    )
+    if selected_page != st.session_state.current_page:
+        st.session_state.current_page = selected_page
 
-    
+    if st.button("🔄 更新畫面資料", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
     st.header("📂 我的自選清單")
     selected_cluster = st.selectbox("1. 選擇產業群組", list(st.session_state.stock_clusters.keys()))
     cluster_stocks = st.session_state.stock_clusters[selected_cluster]
@@ -333,6 +318,16 @@ with st.sidebar:
     st.markdown("---")
     st.caption("🤖 核心引擎狀態")
     st.markdown(f"多頭: {'🟢' if brain.is_lgbm_ready and brain.is_lstm_ready else '🔴'} | 空頭: {'🟢' if hasattr(brain, 'is_lgbm_short_ready') and brain.is_lgbm_short_ready else '🔴'}")
+    if not all((brain.is_lgbm_ready, brain.is_lstm_ready, brain.is_lgbm_short_ready, brain.is_lstm_short_ready)):
+        with st.expander("查看模型載入狀態"):
+            if not brain.is_lgbm_ready:
+                st.warning("多頭 LightGBM 未就緒")
+            if not brain.is_lstm_ready:
+                st.warning("多頭 LSTM 未就緒")
+            if not brain.is_lgbm_short_ready:
+                st.warning("空頭 LightGBM 未就緒")
+            if not brain.is_lstm_short_ready:
+                st.warning("空頭 LSTM 未就緒")
 
     # ==========================================
 # ⚡ 戰情室主視覺
@@ -345,9 +340,12 @@ if query_ticker:
 
 st.title("⚡ 台股戰情分析終端 v4.1")
 st.caption("🟢 多頭 | 🔴 空頭 | ⚪ 盤整 | 四核心極速快取版")
-col1, col2 = st.columns([3, 1])
-with col1: manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed", placeholder="例如: 2330", key="manual_search")
-with col2: analyze_manual_btn = st.button("單股掃描", use_container_width=True)
+with st.form("manual_stock_search", clear_on_submit=False):
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        manual_ticker = st.text_input("輸入股票代號", "", label_visibility="collapsed", placeholder="例如: 2330", key="manual_search")
+    with col2:
+        analyze_manual_btn = st.form_submit_button("單股掃描", use_container_width=True)
 st.markdown("---")
 
 sidebar_trigger = st.session_state.pop('analyze_trigger', None)
@@ -358,7 +356,7 @@ if sidebar_trigger or query_ticker:
     st.session_state.current_page = "🎯 單股技術診斷"
     st.session_state.target_ticker_cache = target_ticker
     st.rerun()
-elif manual_ticker or analyze_manual_btn:
+elif analyze_manual_btn:
     target_ticker = manual_ticker.strip().upper()
     if target_ticker and st.session_state.current_page != "🎯 單股技術診斷":
         st.session_state.current_page = "🎯 單股技術診斷"
@@ -379,7 +377,7 @@ if st.session_state.current_page == "🎯 單股技術診斷":
 
         with st.spinner(f"正在深度分析 {base_ticker} {c_name}..."):
             df_daily, df_hourly, _ = get_kline_with_fugle(target_ticker, FUGLE_API_KEY)
-            if df_daily.empty:
+            if df_daily.empty or len(df_daily) < 2:
                 st.error("❌ 數據不足")
             else:
                 news_s = get_stock_news(c_name)
@@ -912,9 +910,17 @@ elif st.session_state.current_page == "📊 台股大盤掃描":
                 info_0050 = match_0050.iloc[0]
                 p_col = '現價' if '現價' in df_snap.columns else '{'
                 p_0050 = float(info_0050.get(p_col, 0.0))
-                # Simple logic for traffic light based on current snapshot
-                light_color = "#ff4b4b" if p_0050 > 180 else "#ffc107" if p_0050 > 150 else "#00cc96"
-                light_label = "🔴 稍高" if light_color == "#ff4b4b" else "🟡 合理" if light_color == "#ffc107" else "🟢 考慮"
+                # 用相對強弱、量價分數及多空模型取代會隨長期價格失效的固定價位門檻。
+                score_0050 = float(info_0050.get('score', 50.0))
+                pred_0050 = next((x.get('core_data', {}) for x in get_market_predictions_cached() if str(x.get('代號', '')).split('.')[0] == '0050'), {})
+                long_0050 = float(pred_0050.get('best_long', 0.5))
+                short_0050 = float(pred_0050.get('best_short', 0.5))
+                if score_0050 >= 60 and long_0050 > short_0050:
+                    light_color, light_label = "#00cc96", "🟢 結構偏多"
+                elif score_0050 <= 40 or short_0050 > long_0050 * 1.1:
+                    light_color, light_label = "#ff4b4b", "🔴 風險偏高"
+                else:
+                    light_color, light_label = "#ffc107", "🟡 中性觀察"
                 html = f'''
                 <div style="background-color: #141823; border: 1px solid #252b3b; border-radius: 12px; padding: 16px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -922,7 +928,7 @@ elif st.session_state.current_page == "📊 台股大盤掃描":
                         <span style="font-size:14px; color:#8a93a6;">現價 {p_0050}</span>
                     </div>
                     <div style="margin-top:12px; font-size:24px; font-weight:800; color:{light_color};">{light_label}</div>
-                    <div style="margin-top:8px; font-size:12px; color:#8a93a6;">系統引擎評估合理性，僅供參考。</div>
+                    <div style="margin-top:8px; font-size:12px; color:#8a93a6;">量價分數 {score_0050:.0f} ｜ 多 {long_0050*100:.1f}% / 空 {short_0050*100:.1f}%，僅供參考。</div>
                 </div>
                 '''
                 _render_clean_html(html)

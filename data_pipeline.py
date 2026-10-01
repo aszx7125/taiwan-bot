@@ -49,7 +49,15 @@ def trigger_github_workflow(workflow_filename):
     token = st.secrets.get("GH_PAT")
     if not token: return False, "缺少 GitHub PAT 金鑰設定 (請在 Streamlit Secrets 設定 GH_PAT)"
     url = f"https://api.github.com/repos/aszx7125/taiwan-bot/actions/workflows/{workflow_filename}/dispatches"
-    res = requests.post(url, headers={"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}, json={"ref": "main"})
+    try:
+        res = requests.post(
+            url,
+            headers={"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"},
+            json={"ref": "main"},
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        return False, f"發送失敗: {exc}"
     if res.status_code == 204: return True, "🚀 指令已成功發送至 GitHub 虛擬工廠！請等待幾分鐘執行。"
     return False, f"發送失敗: {res.text}"
 

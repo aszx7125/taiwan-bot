@@ -61,7 +61,7 @@ feature_cols = numeric_cols + ['is_pullback', 'is_squeeze', 'is_divergence', 'is
 
 # ── 4. 建立空頭標籤 ───────────────────────────────────────────────────────
 FUTURE_DAYS = 5
-df['future_return'] = df.groupby('ticker')['close_price'].shift(-FUTURE_DAYS) / df.groupby('ticker')['close_price'].shift(-1) - 1
+df['future_return'] = df.groupby('ticker')['close_price'].shift(-FUTURE_DAYS) / df['close_price'] - 1
 df.replace([np.inf, -np.inf], 0, inplace=True)
 
 df_clean = df.dropna(subset=['future_return']).copy()
@@ -75,7 +75,7 @@ if len(X) < 100:
     exit(1)
 
 # ── 5. 模型訓練 (包含權重平衡) ────────────────────────────────────────────
-tscv = TimeSeriesSplit(n_splits=5)
+tscv = TimeSeriesSplit(n_splits=5, gap=FUTURE_DAYS)
 best_val_fold = None
 for train_idx, val_idx in tscv.split(X):
     best_val_fold = (train_idx, val_idx)

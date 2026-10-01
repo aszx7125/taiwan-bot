@@ -100,7 +100,7 @@ feature_cols = numeric_cols + ['is_pullback', 'is_squeeze', 'is_divergence', 'is
 
 # 建立標籤
 FUTURE_DAYS = 5
-df['future_return'] = df.groupby('ticker')['close_price'].shift(-FUTURE_DAYS) / df.groupby('ticker')['close_price'].shift(-1) - 1
+df['future_return'] = df.groupby('ticker')['close_price'].shift(-FUTURE_DAYS) / df['close_price'] - 1
 df.replace([np.inf, -np.inf], 0, inplace=True)
 
 df_clean = df.dropna(subset=['future_return']).copy()
@@ -129,9 +129,15 @@ def update_lgbm_model(model_path, X_new, y_new, name=""):
     
     old_model = joblib.load(model_path)
     
-    # 評估舊模型在新資料上的表現 (作為退回機制的基準)
-    old_preds = old_model.predict(X_new)
-    old_acc = accuracy_score(y_new, old_preds)
+    split_idx = max(1, int(len(X_new) * 0.8))
+    if split_idx >= len(X_new):
+        return old_model, 0.0
+    X_train, X_val = X_new.iloc[:split_idx], X_new.iloc[split_idx:]
+    y_train, y_val = y_new.iloc[:split_idx], y_new.iloc[split_idx:]
+
+    # 最後 20% 時間區間只用於比較，不參與更新。
+    old_preds = old_model.predict(X_val)
+    old_acc = accuracy_score(y_val, old_preds)
     
     # 建立新的分類器，並將舊模型當作 init_model 傳入
     # 設定學習率較低，並限制新增的樹數量，避免 Overfitting
@@ -145,13 +151,13 @@ def update_lgbm_model(model_path, X_new, y_new, name=""):
     
     # 執行增量訓練
     try:
-        new_model.fit(X_new, y_new, init_model=old_model.booster_)
+        new_model.fit(X_train, y_train, init_model=old_model.booster_)
     except Exception as e:
         print(f"⚠️ {name} 增量訓練失敗 (可能類別全為0或1): {e}")
         return old_model, old_acc
 
-    new_preds = new_model.predict(X_new)
-    new_acc = accuracy_score(y_new, new_preds)
+    new_preds = new_model.predict(X_val)
+    new_acc = accuracy_score(y_val, new_preds)
     
     print(f"  - 舊模型勝率: {old_acc*100:.2f}% | 新模型勝率: {new_acc*100:.2f}%")
     if new_acc >= old_acc:
@@ -201,34 +207,34 @@ def update_lstm_model(model_path, scaler_path, X_raw, y_new, name=""):
     scaler = joblib.load(scaler_path)
     
     n_samples, n_steps, n_features = X_raw.shape
-    
-    # 增量更新 Scaler
-    X_2d = X_raw.reshape(-1, n_features)
-    scaler.partial_fit(X_2d)
-    
-    # 標準化
-    X_scaled = scaler.transform(X_2d).reshape(n_samples, n_steps, n_features)
-    
-    # 評估舊模型
-    old_preds_prob = old_model.predict(X_scaled, verbose=0)
+    split_idx = max(1, int(n_samples * 0.8))
+    if split_idx >= n_samples:
+        return 0.0
+    X_train_raw, X_val_raw = X_raw[:split_idx], X_raw[split_idx:]
+    y_train, y_val = y_new[:split_idx], y_new[split_idx:]
+
+    # 增量模型必須繼續使用原 scaler，否則舊權重的輸入分佈會被改變。
+    X_train = scaler.transform(X_train_raw.reshape(-1, n_features)).reshape(len(X_train_raw), n_steps, n_features)
+    X_val = scaler.transform(X_val_raw.reshape(-1, n_features)).reshape(len(X_val_raw), n_steps, n_features)
+
+    old_preds_prob = old_model.predict(X_val, verbose=0)
     old_preds = (old_preds_prob >= 0.5).astype(int)
-    old_acc = accuracy_score(y_new, old_preds)
+    old_acc = accuracy_score(y_val, old_preds)
     
     # 編譯並用小 Learning Rate 訓練 (避免災難性遺忘)
     old_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4), loss='binary_crossentropy', metrics=['accuracy'])
     
     # 訓練 5 個 epoch
-    old_model.fit(X_scaled, y_new, epochs=5, batch_size=64, verbose=0, validation_split=0.1)
+    old_model.fit(X_train, y_train, epochs=5, batch_size=64, verbose=0, validation_data=(X_val, y_val))
     
-    new_preds_prob = old_model.predict(X_scaled, verbose=0)
+    new_preds_prob = old_model.predict(X_val, verbose=0)
     new_preds = (new_preds_prob >= 0.5).astype(int)
-    new_acc = accuracy_score(y_new, new_preds)
+    new_acc = accuracy_score(y_val, new_preds)
     
     print(f"  - 舊模型勝率: {old_acc*100:.2f}% | 新模型勝率: {new_acc*100:.2f}%")
     if new_acc >= old_acc:
         print(f"  ✅ 表現提升或持平，採用新權重！")
         old_model.save(model_path)
-        joblib.dump(scaler, scaler_path)
         return new_acc
     else:
         print(f"  ❌ 表現退步，觸發 Rollback，保留舊權重。")

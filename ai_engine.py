@@ -11,6 +11,7 @@ from tensorflow.keras.models import load_model
 
 class DualCoreBrain:
     def __init__(self, lgbm_path="quant_model.joblib", feats_path="model_features.joblib"):
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.lgbm_model, self.features_list = None, None
         self.lstm_model, self.lstm_scaler = None, None
         self.is_lgbm_ready, self.is_lstm_ready = False, False
@@ -25,9 +26,11 @@ class DualCoreBrain:
         self.lgbm_error_msg = ""
         try:
             # 把原本漏掉的第三個參數 lstm_path 補回去給它
-            lstm_path = 'lstm_momentum_brain.h5'
-            self._load_models(lgbm_path, feats_path, lstm_path)
-            self.is_lgbm_ready = True
+            self._load_models(
+                os.path.join(self.base_dir, lgbm_path),
+                os.path.join(self.base_dir, feats_path),
+                os.path.join(self.base_dir, 'lstm_momentum_brain.h5'),
+            )
         except Exception as e:
             self.lgbm_error_msg = traceback.format_exc()
             self.is_lgbm_ready = False
@@ -36,7 +39,7 @@ class DualCoreBrain:
         self._load_short_models()
         
         # 🔥 取得當前檔案所在的「絕對路徑目錄」
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = self.base_dir
 
         # 1. 載入多頭 LSTM 模型
         self.is_lstm_ready = False
@@ -82,7 +85,9 @@ class DualCoreBrain:
                 self.lgbm_model = joblib.load(lgbm_path)
                 self.features_list = joblib.load(feats_path)
                 self.is_lgbm_ready = True
-            except: pass
+            except Exception:
+                self.lgbm_error_msg = traceback.format_exc()
+                self.is_lgbm_ready = False
             
         if os.path.exists(lstm_path):
             try:
@@ -91,26 +96,36 @@ class DualCoreBrain:
                 if os.path.exists(scaler_path):
                     self.lstm_scaler = joblib.load(scaler_path)
                     self.is_lstm_ready = True
-            except: pass
+            except Exception:
+                self.lstm_error_msg = traceback.format_exc()
+                self.is_lstm_ready = False
     
     def _load_short_models(self):
-        if os.path.exists("quant_model_short.joblib"):
+        short_model_path = os.path.join(self.base_dir, "quant_model_short.joblib")
+        short_features_path = os.path.join(self.base_dir, "model_features_short.joblib")
+        short_lstm_path = os.path.join(self.base_dir, "lstm_short_brain.h5")
+        short_scaler_path = os.path.join(self.base_dir, "lstm_scaler_short.joblib")
+        if os.path.exists(short_model_path):
             try:
-                self.lgbm_short_model = joblib.load("quant_model_short.joblib")
-                if os.path.exists("model_features_short.joblib"):
-                    self.features_short_list = joblib.load("model_features_short.joblib")
+                self.lgbm_short_model = joblib.load(short_model_path)
+                if os.path.exists(short_features_path):
+                    self.features_short_list = joblib.load(short_features_path)
                 else:
                     self.features_short_list = self.features_list
                 self.is_lgbm_short_ready = True
-            except: pass
+            except Exception:
+                self.lgbm_short_error_msg = traceback.format_exc()
+                self.is_lgbm_short_ready = False
         
-        if os.path.exists("lstm_short_brain.h5"):
+        if os.path.exists(short_lstm_path):
             try:
-                self.lstm_short_model = tf.keras.models.load_model("lstm_short_brain.h5", compile=False)
-                if os.path.exists("lstm_scaler_short.joblib"):
-                    self.lstm_short_scaler = joblib.load("lstm_scaler_short.joblib")
+                self.lstm_short_model = tf.keras.models.load_model(short_lstm_path, compile=False)
+                if os.path.exists(short_scaler_path):
+                    self.lstm_short_scaler = joblib.load(short_scaler_path)
                     self.is_lstm_short_ready = True
-            except: pass
+            except Exception:
+                self.lstm_short_error_msg = traceback.format_exc()
+                self.is_lstm_short_ready = False
     
     def extract_features(self, clean_ticker, current_price, snapshot_dict, 
                         current_vol=0.0, fallback_rs=0.0, fallback_atr=None, 
@@ -122,6 +137,7 @@ class DualCoreBrain:
         vol_ratio = 1.0
         broker_conc = 0.0
         recent_returns = [0.0] * 10
+        recent_features = None
         
         if snapshot_dict and clean_ticker in snapshot_dict:
             item = snapshot_dict[clean_ticker]
@@ -133,6 +149,7 @@ class DualCoreBrain:
             vol = float(item.get('成交量', vol))
             broker_conc = float(item.get('broker_conc', broker_conc))
             recent_returns = item.get('recent_returns', [0.0] * 10)
+            recent_features = item.get('recent_features')
         
         current_price = max(float(current_price), 0.01)
         vol = max(float(vol), 0.0)
@@ -152,6 +169,9 @@ class DualCoreBrain:
         recent_returns = np.array(recent_returns[-10:], dtype=np.float32)
         recent_returns = np.nan_to_num(recent_returns, nan=0.0, posinf=0.2, neginf=-0.2)
         feat['recent_returns'] = recent_returns.tolist()
+        feat['daily_return'] = float(recent_returns[-1]) if len(recent_returns) else 0.0
+        if isinstance(recent_features, list):
+            feat['recent_features'] = recent_features[-10:]
         
         return feat
     
@@ -174,14 +194,23 @@ class DualCoreBrain:
                     ret_list = [0.0]*(n_steps-len(ret_list)) + ret_list
                 ret_list = ret_list[-n_steps:] 
                 
-                static_vals = [
-                    np.nan_to_num(feat.get(col, 0.0), nan=0.0, posinf=1.0, neginf=-1.0)
-                    for col in LSTM_ORDER[1:]
-                ]
-                
-                for step in range(n_steps):
-                    tensor_3d[idx, step, 0] = float(ret_list[step])
-                    tensor_3d[idx, step, 1:] = static_vals
+                history = feat.get('recent_features')
+                if isinstance(history, list) and history:
+                    history = ([history[0]] * max(0, n_steps - len(history)) + history)[-n_steps:]
+                    for step, row in enumerate(history):
+                        tensor_3d[idx, step, :] = [
+                            np.nan_to_num(row.get(col, 0.0), nan=0.0, posinf=1.0, neginf=-1.0)
+                            for col in LSTM_ORDER
+                        ]
+                else:
+                    # 舊版快取沒有歷史特徵時保持相容；新快取會走上方完整時序路徑。
+                    static_vals = [
+                        np.nan_to_num(feat.get(col, 0.0), nan=0.0, posinf=1.0, neginf=-1.0)
+                        for col in LSTM_ORDER[1:]
+                    ]
+                    for step in range(n_steps):
+                        tensor_3d[idx, step, 0] = float(ret_list[step])
+                        tensor_3d[idx, step, 1:] = static_vals
                     
             tensor_3d = np.clip(tensor_3d, -10, 10)
             tensor_2d = tensor_3d.reshape(-1, n_features)
@@ -199,7 +228,7 @@ class DualCoreBrain:
     def predict_four_core(self, features_list):
         if not features_list: return []
         
-        clean_features = [{k: v for k, v in f.items() if k != 'recent_returns'} for f in features_list]
+        clean_features = [{k: v for k, v in f.items() if k not in ('recent_returns', 'recent_features')} for f in features_list]
         df = pd.DataFrame(clean_features)
         
         # 1. LGBM 多頭
@@ -235,8 +264,9 @@ class DualCoreBrain:
             ll, tl = float(lgbm_long[i]), float(lstm_long[i])
             ls, ts = float(lgbm_short[i]), float(lstm_short[i])
             
-            best_long = max(ll, tl)
-            best_short = max(ls, ts)
+            # 同時參考結構與時序訊號，避免取最大值所造成的系統性過度自信。
+            best_long = 0.6 * ll + 0.4 * tl
+            best_short = 0.6 * ls + 0.4 * ts
             
             if best_long > 0.60 and best_long > best_short * 1.2: signal = "STRONG_LONG"
             elif best_long > 0.52 and best_long > best_short: signal = "LONG"

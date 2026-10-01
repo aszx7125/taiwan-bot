@@ -71,7 +71,7 @@ all_X, all_y, all_dates = [], [], []
 
 for ticker, group in df.groupby('ticker'):
     group = group.sort_values('date').reset_index(drop=True)
-    group['future_return'] = group['close_price'].shift(-FUTURE_DAYS) / group['close_price'].shift(-1) - 1
+    group['future_return'] = group['close_price'].shift(-FUTURE_DAYS) / group['close_price'] - 1
     group.replace([np.inf, -np.inf], 0, inplace=True)
     group['target_short'] = (group['future_return'] < -0.02).astype(int)
     
@@ -93,13 +93,17 @@ if len(all_X) == 0:
 sorted_idx = np.argsort(all_dates)
 X_sorted = all_X[sorted_idx]
 y_sorted = all_y[sorted_idx]
+dates_sorted = all_dates[sorted_idx]
 
-# 採用 80/20 時間序列切割 (保留前面 80% 作為訓練，完全不浪費資料)
-split_idx = int(len(X_sorted) * 0.8)
-X_train_raw = X_sorted[:split_idx]
-y_train = y_sorted[:split_idx]
-X_val_raw = X_sorted[split_idx:]
-y_val = y_sorted[split_idx:]
+# 依「日期」切割並留下 5 個交易日 embargo，防止重疊視窗與未來標籤泄漏。
+unique_dates = np.sort(np.unique(dates_sorted))
+cutoff_idx = int(len(unique_dates) * 0.8)
+val_start = unique_dates[cutoff_idx]
+train_end = unique_dates[max(0, cutoff_idx - FUTURE_DAYS - 1)]
+train_mask = dates_sorted <= train_end
+val_mask = dates_sorted >= val_start
+X_train_raw, y_train = X_sorted[train_mask], y_sorted[train_mask]
+X_val_raw, y_val = X_sorted[val_mask], y_sorted[val_mask]
 
 n_train_samples, n_steps, n_features = X_train_raw.shape
 n_val_samples = X_val_raw.shape[0]
