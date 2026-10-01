@@ -115,18 +115,20 @@ def render_model_health_board(metrics):
     with col2:
         st.markdown("**🔴 空頭模型**")
         wr_s = metrics.get('short', {}).get('lgbm', {}).get('blind_win_rate', 0)
+        capture_s = metrics.get('short', {}).get('lgbm', {}).get('short_capture_rate', 0)
         date_s = metrics.get('short', {}).get('lgbm', {}).get('last_train', '未訓練')
         c_s = "#ff4b4b" if wr_s > 0.55 else "#ff9966"
         if wr_s > 0:
-            _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_s}; font-weight:bold;'>{wr_s*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_s}</span></div></div></div>")
+            _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px; margin-bottom:8px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LightGBM</span><br><span style='font-size:22px; color:{c_s}; font-weight:bold;'>{wr_s*100:.1f}%</span><br><span style='color:#aaa;font-size:10px;'>空頭捕捉 {capture_s*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_s}</span></div></div></div>")
         else:
             _render_clean_html("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px; margin-bottom:8px;'><span style='color:#666;font-size:12px;'>LightGBM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>")
         
         wr_ls = metrics.get('short', {}).get('lstm', {}).get('blind_win_rate', 0)
+        capture_ls = metrics.get('short', {}).get('lstm', {}).get('short_capture_rate', 0)
         date_ls = metrics.get('short', {}).get('lstm', {}).get('last_train', '未訓練')
         c_ls = "#ff4b4b" if wr_ls > 0.53 else "#ff9966"
         if wr_ls > 0:
-            _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ls}; font-weight:bold;'>{wr_ls*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ls}</span></div></div></div>")
+            _render_clean_html(f"<div style='background:#1e1e1e; padding:12px; border-left:4px solid #ff4b4b; border-radius:5px;'><div style='display:flex;justify-content:space-between;align-items:center;'><div><span style='color:#aaa;font-size:11px;'>LSTM</span><br><span style='font-size:22px; color:{c_ls}; font-weight:bold;'>{wr_ls*100:.1f}%</span><br><span style='color:#aaa;font-size:10px;'>空頭捕捉 {capture_ls*100:.1f}%</span></div><div style='text-align:right;'><span style='color:#666;font-size:10px;'>{date_ls}</span></div></div></div>")
         else:
             _render_clean_html("<div style='background:#1e1e1e; padding:12px; border-left:4px solid #666; border-radius:5px;'><span style='color:#666;font-size:12px;'>LSTM</span><br><span style='font-size:16px; color:#666;'>未訓練</span></div>")
 

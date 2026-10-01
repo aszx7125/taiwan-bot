@@ -1,4 +1,5 @@
 import os
+import json
 import traceback
 # 🔥 終極護身符：強迫 TensorFlow 使用舊版 Keras 2 核心，解決 batch_shape 報錯！
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
@@ -12,6 +13,9 @@ from tensorflow.keras.models import load_model
 class DualCoreBrain:
     def __init__(self, lgbm_path="quant_model.joblib", feats_path="model_features.joblib"):
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.long_lgbm_weight = 0.6
+        self.short_lgbm_weight = 0.6
+        self._load_reliability_weights()
         self.lgbm_model, self.features_list = None, None
         self.lstm_model, self.lstm_scaler = None, None
         self.is_lgbm_ready, self.is_lstm_ready = False, False
@@ -21,7 +25,7 @@ class DualCoreBrain:
         self.lstm_short_scaler = None
         self.is_lgbm_short_ready = False
         self.is_lstm_short_ready = False
-        
+
         # 載入 LGBM 模型
         self.lgbm_error_msg = ""
         try:
@@ -78,6 +82,30 @@ class DualCoreBrain:
             # 🔥 把完整的紅字報錯捕捉下來
             self.lstm_short_error_msg = traceback.format_exc()
             self.is_lstm_short_ready = False
+
+    def _load_reliability_weights(self):
+        """依驗證集品質調整集成權重；捕捉率失效的空頭核心會自動降權。"""
+        metrics_path = os.path.join(self.base_dir, "model_metrics.json")
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as file:
+                metrics = json.load(file)
+
+            long_lgbm = float(metrics.get("lgbm", {}).get("blind_win_rate", 0.0))
+            long_lstm = float(metrics.get("lstm", {}).get("blind_win_rate", 0.0))
+            if long_lgbm > 0 and long_lstm > 0:
+                self.long_lgbm_weight = float(np.clip(long_lgbm / (long_lgbm + long_lstm), 0.35, 0.75))
+
+            short_metrics = metrics.get("short", {})
+            short_lgbm = short_metrics.get("lgbm", {})
+            short_lstm = short_metrics.get("lstm", {})
+            lgbm_capture = float(short_lgbm.get("short_capture_rate", 0.0))
+            lstm_capture = float(short_lstm.get("short_capture_rate", 0.0))
+            if lgbm_capture < 0.10 and lstm_capture >= 0.10:
+                self.short_lgbm_weight = 0.20
+            elif lgbm_capture > 0 and lstm_capture > 0:
+                self.short_lgbm_weight = float(np.clip(lgbm_capture / (lgbm_capture + lstm_capture), 0.25, 0.75))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
     
     def _load_models(self, lgbm_path, feats_path, lstm_path):
         if os.path.exists(lgbm_path) and os.path.exists(feats_path):
@@ -265,8 +293,8 @@ class DualCoreBrain:
             ls, ts = float(lgbm_short[i]), float(lstm_short[i])
             
             # 同時參考結構與時序訊號，避免取最大值所造成的系統性過度自信。
-            best_long = 0.6 * ll + 0.4 * tl
-            best_short = 0.6 * ls + 0.4 * ts
+            best_long = self.long_lgbm_weight * ll + (1.0 - self.long_lgbm_weight) * tl
+            best_short = self.short_lgbm_weight * ls + (1.0 - self.short_lgbm_weight) * ts
             
             if best_long > 0.60 and best_long > best_short * 1.2: signal = "STRONG_LONG"
             elif best_long > 0.52 and best_long > best_short: signal = "LONG"
@@ -279,6 +307,8 @@ class DualCoreBrain:
                 'lgbm_long': round(ll, 3), 'lstm_long': round(tl, 3),
                 'lgbm_short': round(ls, 3), 'lstm_short': round(ts, 3),
                 'best_long': round(best_long, 3), 'best_short': round(best_short, 3),
+                'long_lgbm_weight': round(self.long_lgbm_weight, 3),
+                'short_lgbm_weight': round(self.short_lgbm_weight, 3),
                 'signal': signal
             })
             
